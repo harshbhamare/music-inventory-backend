@@ -1,0 +1,210 @@
+import mongoose, { Types } from 'mongoose';
+import { Product } from '../models/Product.js';
+import { SerializedItem } from '../models/SerializedItem.js';
+import { StockMovement } from '../models/StockMovement.js';
+import { StockLocation } from '../models/StockLocation.js';
+import { AppError } from '../middleware/errorHandler.js';
+export async function listProducts(params) {
+    const page = Math.max(1, Number(params.page) || 1);
+    const limit = Math.max(1, Math.min(100, Number(params.limit) || 20));
+    const skip = (page - 1) * limit;
+    const query = { isActive: true };
+    if (params.category) {
+        query.category = params.category;
+    }
+    if (params.trackingMode) {
+        query.trackingMode = params.trackingMode;
+    }
+    if (params.search) {
+        const searchRegex = new RegExp(params.search.trim(), 'i');
+        query.$or = [
+            { name: searchRegex },
+            { sku: searchRegex },
+            { brand: searchRegex },
+            { modelName: searchRegex },
+        ];
+    }
+    const sortField = params.sortBy || 'name';
+    const sortDirection = params.sortOrder === 'desc' ? -1 : 1;
+    const [products, total] = await Promise.all([
+        Product.find(query)
+            .populate('category', 'name')
+            .populate('supplier', 'name')
+            .sort({ [sortField]: sortDirection })
+            .skip(skip)
+            .limit(limit)
+            .lean(),
+        Product.countDocuments(query),
+    ]);
+    // Compute available and low-stock flag
+    const items = products.map((p) => {
+        const sq = p.stockQuantity || { onHand: 0, reserved: 0, issuedInternal: 0, quarantined: 0 };
+        const unavailable = (sq.reserved || 0) + (sq.issuedInternal || 0) + (sq.quarantined || 0);
+        const available = Math.max(0, (sq.onHand || 0) - unavailable);
+        return {
+            ...p,
+            availableForSale: available,
+            isLowStock: available <= (p.minStockThreshold || 5),
+        };
+    });
+    return {
+        items: params.lowStock ? items.filter((i) => i.isLowStock) : items,
+        pagination: {
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit),
+        },
+    };
+}
+export async function getProductById(id) {
+    const product = await Product.findById(id)
+        .populate('category', 'name')
+        .populate('supplier', 'name contactPerson email phone')
+        .populate('locationStock.location', 'name code')
+        .lean();
+    if (!product) {
+        throw new AppError('Product not found.', 404, 'NOT_FOUND');
+    }
+    const sq = product.stockQuantity || { onHand: 0, reserved: 0, issuedInternal: 0, quarantined: 0 };
+    const unavailable = (sq.reserved || 0) + (sq.issuedInternal || 0) + (sq.quarantined || 0);
+    const available = Math.max(0, (sq.onHand || 0) - unavailable);
+    return {
+        ...product,
+        availableForSale: available,
+        isLowStock: available <= (product.minStockThreshold || 5),
+    };
+}
+export async function createProduct(input, actor) {
+    const existing = await Product.findOne({ sku: input.sku.toUpperCase().trim() });
+    if (existing) {
+        throw new AppError(`A product with SKU ${input.sku} already exists.`, 409, 'DUPLICATE_SKU');
+    }
+    // Find or create default location for initial locationStock array
+    const defaultLoc = await StockLocation.findOne({ isDefault: true }) || await StockLocation.findOne();
+    const product = await Product.create({
+        ...input,
+        sku: input.sku.toUpperCase().trim(),
+        stockQuantity: {
+            onHand: 0,
+            reserved: 0,
+            issuedInternal: 0,
+            quarantined: 0,
+        },
+        locationStock: defaultLoc
+            ? [
+                {
+                    location: defaultLoc._id,
+                    onHand: 0,
+                    reserved: 0,
+                    issuedInternal: 0,
+                    quarantined: 0,
+                },
+            ]
+            : [],
+        isActive: true,
+    });
+    return product;
+}
+export async function updateProduct(id, updates, actor) {
+    const product = await Product.findById(id);
+    if (!product) {
+        throw new AppError('Product not found.', 404, 'NOT_FOUND');
+    }
+    // Invariant: Prevent switching tracking mode if items or movements exist
+    if (updates.trackingMode && updates.trackingMode !== product.trackingMode) {
+        const totalOnHand = product.stockQuantity?.onHand || 0;
+        const movementCount = await StockMovement.countDocuments({ product: product._id });
+        if (totalOnHand > 0 || movementCount > 0) {
+            throw new AppError('Cannot switch tracking mode when active stock or transaction history exists. A controlled stock migration is required.', 400, 'UNSAFE_TRACKING_MODE_CHANGE');
+        }
+    }
+    Object.assign(product, updates);
+    await product.save();
+    return product;
+}
+export async function listSerializedItems(params) {
+    const page = Math.max(1, Number(params.page) || 1);
+    const limit = Math.max(1, Math.min(100, Number(params.limit) || 25));
+    const skip = (page - 1) * limit;
+    const query = {};
+    if (params.product)
+        query.product = params.product;
+    if (params.status)
+        query.status = params.status;
+    if (params.condition)
+        query.condition = params.condition;
+    if (params.location)
+        query.location = params.location;
+    if (params.search) {
+        const searchRegex = new RegExp(params.search.trim(), 'i');
+        query.$or = [
+            { assetId: searchRegex },
+            { manufacturerSerial: searchRegex },
+            { assignedTo: searchRegex },
+            { notes: searchRegex },
+        ];
+    }
+    const [items, total] = await Promise.all([
+        SerializedItem.find(query)
+            .populate('product', 'name sku brand modelName defaultSellingPrice purchaseCost')
+            .populate('location', 'name code')
+            .populate('currentUsage', 'issueReference assignedPerson expectedReturnDate')
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit)
+            .lean(),
+        SerializedItem.countDocuments(query),
+    ]);
+    return {
+        items,
+        pagination: {
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit),
+        },
+    };
+}
+export async function getSerializedItemHistory(assetIdOrItemId) {
+    let item = await SerializedItem.findOne({
+        $or: [
+            { assetId: assetIdOrItemId.toUpperCase().trim() },
+            ...(mongoose.isValidObjectId(assetIdOrItemId) ? [{ _id: assetIdOrItemId }] : []),
+        ],
+    })
+        .populate('product', 'name sku brand modelName defaultSellingPrice purchaseCost')
+        .populate('location', 'name code')
+        .populate('currentUsage', 'issueReference assignedPerson expectedReturnDate purpose')
+        .lean();
+    if (!item) {
+        throw new AppError('Serialized item not found.', 404, 'NOT_FOUND');
+    }
+    const movements = await StockMovement.find({ serializedItem: item._id })
+        .populate('performedBy', 'name email role')
+        .populate('location', 'name code')
+        .sort({ createdAt: -1 })
+        .lean();
+    return {
+        item,
+        movements,
+    };
+}
+export async function createStockMovement(data, session) {
+    const movement = new StockMovement({
+        product: new Types.ObjectId(data.product),
+        serializedItem: data.serializedItem ? new Types.ObjectId(data.serializedItem) : undefined,
+        location: new Types.ObjectId(data.location),
+        movementType: data.movementType,
+        quantityDelta: data.quantityDelta,
+        sourceStatus: data.sourceStatus,
+        destinationStatus: data.destinationStatus,
+        transactionRef: data.transactionRef,
+        transactionModel: data.transactionModel,
+        reason: data.reason,
+        performedBy: new Types.ObjectId(data.performedBy),
+        idempotencyKey: data.idempotencyKey,
+    });
+    await movement.save({ session });
+    return movement;
+}
