@@ -29,10 +29,11 @@ router.post('/login', validate(loginSchema), async (req, res, next) => {
         user.lastLogin = new Date();
         await user.save();
         const token = jwt.sign({ id: user._id.toString(), email: user.email, role: user.role }, ENV.JWT_SECRET, { expiresIn: '7d' });
+        const isProd = ENV.NODE_ENV === 'production';
         res.cookie(ENV.SESSION_COOKIE_NAME, token, {
             httpOnly: true,
-            secure: ENV.NODE_ENV === 'production',
-            sameSite: 'lax',
+            secure: isProd,
+            sameSite: isProd ? 'none' : 'lax',
             maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
         });
         res.json({

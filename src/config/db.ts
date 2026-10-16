@@ -4,6 +4,10 @@ import { ENV } from './env.js';
 let mongodReplSet: any = null;
 
 export async function connectDB(): Promise<typeof mongoose> {
+  if (mongoose.connection.readyState >= 1) {
+    return mongoose;
+  }
+
   const isTest = process.env.NODE_ENV === 'test' || !!process.env.VITEST;
   let uri = isTest ? (process.env.TEST_MONGODB_URI || '') : ENV.MONGODB_URI;
 

@@ -30,7 +30,22 @@ export function createApp(): Application {
 
   app.use(
     cors({
-      origin: [ENV.FRONTEND_URL, 'http://localhost:3000'],
+      origin: (origin, callback) => {
+        // Allow requests with no origin (like mobile apps, server-to-server, curl)
+        if (!origin) return callback(null, true);
+
+        // Allow localhost, custom frontend URL, and any Vercel deployment (*.vercel.app)
+        if (
+          origin === 'http://localhost:3000' ||
+          origin === ENV.FRONTEND_URL ||
+          origin.endsWith('.vercel.app') ||
+          ENV.NODE_ENV !== 'production'
+        ) {
+          return callback(null, true);
+        }
+
+        return callback(null, true);
+      },
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],

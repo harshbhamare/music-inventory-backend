@@ -2,6 +2,9 @@ import mongoose from 'mongoose';
 import { ENV } from './env.js';
 let mongodReplSet = null;
 export async function connectDB() {
+    if (mongoose.connection.readyState >= 1) {
+        return mongoose;
+    }
     const isTest = process.env.NODE_ENV === 'test' || !!process.env.VITEST;
     let uri = isTest ? (process.env.TEST_MONGODB_URI || '') : ENV.MONGODB_URI;
     if (!uri) {
