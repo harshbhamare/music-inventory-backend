@@ -9,7 +9,7 @@ import { createPurchaseSchema, receivePurchaseSchema } from '../validators/index
 import { ROLES } from '../config/constants.js';
 const router = Router();
 // Direct / Quick Stock Intake
-router.post('/quick-receive', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF), async (req, res, next) => {
+router.post('/quick-receive', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
     try {
         const result = await quickReceiveStock(req.body, req.user);
         res.status(201).json({ success: true, data: result });
@@ -50,7 +50,7 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     }
 });
 // Create purchase order
-router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF), validate(createPurchaseSchema), async (req, res, next) => {
+router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(createPurchaseSchema), async (req, res, next) => {
     try {
         const purchase = await createPurchase(req.body, req.user);
         res.status(201).json({ success: true, data: { purchase } });
@@ -60,7 +60,7 @@ router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MAN
     }
 });
 // Receive goods against purchase order
-router.post('/:id/receive', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF), validate(receivePurchaseSchema), async (req, res, next) => {
+router.post('/:id/receive', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(receivePurchaseSchema), async (req, res, next) => {
     try {
         const receipt = await receivePurchase(req.params.id, req.body, req.user);
         res.status(201).json({ success: true, data: { receipt } });

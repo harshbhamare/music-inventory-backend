@@ -1,8 +1,8 @@
 {
-  "name": "soundstock-backend",
+  "name": "stereobliss-backend",
   "version": "1.0.0",
   "type": "module",
-  "description": "SoundStock Inventory Management System Backend API",
+  "description": "StereoBliss - Retail Inventory Backend API",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",

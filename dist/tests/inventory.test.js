@@ -59,11 +59,11 @@ beforeAll(async () => {
     testCategoryId = cat._id.toString();
     const sup = await Supplier.create({ name: 'Yamaha Test Supplier', isActive: true });
     testSupplierId = sup._id.toString();
-    // Create users and generate tokens
+    // Create users and generate tokens (Two profile roles)
     const passHash = await bcrypt.hash('Test@12345', 10);
     const admin = await User.create({
-        name: 'Test Admin',
-        email: 'testadmin@soundstock.io',
+        name: 'Test Super Admin',
+        email: 'admin@stereobliss.com',
         passwordHash: passHash,
         role: ROLES.SUPER_ADMIN,
         isActive: true,
@@ -71,49 +71,26 @@ beforeAll(async () => {
     adminUserId = admin._id.toString();
     const manager = await User.create({
         name: 'Test Manager',
-        email: 'testmanager@soundstock.io',
+        email: 'manager@stereobliss.com',
         passwordHash: passHash,
-        role: ROLES.INVENTORY_MANAGER,
+        role: ROLES.MANAGER,
         isActive: true,
     });
     managerUserId = manager._id.toString();
-    const sales = await User.create({
-        name: 'Test Sales',
-        email: 'testsales@soundstock.io',
-        passwordHash: passHash,
-        role: ROLES.SALES_STAFF,
-        isActive: true,
-    });
-    const staff = await User.create({
-        name: 'Test Staff',
-        email: 'teststaff@soundstock.io',
-        passwordHash: passHash,
-        role: ROLES.INVENTORY_STAFF,
-        isActive: true,
-    });
-    const viewer = await User.create({
-        name: 'Test Viewer',
-        email: 'testviewer@soundstock.io',
-        passwordHash: passHash,
-        role: ROLES.VIEWER,
-        isActive: true,
-    });
     // Log in each user to get tokens
     const adminRes = await request(app).post('/api/v1/auth/login').send({ email: admin.email, password: 'Test@12345' });
     adminToken = adminRes.body.data.token;
     const managerRes = await request(app).post('/api/v1/auth/login').send({ email: manager.email, password: 'Test@12345' });
     managerToken = managerRes.body.data.token;
-    const salesRes = await request(app).post('/api/v1/auth/login').send({ email: sales.email, password: 'Test@12345' });
-    salesToken = salesRes.body.data.token;
-    const staffRes = await request(app).post('/api/v1/auth/login').send({ email: staff.email, password: 'Test@12345' });
-    staffToken = staffRes.body.data.token;
-    const viewerRes = await request(app).post('/api/v1/auth/login').send({ email: viewer.email, password: 'Test@12345' });
-    viewerToken = viewerRes.body.data.token;
+    // Operational aliases: manager handles all sales, intake, and loan operations
+    salesToken = managerToken;
+    staffToken = managerToken;
+    viewerToken = managerToken;
 });
 afterAll(async () => {
     await disconnectDB();
 });
-describe('SoundStock Inventory Management Core Invariants & Workflows', () => {
+describe('StereoBliss Retail Inventory Management Core Invariants & Workflows', () => {
     let quantityProductId;
     let serializedProductId;
     let purchaseId;
@@ -415,13 +392,13 @@ describe('SoundStock Inventory Management Core Invariants & Workflows', () => {
         expect(reqRes.status).toBe(201);
         const adjId = reqRes.body.data.adjustment._id;
         expect(reqRes.body.data.adjustment.status).toBe(ADJUSTMENT_STATUSES.PENDING_APPROVAL);
-        // Rule: Requester (manager) must NOT approve their own adjustment
-        const selfApproveRes = await request(app)
+        // Rule: Manager cannot approve adjustments (main feature restricted to Super Admin)
+        const managerApproveRes = await request(app)
             .post(`/api/v1/adjustments/${adjId}/review`)
             .set('Authorization', `Bearer ${managerToken}`)
             .send({ action: 'APPROVE' });
-        expect(selfApproveRes.status).toBe(403);
-        expect(selfApproveRes.body.error.code).toBe('SELF_APPROVAL_FORBIDDEN');
+        expect(managerApproveRes.status).toBe(403);
+        expect(managerApproveRes.body.error.code).toBe('FORBIDDEN');
         // Super Admin approves the request
         const adminApproveRes = await request(app)
             .post(`/api/v1/adjustments/${adjId}/review`)
@@ -433,29 +410,42 @@ describe('SoundStock Inventory Management Core Invariants & Workflows', () => {
         const prod = await Product.findById(quantityProductId);
         expect(prod?.stockQuantity.onHand).toBe(13); // 15 - 2 = 13
     });
-    // 11. Role-based access control enforcement
-    it('11. should block unauthorized staff from administrative and sensitive routes', async () => {
-        // Sales staff attempting to create a user -> FORBIDDEN
-        const userRes = await request(app)
+    // 11. Role-based access control enforcement: Main features to Superadmin only, tracking to Manager
+    it('11. should restrict main features exclusively to Super Admin and forbid Manager', async () => {
+        // Manager attempting to create a user -> FORBIDDEN
+        const managerCreateUserRes = await request(app)
             .post('/api/v1/auth/users')
-            .set('Authorization', `Bearer ${salesToken}`)
+            .set('Authorization', `Bearer ${managerToken}`)
             .send({
-            name: 'Hacker',
-            email: 'hack@soundstock.io',
+            name: 'Unauthorized User Creation',
+            email: 'unauth@stereobliss.com',
             password: 'password123',
-            role: ROLES.SUPER_ADMIN,
+            role: ROLES.MANAGER,
         });
-        expect(userRes.status).toBe(403);
-        // Viewer attempting to make a sale -> FORBIDDEN
-        const viewerSaleRes = await request(app)
-            .post('/api/v1/sales')
-            .set('Authorization', `Bearer ${viewerToken}`)
+        expect(managerCreateUserRes.status).toBe(403);
+        // Manager attempting to modify system settings -> FORBIDDEN
+        const managerSettingsRes = await request(app)
+            .patch('/api/v1/meta/settings')
+            .set('Authorization', `Bearer ${managerToken}`)
+            .send({ companyName: 'Hacked Store' });
+        expect(managerSettingsRes.status).toBe(403);
+        // Manager attempting to reset system database -> FORBIDDEN
+        const managerResetRes = await request(app)
+            .post('/api/v1/meta/reset-data')
+            .set('Authorization', `Bearer ${managerToken}`);
+        expect(managerResetRes.status).toBe(403);
+        // Super Admin successfully provisioning a manager user -> 201 CREATED
+        const adminCreateUserRes = await request(app)
+            .post('/api/v1/auth/users')
+            .set('Authorization', `Bearer ${adminToken}`)
             .send({
-            customerName: 'Test',
-            location: testLocationId,
-            lineItems: [{ product: quantityProductId, quantity: 1, unitPrice: 700 }],
+            name: 'New Floor Manager',
+            email: 'floormanager@stereobliss.com',
+            password: 'password123',
+            role: ROLES.MANAGER,
         });
-        expect(viewerSaleRes.status).toBe(403);
+        expect(adminCreateUserRes.status).toBe(201);
+        expect(adminCreateUserRes.body.data.user.role).toBe(ROLES.MANAGER);
     });
     // 12. Independent inventory reconciliation audit
     it('12. should reconcile all stock ledger transactions against recorded balances', async () => {

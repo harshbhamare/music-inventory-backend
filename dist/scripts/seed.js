@@ -56,44 +56,23 @@ export async function seedDatabase() {
         isActive: true,
     });
     console.log(`[SEED] Created default location: ${defaultLocation.name}`);
-    // 3. Initial Users with all roles
+    // 3. Initial Users: Two profile roles (Superadmin & Manager)
     const passwordHash = await bcrypt.hash('Stock@2026', 10);
     const admin = await User.create({
         name: 'Harsh Vardhan (Super Admin)',
-        email: 'admin@soundstock.io',
+        email: 'admin@stereobliss.com',
         passwordHash,
         role: ROLES.SUPER_ADMIN,
         isActive: true,
     });
     const manager = await User.create({
-        name: 'Priya Sharma (Inventory Manager)',
-        email: 'manager@soundstock.io',
+        name: 'Priya Sharma (Manager)',
+        email: 'manager@stereobliss.com',
         passwordHash,
-        role: ROLES.INVENTORY_MANAGER,
+        role: ROLES.MANAGER,
         isActive: true,
     });
-    const sales = await User.create({
-        name: 'Rohan Patil (Sales Executive)',
-        email: 'sales@soundstock.io',
-        passwordHash,
-        role: ROLES.SALES_STAFF,
-        isActive: true,
-    });
-    const staff = await User.create({
-        name: 'Anjali Deshmukh (Academy Staff)',
-        email: 'staff@soundstock.io',
-        passwordHash,
-        role: ROLES.INVENTORY_STAFF,
-        isActive: true,
-    });
-    const viewer = await User.create({
-        name: 'Executive Management (Viewer)',
-        email: 'viewer@soundstock.io',
-        passwordHash,
-        role: ROLES.VIEWER,
-        isActive: true,
-    });
-    console.log('[SEED] Created 5 initial role users.');
+    console.log('[SEED] Created 2 initial profile users: Super Admin and Manager.');
     // 4. Categories
     const catGuitars = await Category.create({
         name: 'Guitars & Basses',
@@ -531,14 +510,14 @@ export async function seedDatabase() {
         expectedReturnDate: nextWeek,
         status: USAGE_STATUSES.ACTIVE,
         notes: 'Issued for Beginner Acoustic Guitar Batch (Evenings)',
-        issuedBy: staff._id,
+        issuedBy: manager._id,
     });
     f310_4.currentUsage = sampleUsage._id;
     await f310_4.save();
     // 11. Initial AppSetting
     await AppSetting.create({
-        companyName: 'SoundStock Studio Academy & Store',
-        contactEmail: 'inventory@soundstock.io',
+        companyName: 'StereoBliss - Retail Inventory',
+        contactEmail: 'inventory@stereobliss.com',
         contactPhone: '+91 98765 43210',
         address: 'Survey 128, Aundh, Pune, Maharashtra 411007, India',
         currency: 'INR',
@@ -554,7 +533,7 @@ export async function seedDatabase() {
         {
             reportType: REPORT_TYPES.DAILY_STOCK_SUMMARY,
             title: 'Daily Stock & Availability Summary',
-            recipients: ['inventory@soundstock.io', 'admin@soundstock.io'],
+            recipients: ['inventory@stereobliss.com', 'admin@stereobliss.com'],
             scheduleCron: '0 9 * * *',
             timeZone: 'Asia/Kolkata',
             isEnabled: true,
@@ -562,7 +541,7 @@ export async function seedDatabase() {
         {
             reportType: REPORT_TYPES.WEEKLY_SALES_SUMMARY,
             title: 'Weekly Sales Performance Summary',
-            recipients: ['accounts@soundstock.io', 'admin@soundstock.io'],
+            recipients: ['accounts@stereobliss.com', 'admin@stereobliss.com'],
             scheduleCron: '0 18 * * 0',
             timeZone: 'Asia/Kolkata',
             isEnabled: true,
@@ -570,7 +549,7 @@ export async function seedDatabase() {
         {
             reportType: REPORT_TYPES.OVERDUE_USAGE_REMINDER,
             title: 'Daily Overdue Instrument Loans Notice',
-            recipients: ['academy@soundstock.io', 'manager@soundstock.io'],
+            recipients: ['manager@stereobliss.com'],
             scheduleCron: '0 10 * * *',
             timeZone: 'Asia/Kolkata',
             isEnabled: true,
@@ -582,6 +561,45 @@ let seedPromise = null;
 export async function ensureDatabaseSeeded() {
     const userCount = await User.countDocuments();
     if (userCount > 0) {
+        // Migrate or ensure StereoBliss accounts exist
+        const adminExists = await User.findOne({ email: 'admin@stereobliss.com' });
+        if (!adminExists) {
+            const legacyAdmin = await User.findOne({ email: 'admin@soundstock.io' });
+            if (legacyAdmin) {
+                legacyAdmin.email = 'admin@stereobliss.com';
+                legacyAdmin.role = ROLES.SUPER_ADMIN;
+                await legacyAdmin.save();
+            }
+            else {
+                const passwordHash = await bcrypt.hash('Stock@2026', 10);
+                await User.create({
+                    name: 'Harsh Vardhan (Super Admin)',
+                    email: 'admin@stereobliss.com',
+                    passwordHash,
+                    role: ROLES.SUPER_ADMIN,
+                    isActive: true,
+                });
+            }
+        }
+        const managerExists = await User.findOne({ email: 'manager@stereobliss.com' });
+        if (!managerExists) {
+            const legacyManager = await User.findOne({ email: 'manager@soundstock.io' });
+            if (legacyManager) {
+                legacyManager.email = 'manager@stereobliss.com';
+                legacyManager.role = ROLES.MANAGER;
+                await legacyManager.save();
+            }
+            else {
+                const passwordHash = await bcrypt.hash('Stock@2026', 10);
+                await User.create({
+                    name: 'Priya Sharma (Manager)',
+                    email: 'manager@stereobliss.com',
+                    passwordHash,
+                    role: ROLES.MANAGER,
+                    isActive: true,
+                });
+            }
+        }
         return false;
     }
     if (!seedPromise) {

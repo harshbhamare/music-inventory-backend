@@ -62,7 +62,7 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     }
 });
 // Create and confirm sale
-router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.SALES_STAFF), validate(createSaleSchema), async (req, res, next) => {
+router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(createSaleSchema), async (req, res, next) => {
     try {
         const sale = await createSale(req.body, req.user);
         res.status(201).json({ success: true, data: { sale } });
@@ -72,7 +72,7 @@ router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MAN
     }
 });
 // Process customer return
-router.post('/:id/return', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.SALES_STAFF), async (req, res, next) => {
+router.post('/:id/return', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
     try {
         const customerReturn = await processSaleReturn(req.params.id, req.body, req.user);
         res.status(201).json({ success: true, data: { return: customerReturn } });

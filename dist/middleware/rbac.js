@@ -8,7 +8,11 @@ export function requireRole(...allowedRoles) {
             });
             return;
         }
-        if (!allowedRoles.includes(req.user.role)) {
+        const currentRole = req.user.role === 'INVENTORY_MANAGER' ? ROLES.MANAGER : req.user.role;
+        const hasPermission = allowedRoles.includes(currentRole) ||
+            allowedRoles.includes(req.user.role) ||
+            (allowedRoles.includes(ROLES.MANAGER) && req.user.role === 'INVENTORY_MANAGER');
+        if (!hasPermission) {
             res.status(403).json({
                 success: false,
                 error: {
@@ -22,5 +26,5 @@ export function requireRole(...allowedRoles) {
     };
 }
 export function isManagerOrAdmin(role) {
-    return role === ROLES.SUPER_ADMIN || role === ROLES.INVENTORY_MANAGER;
+    return role === ROLES.SUPER_ADMIN || role === ROLES.MANAGER || role === 'INVENTORY_MANAGER';
 }

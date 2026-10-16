@@ -1,12 +1,11 @@
 export const ROLES = {
   SUPER_ADMIN: 'SUPER_ADMIN',
-  INVENTORY_MANAGER: 'INVENTORY_MANAGER',
-  SALES_STAFF: 'SALES_STAFF',
-  INVENTORY_STAFF: 'INVENTORY_STAFF',
-  VIEWER: 'VIEWER',
+  MANAGER: 'MANAGER',
+  // Alias for backward compatibility
+  INVENTORY_MANAGER: 'MANAGER',
 } as const;
 
-export type UserRole = (typeof ROLES)[keyof typeof ROLES];
+export type UserRole = 'SUPER_ADMIN' | 'MANAGER' | 'INVENTORY_MANAGER';
 
 export const TRACKING_MODES = {
   QUANTITY: 'QUANTITY',

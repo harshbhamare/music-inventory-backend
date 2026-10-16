@@ -71,10 +71,10 @@ export async function clearAllLocalData(): Promise<void> {
   let setting = await AppSetting.findOne();
   if (!setting) {
     await AppSetting.create({
-      companyName: 'SoundStock Studio & Academy',
-      contactEmail: 'inventory@soundstock.io',
+      companyName: 'StereoBliss - Retail Inventory',
+      contactEmail: 'inventory@stereobliss.com',
       contactPhone: '+91 98765 43210',
-      address: 'Central Studio Campus, 1st Floor, Music Hub',
+      address: 'Central Campus, 1st Floor, Retail Hub',
       currencySymbol: '₹',
       defaultLocation: defaultLoc._id,
       managerApprovalThresholdValue: 3,
@@ -83,19 +83,16 @@ export async function clearAllLocalData(): Promise<void> {
     console.log('[CLEAN] Created base AppSettings.');
   }
 
-  // Ensure essential users exist for login
+  // Ensure essential users exist for login (Two profile roles)
   const userCount = await User.countDocuments();
   if (userCount === 0) {
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash('Stock@2026', salt);
     await User.insertMany([
-      { name: 'System Administrator', email: 'admin@soundstock.io', passwordHash, role: ROLES.SUPER_ADMIN, isActive: true },
-      { name: 'Inventory Manager', email: 'manager@soundstock.io', passwordHash, role: ROLES.INVENTORY_MANAGER, isActive: true },
-      { name: 'Sales Representative', email: 'sales@soundstock.io', passwordHash, role: ROLES.SALES_STAFF, isActive: true },
-      { name: 'Academy Staff', email: 'staff@soundstock.io', passwordHash, role: ROLES.INVENTORY_STAFF, isActive: true },
-      { name: 'Executive Viewer', email: 'viewer@soundstock.io', passwordHash, role: ROLES.VIEWER, isActive: true },
+      { name: 'System Administrator', email: 'admin@stereobliss.com', passwordHash, role: ROLES.SUPER_ADMIN, isActive: true },
+      { name: 'Store Manager', email: 'manager@stereobliss.com', passwordHash, role: ROLES.MANAGER, isActive: true },
     ]);
-    console.log('[CLEAN] Created 5 essential login accounts (password: Stock@2026).');
+    console.log('[CLEAN] Created 2 essential login accounts (password: Stock@2026): Super Admin and Manager.');
   }
 
   console.log('[CLEAN] Database is completely clean and ready for real inventory entry!');

@@ -29,7 +29,7 @@ router.get('/', requireAuth, async (req, res, next) => {
     }
 });
 // Create maintenance ticket
-router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF), validate(createMaintenanceSchema), async (req, res, next) => {
+router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(createMaintenanceSchema), async (req, res, next) => {
     try {
         const record = await createMaintenance(req.body, req.user);
         res.status(201).json({ success: true, data: { record } });
@@ -39,7 +39,7 @@ router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MAN
     }
 });
 // Release from maintenance
-router.post('/:id/release', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER), validate(releaseMaintenanceSchema), async (req, res, next) => {
+router.post('/:id/release', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(releaseMaintenanceSchema), async (req, res, next) => {
     try {
         const record = await releaseMaintenance(req.params.id, req.body, req.user);
         res.json({ success: true, data: { record } });

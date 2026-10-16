@@ -71,7 +71,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 router.post(
   '/',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.SALES_STAFF),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   validate(createSaleSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -87,7 +87,7 @@ router.post(
 router.post(
   '/:id/return',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.SALES_STAFF),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const customerReturn = await processSaleReturn(req.params.id as string, req.body, req.user!);

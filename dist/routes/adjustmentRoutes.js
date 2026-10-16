@@ -28,8 +28,8 @@ router.get('/', requireAuth, async (req, res, next) => {
         next(err);
     }
 });
-// Request an adjustment
-router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF), validate(requestAdjustmentSchema), async (req, res, next) => {
+// Request an adjustment (Manager & Superadmin)
+router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(requestAdjustmentSchema), async (req, res, next) => {
     try {
         const adjustment = await requestAdjustment(req.body, req.user);
         res.status(201).json({ success: true, data: { adjustment } });
@@ -38,8 +38,8 @@ router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MAN
         next(err);
     }
 });
-// Review (Approve or Reject) an adjustment
-router.post('/:id/review', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER), validate(reviewAdjustmentSchema), async (req, res, next) => {
+// Review (Approve or Reject) an adjustment (Superadmin only)
+router.post('/:id/review', requireAuth, requireRole(ROLES.SUPER_ADMIN), validate(reviewAdjustmentSchema), async (req, res, next) => {
     try {
         const adjustment = await reviewAdjustment(req.params.id, req.body.action, req.body.rejectionReason, req.user);
         res.json({ success: true, data: { adjustment } });

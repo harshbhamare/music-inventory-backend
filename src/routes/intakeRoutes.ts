@@ -14,7 +14,7 @@ const router = Router();
 router.post(
   '/quick-receive',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const result = await quickReceiveStock(req.body, req.user!);
@@ -62,7 +62,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 router.post(
   '/',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   validate(createPurchaseSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -78,7 +78,7 @@ router.post(
 router.post(
   '/:id/receive',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   validate(receivePurchaseSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {

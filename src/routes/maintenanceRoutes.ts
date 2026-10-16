@@ -36,7 +36,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
 router.post(
   '/',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   validate(createMaintenanceSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -52,7 +52,7 @@ router.post(
 router.post(
   '/:id/release',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   validate(releaseMaintenanceSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ROLES, TRACKING_MODES, ITEM_CONDITIONS, USAGE_PURPOSES, PAYMENT_METHODS, } from '../config/constants.js';
+import { TRACKING_MODES, ITEM_CONDITIONS, USAGE_PURPOSES, PAYMENT_METHODS, } from '../config/constants.js';
 // Auth
 export const loginSchema = z.object({
     body: z.object({
@@ -12,7 +12,7 @@ export const createUserSchema = z.object({
         name: z.string().min(2, 'Name must be at least 2 characters'),
         email: z.string().email('Valid email is required'),
         password: z.string().min(6, 'Password must be at least 6 characters'),
-        role: z.enum(Object.values(ROLES)),
+        role: z.enum(['SUPER_ADMIN', 'MANAGER']),
     }),
 });
 // Products

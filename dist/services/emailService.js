@@ -131,7 +131,7 @@ export async function sendDailyStockSummary(recipients) {
     return sendNotificationEmail({
         reportType: REPORT_TYPES.DAILY_STOCK_SUMMARY,
         recipients: targetRecipients,
-        subject: `SoundStock Daily Stock Summary — ${dateStr}`,
+        subject: `StereoBliss Daily Stock Summary — ${dateStr}`,
         htmlContent: html,
         idempotencyKey: todayKey,
     });
@@ -148,10 +148,10 @@ export async function sendOverdueUsageReminders(recipients) {
         return null;
     }
     const config = await EmailReportConfig.findOne({ reportType: REPORT_TYPES.OVERDUE_USAGE_REMINDER });
-    const targetRecipients = recipients || config?.recipients || ['operations@soundstock.io'];
+    const targetRecipients = recipients || config?.recipients || ['inventory@stereobliss.com'];
     const html = `
     <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #fed7aa; border-radius: 8px;">
-      <h2 style="color: #c2410c; margin-top: 0;">⚠️ SoundStock Alert: Overdue Instrument Loan Returns</h2>
+      <h2 style="color: #c2410c; margin-top: 0;">⚠️ StereoBliss Alert: Overdue Instrument Loan Returns</h2>
       <p style="color: #475569;">There are <strong>${overdueRecords.length}</strong> equipment issues that have passed their scheduled return date:</p>
       
       <table style="width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 15px;">
@@ -180,7 +180,7 @@ export async function sendOverdueUsageReminders(recipients) {
     return sendNotificationEmail({
         reportType: REPORT_TYPES.OVERDUE_USAGE_REMINDER,
         recipients: targetRecipients,
-        subject: `⚠️ Overdue Instrument Notice: ${overdueRecords.length} items awaiting return`,
+        subject: `⚠️ StereoBliss Alert: ${overdueRecords.length} items awaiting return`,
         htmlContent: html,
     });
 }

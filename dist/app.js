@@ -53,7 +53,7 @@ export function createApp() {
     app.get(['/', '/api', '/health', '/api/health'], (_req, res) => {
         res.json({
             status: 'healthy',
-            app: 'SoundStock Inventory Backend API',
+            app: 'StereoBliss - Retail Inventory Backend API',
             timestamp: new Date().toISOString(),
             environment: ENV.NODE_ENV,
         });

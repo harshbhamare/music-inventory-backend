@@ -65,7 +65,7 @@ router.get('/reconciliation', requireAuth, async (_req: Request, res: Response, 
 router.post(
   '/email-test',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER),
+  requireRole(ROLES.SUPER_ADMIN),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { email } = req.body;
@@ -74,10 +74,10 @@ router.post(
       const log = await sendNotificationEmail({
         reportType: REPORT_TYPES.TEST_EMAIL,
         recipients: [targetEmail],
-        subject: `SoundStock System — Automated Email Configuration Test (${new Date().toLocaleTimeString()})`,
+        subject: `StereoBliss — Retail Inventory Automated Email Configuration Test (${new Date().toLocaleTimeString()})`,
         htmlContent: `
           <div style="font-family: sans-serif; padding: 20px; border: 1px solid #d97706; border-radius: 8px;">
-            <h2 style="color: #b45309; margin-top: 0;">SoundStock Inventory System</h2>
+            <h2 style="color: #b45309; margin-top: 0;">StereoBliss — Retail Inventory</h2>
             <p>This is a test notification confirming that transactional email reporting is properly configured.</p>
             <p><strong>Triggered By:</strong> ${req.user!.name} (${req.user!.email})</p>
             <p><strong>Timestamp:</strong> ${new Date().toISOString()}</p>
@@ -92,11 +92,11 @@ router.post(
   }
 );
 
-// Trigger manual daily summary dispatch
+// Trigger manual daily summary dispatch (Superadmin only)
 router.post(
   '/send-summary',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER),
+  requireRole(ROLES.SUPER_ADMIN),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const log = await sendDailyStockSummary(req.body.recipients);
@@ -107,11 +107,11 @@ router.post(
   }
 );
 
-// Trigger overdue usage reminder dispatch
+// Trigger overdue usage reminder dispatch (Superadmin only)
 router.post(
   '/send-overdue-reminders',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER),
+  requireRole(ROLES.SUPER_ADMIN),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const log = await sendOverdueUsageReminders(req.body.recipients);

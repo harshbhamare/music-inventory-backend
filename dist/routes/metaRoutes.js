@@ -28,7 +28,7 @@ router.get('/categories', requireAuth, async (_req, res, next) => {
         next(err);
     }
 });
-router.post('/categories', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER), async (req, res, next) => {
+router.post('/categories', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (req, res, next) => {
     try {
         const category = await Category.create(req.body);
         res.status(201).json({ success: true, data: { category } });
@@ -47,7 +47,7 @@ router.get('/suppliers', requireAuth, async (_req, res, next) => {
         next(err);
     }
 });
-router.post('/suppliers', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF), async (req, res, next) => {
+router.post('/suppliers', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
     try {
         const supplier = await Supplier.create(req.body);
         res.status(201).json({ success: true, data: { supplier } });
@@ -56,7 +56,7 @@ router.post('/suppliers', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVE
         next(err);
     }
 });
-router.put('/suppliers/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF), async (req, res, next) => {
+router.put('/suppliers/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
     try {
         const supplier = await Supplier.findByIdAndUpdate(req.params.id, { $set: req.body }, { new: true, runValidators: true });
         if (!supplier) {
@@ -68,7 +68,7 @@ router.put('/suppliers/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.I
         next(err);
     }
 });
-router.delete('/suppliers/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER), async (req, res, next) => {
+router.delete('/suppliers/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (req, res, next) => {
     try {
         const supplier = await Supplier.findByIdAndUpdate(req.params.id, { isActive: false }, { new: true });
         if (!supplier) {
@@ -106,8 +106,8 @@ router.get('/settings', requireAuth, async (_req, res, next) => {
         if (!setting) {
             const defaultLoc = await StockLocation.findOne({ isDefault: true }) || await StockLocation.findOne();
             setting = (await AppSetting.create({
-                companyName: 'SoundStock Studio Academy & Store',
-                contactEmail: 'contact@soundstock.io',
+                companyName: 'StereoBliss - Retail Inventory',
+                contactEmail: 'contact@stereobliss.com',
                 defaultLocation: defaultLoc?._id,
             })).toObject();
         }
@@ -134,7 +134,7 @@ router.patch('/settings', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (re
     }
 });
 // Email Report Configs
-router.get('/report-configs', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER), async (_req, res, next) => {
+router.get('/report-configs', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (_req, res, next) => {
     try {
         let configs = await EmailReportConfig.find().lean();
         if (configs.length === 0) {
@@ -143,21 +143,21 @@ router.get('/report-configs', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.
                 {
                     reportType: REPORT_TYPES.DAILY_STOCK_SUMMARY,
                     title: 'Daily Stock & Availability Summary',
-                    recipients: ['inventory@soundstock.io'],
+                    recipients: ['inventory@stereobliss.com'],
                     scheduleCron: '0 9 * * *',
                     isEnabled: true,
                 },
                 {
                     reportType: REPORT_TYPES.WEEKLY_SALES_SUMMARY,
                     title: 'Weekly Sales Performance Summary',
-                    recipients: ['accounts@soundstock.io'],
+                    recipients: ['accounts@stereobliss.com'],
                     scheduleCron: '0 18 * * 0',
                     isEnabled: true,
                 },
                 {
                     reportType: REPORT_TYPES.OVERDUE_USAGE_REMINDER,
                     title: 'Daily Overdue Instrument Loans Notice',
-                    recipients: ['academy@soundstock.io'],
+                    recipients: ['manager@stereobliss.com'],
                     scheduleCron: '0 10 * * *',
                     isEnabled: true,
                 },
@@ -182,7 +182,7 @@ router.patch('/report-configs/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN),
     }
 });
 // Audit Logs
-router.get('/audit-logs', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER), async (req, res, next) => {
+router.get('/audit-logs', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
     try {
         const page = Math.max(1, Number(req.query.page) || 1);
         const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));

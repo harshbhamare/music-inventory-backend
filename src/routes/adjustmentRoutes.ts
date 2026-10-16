@@ -32,11 +32,11 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
   }
 });
 
-// Request an adjustment
+// Request an adjustment (Manager & Superadmin)
 router.post(
   '/',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   validate(requestAdjustmentSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -48,11 +48,11 @@ router.post(
   }
 );
 
-// Review (Approve or Reject) an adjustment
+// Review (Approve or Reject) an adjustment (Superadmin only)
 router.post(
   '/:id/review',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER),
+  requireRole(ROLES.SUPER_ADMIN),
   validate(reviewAdjustmentSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {

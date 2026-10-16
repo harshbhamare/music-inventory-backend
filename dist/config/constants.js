@@ -1,9 +1,8 @@
 export const ROLES = {
     SUPER_ADMIN: 'SUPER_ADMIN',
-    INVENTORY_MANAGER: 'INVENTORY_MANAGER',
-    SALES_STAFF: 'SALES_STAFF',
-    INVENTORY_STAFF: 'INVENTORY_STAFF',
-    VIEWER: 'VIEWER',
+    MANAGER: 'MANAGER',
+    // Alias for backward compatibility
+    INVENTORY_MANAGER: 'MANAGER',
 };
 export const TRACKING_MODES = {
     QUANTITY: 'QUANTITY',

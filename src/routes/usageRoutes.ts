@@ -94,7 +94,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 router.post(
   '/',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   validate(issueInternalUsageSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -110,7 +110,7 @@ router.post(
 router.post(
   '/:id/return',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   validate(returnInternalUsageSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -126,7 +126,7 @@ router.post(
 router.post(
   '/:id/extend',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   validate(extendUsageSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {

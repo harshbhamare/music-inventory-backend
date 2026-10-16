@@ -34,12 +34,10 @@ export async function requestAdjustment(input: RequestAdjustmentInput, actor: Au
   const setting = await AppSetting.findOne();
   const threshold = setting?.managerApprovalThresholdValue ?? 3;
 
-  // Determine if manager approval is required
+  // Determine if Super Admin approval is required
   let requiresApproval = false;
-  if (actor.role === ROLES.INVENTORY_STAFF || actor.role === ROLES.SALES_STAFF) {
-    requiresApproval = true;
-  } else {
-    // Check threshold or critical types (WRITE_OFF, DAMAGE_LOSS)
+  if (actor.role !== ROLES.SUPER_ADMIN) {
+    // For managers: check threshold or critical types (WRITE_OFF, DAMAGE_LOSS, SERIALIZED)
     for (const item of input.items) {
       if (Math.abs(item.quantityDelta) > threshold || input.type === 'WRITE_OFF' || item.serializedItem) {
         requiresApproval = true;

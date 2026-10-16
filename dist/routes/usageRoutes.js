@@ -75,7 +75,7 @@ router.get('/:id', requireAuth, async (req, res, next) => {
     }
 });
 // Issue equipment for classes / practice / rehearsal
-router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF), validate(issueInternalUsageSchema), async (req, res, next) => {
+router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(issueInternalUsageSchema), async (req, res, next) => {
     try {
         const usage = await issueInstruments(req.body, req.user);
         res.status(201).json({ success: true, data: { usage } });
@@ -85,7 +85,7 @@ router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MAN
     }
 });
 // Return equipment with condition inspection
-router.post('/:id/return', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF), validate(returnInternalUsageSchema), async (req, res, next) => {
+router.post('/:id/return', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(returnInternalUsageSchema), async (req, res, next) => {
     try {
         const result = await returnInstruments(req.params.id, req.body, req.user);
         res.status(201).json({ success: true, data: { return: result } });
@@ -95,7 +95,7 @@ router.post('/:id/return', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INV
     }
 });
 // Extend return date
-router.post('/:id/extend', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER), validate(extendUsageSchema), async (req, res, next) => {
+router.post('/:id/extend', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(extendUsageSchema), async (req, res, next) => {
     try {
         const usage = await extendExpectedReturnDate(req.params.id, req.body.extendedDate, req.body.reason, req.user);
         res.json({ success: true, data: { usage } });

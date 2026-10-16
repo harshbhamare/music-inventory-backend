@@ -51,7 +51,7 @@ router.post('/login', validate(loginSchema), async (req, res, next) => {
                     id: user._id,
                     name: user.name,
                     email: user.email,
-                    role: user.role,
+                    role: user.role === 'INVENTORY_MANAGER' ? ROLES.MANAGER : user.role,
                 },
                 token,
             },
@@ -68,16 +68,23 @@ router.post('/logout', (req, res) => {
 router.get('/me', requireAuth, async (req, res, next) => {
     try {
         const user = await User.findById(req.user.id).select('-passwordHash').lean();
+        if (user && user.role === 'INVENTORY_MANAGER') {
+            user.role = ROLES.MANAGER;
+        }
         res.json({ success: true, data: { user } });
     }
     catch (err) {
         next(err);
     }
 });
-router.get('/users', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER), async (_req, res, next) => {
+router.get('/users', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (_req, res, next) => {
     try {
         const users = await User.find().select('-passwordHash').sort({ createdAt: -1 }).lean();
-        res.json({ success: true, data: { users } });
+        const normalizedUsers = users.map((u) => ({
+            ...u,
+            role: u.role === 'INVENTORY_MANAGER' ? ROLES.MANAGER : u.role,
+        }));
+        res.json({ success: true, data: { users: normalizedUsers } });
     }
     catch (err) {
         next(err);

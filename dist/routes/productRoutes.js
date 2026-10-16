@@ -49,8 +49,8 @@ router.get('/:id', requireAuth, async (req, res, next) => {
         next(err);
     }
 });
-// Create product (Manager or Admin)
-router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER), validate(createProductSchema), async (req, res, next) => {
+// Create product (Superadmin only)
+router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN), validate(createProductSchema), async (req, res, next) => {
     try {
         const product = await createProduct(req.body, req.user);
         await logAudit({
@@ -67,8 +67,8 @@ router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MAN
         next(err);
     }
 });
-// Update product
-router.patch('/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER), validate(updateProductSchema), async (req, res, next) => {
+// Update product (Superadmin only)
+router.patch('/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN), validate(updateProductSchema), async (req, res, next) => {
     try {
         const product = await updateProduct(req.params.id, req.body, req.user);
         await logAudit({
@@ -85,8 +85,8 @@ router.patch('/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY
         next(err);
     }
 });
-// Quick Stock Count Adjustment
-router.post('/:id/adjust-stock', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF), async (req, res, next) => {
+// Quick Stock Count Adjustment (Manager & Superadmin)
+router.post('/:id/adjust-stock', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
     try {
         const { newQuantity, reason } = req.body;
         if (typeof newQuantity !== 'number' || newQuantity < 0) {
@@ -135,8 +135,8 @@ router.post('/:id/adjust-stock', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROL
         next(err);
     }
 });
-// Delete / Deactivate Product
-router.delete('/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER), async (req, res, next) => {
+// Delete / Deactivate Product (Superadmin only)
+router.delete('/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (req, res, next) => {
     try {
         const product = await Product.findById(req.params.id);
         if (!product) {

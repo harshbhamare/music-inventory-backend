@@ -33,7 +33,7 @@ router.get('/categories', requireAuth, async (_req: Request, res: Response, next
 router.post(
   '/categories',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER),
+  requireRole(ROLES.SUPER_ADMIN),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const category = await Category.create(req.body);
@@ -57,7 +57,7 @@ router.get('/suppliers', requireAuth, async (_req: Request, res: Response, next:
 router.post(
   '/suppliers',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const supplier = await Supplier.create(req.body);
@@ -71,7 +71,7 @@ router.post(
 router.put(
   '/suppliers/:id',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER, ROLES.INVENTORY_STAFF),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const supplier = await Supplier.findByIdAndUpdate(
@@ -92,7 +92,7 @@ router.put(
 router.delete(
   '/suppliers/:id',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER),
+  requireRole(ROLES.SUPER_ADMIN),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const supplier = await Supplier.findByIdAndUpdate(
@@ -142,8 +142,8 @@ router.get('/settings', requireAuth, async (_req: Request, res: Response, next: 
       const defaultLoc = await StockLocation.findOne({ isDefault: true }) || await StockLocation.findOne();
       setting = (
         await AppSetting.create({
-          companyName: 'SoundStock Studio Academy & Store',
-          contactEmail: 'contact@soundstock.io',
+          companyName: 'StereoBliss - Retail Inventory',
+          contactEmail: 'contact@stereobliss.com',
           defaultLocation: defaultLoc?._id,
         })
       ).toObject();
@@ -178,7 +178,7 @@ router.patch(
 router.get(
   '/report-configs',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   async (_req: Request, res: Response, next: NextFunction) => {
     try {
       let configs = await EmailReportConfig.find().lean();
@@ -188,21 +188,21 @@ router.get(
           {
             reportType: REPORT_TYPES.DAILY_STOCK_SUMMARY,
             title: 'Daily Stock & Availability Summary',
-            recipients: ['inventory@soundstock.io'],
+            recipients: ['inventory@stereobliss.com'],
             scheduleCron: '0 9 * * *',
             isEnabled: true,
           },
           {
             reportType: REPORT_TYPES.WEEKLY_SALES_SUMMARY,
             title: 'Weekly Sales Performance Summary',
-            recipients: ['accounts@soundstock.io'],
+            recipients: ['accounts@stereobliss.com'],
             scheduleCron: '0 18 * * 0',
             isEnabled: true,
           },
           {
             reportType: REPORT_TYPES.OVERDUE_USAGE_REMINDER,
             title: 'Daily Overdue Instrument Loans Notice',
-            recipients: ['academy@soundstock.io'],
+            recipients: ['manager@stereobliss.com'],
             scheduleCron: '0 10 * * *',
             isEnabled: true,
           },
@@ -236,7 +236,7 @@ router.patch(
 router.get(
   '/audit-logs',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.INVENTORY_MANAGER),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const page = Math.max(1, Number(req.query.page) || 1);
