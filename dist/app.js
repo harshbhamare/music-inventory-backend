@@ -18,10 +18,13 @@ import metaRoutes from './routes/metaRoutes.js';
 export function createApp() {
     const app = express();
     // Security & utilities
-    app.use(helmet({
-        contentSecurityPolicy: false, // Let frontend frame API if needed
-        crossOriginResourcePolicy: { policy: 'cross-origin' },
-    }));
+    const helmetFn = typeof helmet === 'function' ? helmet : helmet.default;
+    if (typeof helmetFn === 'function') {
+        app.use(helmetFn({
+            contentSecurityPolicy: false, // Let frontend frame API if needed
+            crossOriginResourcePolicy: { policy: 'cross-origin' },
+        }));
+    }
     app.use(cors({
         origin: (origin, callback) => {
             // Allow requests with no origin (like mobile apps, server-to-server, curl)

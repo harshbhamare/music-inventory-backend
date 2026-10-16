@@ -21,12 +21,15 @@ export function createApp(): Application {
   const app = express();
 
   // Security & utilities
-  app.use(
-    helmet({
-      contentSecurityPolicy: false, // Let frontend frame API if needed
-      crossOriginResourcePolicy: { policy: 'cross-origin' },
-    })
-  );
+  const helmetFn: any = typeof helmet === 'function' ? helmet : (helmet as any).default;
+  if (typeof helmetFn === 'function') {
+    app.use(
+      helmetFn({
+        contentSecurityPolicy: false, // Let frontend frame API if needed
+        crossOriginResourcePolicy: { policy: 'cross-origin' },
+      })
+    );
+  }
 
   app.use(
     cors({
