@@ -28,6 +28,10 @@ export async function connectDB() {
     mongoose.set('strictQuery', true);
     await mongoose.connect(uri, {
         autoIndex: true,
+        maxPoolSize: 20,
+        minPoolSize: 5,
+        serverSelectionTimeoutMS: 5000,
+        socketTimeoutMS: 45000,
     });
     console.log('[DB] MongoDB Connected successfully.');
     try {

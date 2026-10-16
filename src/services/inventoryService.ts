@@ -15,6 +15,7 @@ import { AuthenticatedUser } from '../middleware/auth.js';
 export interface CreateProductInput {
   name: string;
   sku?: string;
+  color?: string;
   category: string;
   brand?: string;
   modelName?: string;
@@ -59,6 +60,7 @@ export async function listProducts(params: ProductFilterParams) {
     query.$or = [
       { name: searchRegex },
       { sku: searchRegex },
+      { color: searchRegex },
       { brand: searchRegex },
       { modelName: searchRegex },
     ];

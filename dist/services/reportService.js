@@ -9,8 +9,47 @@ import { SERIALIZED_STATUSES, USAGE_STATUSES, ADJUSTMENT_STATUSES, } from '../co
 export async function getDashboardMetrics(startDate, endDate) {
     const start = startDate || new Date(new Date().setHours(0, 0, 0, 0));
     const end = endDate || new Date(new Date().setHours(23, 59, 59, 999));
-    // 1. Total products and units on hand
-    const products = await Product.find({ isActive: true }).lean();
+    const now = new Date();
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+    // Execute all dashboard queries in parallel with field projections for maximum performance
+    const [products, serializedInUseCount, activeUsageCount, overdueUsageCount, instrumentsUnderMaintenanceCount, todayReceiptsCount, periodSales, pendingApprovalsCount, recentMovements, last7DaysSales,] = await Promise.all([
+        Product.find({ isActive: true })
+            .select('stockQuantity minStockThreshold purchaseCost defaultSellingPrice')
+            .lean(),
+        SerializedItem.countDocuments({ status: SERIALIZED_STATUSES.ISSUED_INTERNAL }),
+        InternalUsage.countDocuments({
+            status: { $in: [USAGE_STATUSES.ACTIVE, USAGE_STATUSES.PARTIALLY_RETURNED] },
+        }),
+        InternalUsage.countDocuments({
+            status: { $in: [USAGE_STATUSES.ACTIVE, USAGE_STATUSES.PARTIALLY_RETURNED, USAGE_STATUSES.OVERDUE] },
+            expectedReturnDate: { $lt: now },
+        }),
+        SerializedItem.countDocuments({ status: SERIALIZED_STATUSES.MAINTENANCE }),
+        PurchaseReceipt.countDocuments({ receivedDate: { $gte: start, $lte: end } }),
+        Sale.find({ createdAt: { $gte: start, $lte: end } }).select('grandTotal').lean(),
+        InventoryAdjustment.countDocuments({ status: ADJUSTMENT_STATUSES.PENDING_APPROVAL }),
+        StockMovement.find()
+            .populate('product', 'name sku brand color')
+            .populate('serializedItem', 'assetId')
+            .populate('performedBy', 'name role')
+            .populate('location', 'name code')
+            .sort({ createdAt: -1 })
+            .limit(10)
+            .lean(),
+        Sale.aggregate([
+            { $match: { createdAt: { $gte: sevenDaysAgo } } },
+            {
+                $group: {
+                    _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+                    revenue: { $sum: '$grandTotal' },
+                    count: { $sum: 1 },
+                },
+            },
+            { $sort: { _id: 1 } },
+        ]),
+    ]);
     const distinctProductCount = products.length;
     let totalUnitsOnHand = 0;
     let totalAvailableForSale = 0;
@@ -29,60 +68,8 @@ export async function getDashboardMetrics(startDate, endDate) {
         totalInventoryValuationAtCost += (sq.onHand || 0) * (p.purchaseCost || 0);
         totalPotentialRetailValuation += (sq.onHand || 0) * (p.defaultSellingPrice || 0);
     }
-    // 2. Serialized assets in internal use
-    const serializedInUseCount = await SerializedItem.countDocuments({
-        status: SERIALIZED_STATUSES.ISSUED_INTERNAL,
-    });
-    // 3. Instruments awaiting return (active internal usage) and overdue
-    const now = new Date();
-    const activeUsageCount = await InternalUsage.countDocuments({
-        status: { $in: [USAGE_STATUSES.ACTIVE, USAGE_STATUSES.PARTIALLY_RETURNED] },
-    });
-    const overdueUsageCount = await InternalUsage.countDocuments({
-        status: { $in: [USAGE_STATUSES.ACTIVE, USAGE_STATUSES.PARTIALLY_RETURNED, USAGE_STATUSES.OVERDUE] },
-        expectedReturnDate: { $lt: now },
-    });
-    // 4. Instruments under maintenance
-    const instrumentsUnderMaintenanceCount = await SerializedItem.countDocuments({
-        status: SERIALIZED_STATUSES.MAINTENANCE,
-    });
-    // 5. Today's receipts & sales
-    const todayReceiptsCount = await PurchaseReceipt.countDocuments({
-        receivedDate: { $gte: start, $lte: end },
-    });
-    const periodSales = await Sale.find({
-        createdAt: { $gte: start, $lte: end },
-    }).lean();
     const periodSalesCount = periodSales.length;
     const periodSalesRevenue = periodSales.reduce((acc, s) => acc + (s.grandTotal || 0), 0);
-    // 6. Pending manager approvals
-    const pendingApprovalsCount = await InventoryAdjustment.countDocuments({
-        status: ADJUSTMENT_STATUSES.PENDING_APPROVAL,
-    });
-    // 7. Recent stock transactions
-    const recentMovements = await StockMovement.find()
-        .populate('product', 'name sku brand')
-        .populate('serializedItem', 'assetId')
-        .populate('performedBy', 'name role')
-        .populate('location', 'name code')
-        .sort({ createdAt: -1 })
-        .limit(10)
-        .lean();
-    // 8. 7-Day Sales Trend
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
-    sevenDaysAgo.setHours(0, 0, 0, 0);
-    const last7DaysSales = await Sale.aggregate([
-        { $match: { createdAt: { $gte: sevenDaysAgo } } },
-        {
-            $group: {
-                _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-                revenue: { $sum: '$grandTotal' },
-                count: { $sum: 1 },
-            },
-        },
-        { $sort: { _id: 1 } },
-    ]);
     return {
         kpis: {
             totalUnitsOnHand,

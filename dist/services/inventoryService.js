@@ -21,6 +21,7 @@ export async function listProducts(params) {
         query.$or = [
             { name: searchRegex },
             { sku: searchRegex },
+            { color: searchRegex },
             { brand: searchRegex },
             { modelName: searchRegex },
         ];

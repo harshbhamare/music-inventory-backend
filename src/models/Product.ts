@@ -12,6 +12,7 @@ export interface ILocationStock {
 export interface IProduct extends Document {
   name: string;
   sku: string;
+  color?: string;
   hsnCode?: string;
   category: Types.ObjectId;
   brand: string;
@@ -52,6 +53,7 @@ const ProductSchema = new Schema<IProduct>(
   {
     name: { type: String, required: true, trim: true },
     sku: { type: String, required: true, unique: true, uppercase: true, trim: true },
+    color: { type: String, trim: true },
     hsnCode: { type: String, default: '9202', trim: true },
     category: { type: Schema.Types.ObjectId, ref: 'Category', required: true },
     brand: { type: String, required: false, default: 'StereoBliss', trim: true },
@@ -93,7 +95,9 @@ ProductSchema.virtual('availableForSale').get(function (this: IProduct) {
 });
 
 // Indexes for search and query performance
-ProductSchema.index({ name: 'text', brand: 'text', modelName: 'text', sku: 'text' });
-ProductSchema.index({ category: 1, trackingMode: 1, isActive: 1 });
+ProductSchema.index({ name: 'text', brand: 'text', modelName: 'text', sku: 'text', color: 'text' });
+ProductSchema.index({ category: 1, trackingMode: 1, isActive: 1, color: 1 });
+ProductSchema.index({ isActive: 1, name: 1, sku: 1 });
+ProductSchema.index({ color: 1 });
 
 export const Product = mongoose.model<IProduct>('Product', ProductSchema);

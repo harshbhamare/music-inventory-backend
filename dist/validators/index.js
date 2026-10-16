@@ -20,6 +20,7 @@ export const createProductSchema = z.object({
     body: z.object({
         name: z.string().min(2, 'Product name is required'),
         sku: z.string().optional(),
+        color: z.string().optional(),
         hsnCode: z.string().optional().default('9202'),
         category: z.string().min(1, 'Category ID is required'),
         brand: z.string().optional().default('StereoBliss'),
@@ -37,6 +38,7 @@ export const createProductSchema = z.object({
 export const updateProductSchema = z.object({
     body: z.object({
         name: z.string().min(2).optional(),
+        color: z.string().optional(),
         hsnCode: z.string().optional(),
         category: z.string().optional(),
         brand: z.string().optional(),
