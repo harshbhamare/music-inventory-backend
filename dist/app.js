@@ -46,8 +46,8 @@ export function createApp() {
     if (ENV.NODE_ENV !== 'test') {
         app.use(morgan('dev'));
     }
-    // Health check
-    app.get('/api/health', (_req, res) => {
+    // Health check endpoints
+    app.get(['/', '/api', '/health', '/api/health'], (_req, res) => {
         res.json({
             status: 'healthy',
             app: 'SoundStock Inventory Backend API',
@@ -55,7 +55,7 @@ export function createApp() {
             environment: ENV.NODE_ENV,
         });
     });
-    // Versioned API v1 routes
+    // Versioned API v1 routes (mounted at /api/v1 and /v1 for routing flexibility)
     const v1 = express.Router();
     v1.use('/auth', authRoutes);
     v1.use('/products', productRoutes);
@@ -68,6 +68,7 @@ export function createApp() {
     v1.use('/reports', reportRoutes);
     v1.use('/meta', metaRoutes);
     app.use('/api/v1', v1);
+    app.use('/v1', v1);
     // 404 handler
     app.use((req, res) => {
         res.status(404).json({

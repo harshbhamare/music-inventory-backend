@@ -8,6 +8,9 @@ export async function connectDB() {
     const isTest = process.env.NODE_ENV === 'test' || !!process.env.VITEST;
     let uri = isTest ? (process.env.TEST_MONGODB_URI || '') : ENV.MONGODB_URI;
     if (!uri) {
+        if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
+            throw new Error('[DB_FATAL] MONGODB_URI environment variable is missing. Please configure your MongoDB Atlas connection string in your deployment environment variables.');
+        }
         console.log('[DB] No MONGODB_URI provided (or test environment). Starting in-memory MongoDB Replica Set...');
         try {
             const { MongoMemoryReplSet } = await import('mongodb-memory-server');

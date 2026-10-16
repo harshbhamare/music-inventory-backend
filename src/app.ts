@@ -60,8 +60,8 @@ export function createApp(): Application {
     app.use(morgan('dev'));
   }
 
-  // Health check
-  app.get('/api/health', (_req: Request, res: Response) => {
+  // Health check endpoints
+  app.get(['/', '/api', '/health', '/api/health'], (_req: Request, res: Response) => {
     res.json({
       status: 'healthy',
       app: 'SoundStock Inventory Backend API',
@@ -70,7 +70,7 @@ export function createApp(): Application {
     });
   });
 
-  // Versioned API v1 routes
+  // Versioned API v1 routes (mounted at /api/v1 and /v1 for routing flexibility)
   const v1 = express.Router();
   v1.use('/auth', authRoutes);
   v1.use('/products', productRoutes);
@@ -84,6 +84,7 @@ export function createApp(): Application {
   v1.use('/meta', metaRoutes);
 
   app.use('/api/v1', v1);
+  app.use('/v1', v1);
 
   // 404 handler
   app.use((req: Request, res: Response) => {
