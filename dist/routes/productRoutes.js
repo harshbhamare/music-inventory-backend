@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { listProducts, getProductById, createProduct, updateProduct, listSerializedItems, getSerializedItemHistory, createStockMovement, } from '../services/inventoryService.js';
+import { listProducts, getProductById, createProduct, updateProduct, getNextSku, listSerializedItems, getSerializedItemHistory, createStockMovement, } from '../services/inventoryService.js';
 import { Product } from '../models/Product.js';
 import { StockLocation } from '../models/StockLocation.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -14,6 +14,16 @@ router.get('/', requireAuth, async (req, res, next) => {
     try {
         const result = await listProducts(req.query);
         res.json({ success: true, data: result });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Get next auto-incremented SKU
+router.get('/next-sku', requireAuth, async (_req, res, next) => {
+    try {
+        const nextSku = await getNextSku();
+        res.json({ success: true, data: { nextSku } });
     }
     catch (err) {
         next(err);

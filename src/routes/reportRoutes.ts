@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import {
   getDashboardMetrics,
   getInventoryValuationReport,
+  getPeriodicSummary,
   generateCsv,
 } from '../services/reportService.js';
 import { runInventoryReconciliation } from '../services/reconciliationService.js';
@@ -35,6 +36,17 @@ router.get('/dashboard', requireAuth, async (req: Request, res: Response, next: 
     }
 
     const data = await getDashboardMetrics(startDate, endDate);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Periodic summary (Weekly and Monthly breakdowns)
+router.get('/periodic-summary', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const period = (req.query.period as 'week' | 'month') || 'week';
+    const data = await getPeriodicSummary(period);
     res.json({ success: true, data });
   } catch (err) {
     next(err);
@@ -159,7 +171,7 @@ router.get('/export/:type', requireAuth, async (req: Request, res: Response, nex
 
       const csv = generateCsv(headers, rows);
       res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', `attachment; filename=soundstock-products-${Date.now()}.csv`);
+      res.setHeader('Content-Disposition', `attachment; filename=stereobliss-products-${Date.now()}.csv`);
       res.send(csv);
       return;
     }
@@ -186,7 +198,7 @@ router.get('/export/:type', requireAuth, async (req: Request, res: Response, nex
 
       const csv = generateCsv(headers, rows);
       res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', `attachment; filename=soundstock-movements-${Date.now()}.csv`);
+      res.setHeader('Content-Disposition', `attachment; filename=stereobliss-movements-${Date.now()}.csv`);
       res.send(csv);
       return;
     }
@@ -208,7 +220,30 @@ router.get('/export/:type', requireAuth, async (req: Request, res: Response, nex
 
       const csv = generateCsv(headers, rows);
       res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', `attachment; filename=soundstock-sales-${Date.now()}.csv`);
+      res.setHeader('Content-Disposition', `attachment; filename=stereobliss-sales-${Date.now()}.csv`);
+      res.send(csv);
+      return;
+    }
+
+    if (type === 'periodic') {
+      const period = (req.query.period as 'week' | 'month') || 'week';
+      const summary = await getPeriodicSummary(period);
+      const headers = ['Period Label', 'Start Date', 'End Date', 'Sales Orders', 'Revenue (INR)', 'Units Sold', 'Purchases Received', 'Inward Value (INR)', 'Adjustments'];
+      const rows = summary.periods.map((p) => [
+        p.label,
+        p.startDate.slice(0, 10),
+        p.endDate.slice(0, 10),
+        p.salesCount,
+        p.salesRevenue,
+        p.itemsSold,
+        p.receiptsCount,
+        p.receiptsValue,
+        p.adjustmentsCount,
+      ]);
+
+      const csv = generateCsv(headers, rows);
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=stereobliss-${period}ly-summary-${Date.now()}.csv`);
       res.send(csv);
       return;
     }

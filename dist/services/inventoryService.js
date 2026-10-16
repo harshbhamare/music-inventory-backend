@@ -3,6 +3,7 @@ import { Product } from '../models/Product.js';
 import { SerializedItem } from '../models/SerializedItem.js';
 import { StockMovement } from '../models/StockMovement.js';
 import { StockLocation } from '../models/StockLocation.js';
+import { TRACKING_MODES, } from '../config/constants.js';
 import { AppError } from '../middleware/errorHandler.js';
 export async function listProducts(params) {
     const page = Math.max(1, Number(params.page) || 1);
@@ -75,16 +76,50 @@ export async function getProductById(id) {
         isLowStock: available <= (product.minStockThreshold || 5),
     };
 }
-export async function createProduct(input, actor) {
-    const existing = await Product.findOne({ sku: input.sku.toUpperCase().trim() });
-    if (existing) {
-        throw new AppError(`A product with SKU ${input.sku} already exists.`, 409, 'DUPLICATE_SKU');
+export async function getNextSku() {
+    const products = await Product.find({}, { sku: 1 }).lean();
+    let maxNum = 0;
+    for (const p of products) {
+        if (!p.sku)
+            continue;
+        const match = p.sku.match(/(\d+)$/);
+        if (match) {
+            const num = parseInt(match[1], 10);
+            if (num > maxNum)
+                maxNum = num;
+        }
     }
+    const nextNum = maxNum + 1;
+    return `SKU-${String(nextNum).padStart(4, '0')}`;
+}
+export async function createProduct(input, actor) {
+    let sku = input.sku ? input.sku.toUpperCase().trim() : '';
+    if (!sku || sku === 'AUTO') {
+        sku = await getNextSku();
+    }
+    // Ensure unique auto-increment if collision
+    let existing = await Product.findOne({ sku });
+    if (existing) {
+        if (!input.sku || input.sku === 'AUTO') {
+            let candidateNum = parseInt(sku.replace(/\D/g, ''), 10) || 1;
+            while (await Product.findOne({ sku })) {
+                candidateNum++;
+                sku = `SKU-${String(candidateNum).padStart(4, '0')}`;
+            }
+        }
+        else {
+            throw new AppError(`A product with SKU ${input.sku} already exists.`, 409, 'DUPLICATE_SKU');
+        }
+    }
+    const brand = (input.brand && input.brand.trim()) || 'StereoBliss';
+    const trackingMode = input.trackingMode || TRACKING_MODES.QUANTITY;
     // Find or create default location for initial locationStock array
     const defaultLoc = await StockLocation.findOne({ isDefault: true }) || await StockLocation.findOne();
     const product = await Product.create({
         ...input,
-        sku: input.sku.toUpperCase().trim(),
+        sku,
+        brand,
+        trackingMode,
         stockQuantity: {
             onHand: 0,
             reserved: 0,

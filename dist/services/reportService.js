@@ -149,3 +149,147 @@ export function generateCsv(headers, rows) {
     const bodyRows = rows.map((r) => r.map(escapeCell).join(',')).join('\n');
     return `${headerRow}\n${bodyRows}`;
 }
+export async function getPeriodicSummary(period = 'week') {
+    const now = new Date();
+    const periods = [];
+    if (period === 'week') {
+        // Last 8 weeks
+        for (let i = 7; i >= 0; i--) {
+            const d = new Date(now);
+            // Find current day of week (0=Sun, 1=Mon... 6=Sat)
+            const day = d.getDay();
+            const diffToMonday = (day + 6) % 7;
+            const startOfWeek = new Date(d);
+            startOfWeek.setDate(d.getDate() - diffToMonday - (i * 7));
+            startOfWeek.setHours(0, 0, 0, 0);
+            const endOfWeek = new Date(startOfWeek);
+            endOfWeek.setDate(startOfWeek.getDate() + 6);
+            endOfWeek.setHours(23, 59, 59, 999);
+            const startFmt = startOfWeek.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            const endFmt = endOfWeek.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+            periods.push({
+                periodKey: `W${i === 0 ? ' (Current)' : ` -${i}w`}`,
+                label: `${startFmt} – ${endFmt}`,
+                startDate: startOfWeek.toISOString(),
+                endDate: endOfWeek.toISOString(),
+                salesRevenue: 0,
+                salesCount: 0,
+                itemsSold: 0,
+                receiptsCount: 0,
+                receiptsValue: 0,
+                adjustmentsCount: 0,
+            });
+        }
+    }
+    else {
+        // Last 12 months
+        for (let i = 11; i >= 0; i--) {
+            const startOfMonth = new Date(now.getFullYear(), now.getMonth() - i, 1, 0, 0, 0, 0);
+            const endOfMonth = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59, 999);
+            const label = startOfMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+            periods.push({
+                periodKey: startOfMonth.toLocaleDateString('en-US', { month: 'short' }),
+                label,
+                startDate: startOfMonth.toISOString(),
+                endDate: endOfMonth.toISOString(),
+                salesRevenue: 0,
+                salesCount: 0,
+                itemsSold: 0,
+                receiptsCount: 0,
+                receiptsValue: 0,
+                adjustmentsCount: 0,
+            });
+        }
+    }
+    const overallStart = new Date(periods[0].startDate);
+    const overallEnd = new Date(periods[periods.length - 1].endDate);
+    const [sales, receipts, adjustments] = await Promise.all([
+        Sale.find({ createdAt: { $gte: overallStart, $lte: overallEnd } }).populate('lineItems.product', 'name sku').lean(),
+        PurchaseReceipt.find({ receivedDate: { $gte: overallStart, $lte: overallEnd } }).lean(),
+        InventoryAdjustment.find({ createdAt: { $gte: overallStart, $lte: overallEnd } }).lean(),
+    ]);
+    const productSalesMap = new Map();
+    // Map into respective period buckets
+    for (const s of sales) {
+        const saleDate = new Date(s.createdAt).getTime();
+        const bucket = periods.find((p) => {
+            const st = new Date(p.startDate).getTime();
+            const et = new Date(p.endDate).getTime();
+            return saleDate >= st && saleDate <= et;
+        });
+        const itemsQty = (s.lineItems || []).reduce((sum, li) => sum + (li.quantity || 0), 0);
+        if (bucket) {
+            bucket.salesCount++;
+            bucket.salesRevenue += s.grandTotal || 0;
+            bucket.itemsSold += itemsQty;
+        }
+        for (const li of (s.lineItems || [])) {
+            const prod = li.product;
+            if (prod && prod._id) {
+                const id = prod._id.toString();
+                const existing = productSalesMap.get(id) || {
+                    name: prod.name || 'Product',
+                    sku: prod.sku || '',
+                    quantity: 0,
+                    revenue: 0,
+                };
+                existing.quantity += li.quantity || 0;
+                existing.revenue += li.total || 0;
+                productSalesMap.set(id, existing);
+            }
+        }
+    }
+    for (const r of receipts) {
+        const receiptDate = new Date(r.receivedDate || r.createdAt).getTime();
+        const bucket = periods.find((p) => {
+            const st = new Date(p.startDate).getTime();
+            const et = new Date(p.endDate).getTime();
+            return receiptDate >= st && receiptDate <= et;
+        });
+        if (bucket) {
+            bucket.receiptsCount++;
+            const receiptTotal = (r.lineItems || []).reduce((sum, item) => sum + (item.quantityReceived || 0) * (item.unitCost || 0), 0);
+            bucket.receiptsValue += receiptTotal;
+        }
+    }
+    for (const a of adjustments) {
+        const adjDate = new Date(a.createdAt).getTime();
+        const bucket = periods.find((p) => {
+            const st = new Date(p.startDate).getTime();
+            const et = new Date(p.endDate).getTime();
+            return adjDate >= st && adjDate <= et;
+        });
+        if (bucket) {
+            bucket.adjustmentsCount++;
+        }
+    }
+    let totalRevenue = 0;
+    let totalSalesCount = 0;
+    let totalUnitsSold = 0;
+    let totalInwardPurchases = 0;
+    let totalReceiptsCount = 0;
+    for (const p of periods) {
+        totalRevenue += p.salesRevenue;
+        totalSalesCount += p.salesCount;
+        totalUnitsSold += p.itemsSold;
+        totalInwardPurchases += p.receiptsValue;
+        totalReceiptsCount += p.receiptsCount;
+    }
+    const averageOrderValue = totalSalesCount > 0 ? Math.round(totalRevenue / totalSalesCount) : 0;
+    const topProducts = Array.from(productSalesMap.values())
+        .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 5);
+    return {
+        period,
+        kpis: {
+            totalRevenue,
+            totalSalesCount,
+            totalUnitsSold,
+            averageOrderValue,
+            totalInwardPurchases,
+            totalReceiptsCount,
+        },
+        periods,
+        topProducts,
+    };
+}

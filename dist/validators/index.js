@@ -19,12 +19,12 @@ export const createUserSchema = z.object({
 export const createProductSchema = z.object({
     body: z.object({
         name: z.string().min(2, 'Product name is required'),
-        sku: z.string().min(2, 'SKU is required'),
+        sku: z.string().optional(),
         category: z.string().min(1, 'Category ID is required'),
-        brand: z.string().min(1, 'Brand is required'),
+        brand: z.string().optional().default('StereoBliss'),
         modelName: z.string().optional(),
         description: z.string().optional(),
-        trackingMode: z.enum([TRACKING_MODES.QUANTITY, TRACKING_MODES.SERIALIZED]),
+        trackingMode: z.enum([TRACKING_MODES.QUANTITY, TRACKING_MODES.SERIALIZED]).optional().default(TRACKING_MODES.QUANTITY),
         unitOfMeasure: z.string().default('pcs'),
         purchaseCost: z.number().min(0, 'Purchase cost must be positive'),
         defaultSellingPrice: z.number().min(0, 'Selling price must be positive'),

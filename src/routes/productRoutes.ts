@@ -4,6 +4,7 @@ import {
   getProductById,
   createProduct,
   updateProduct,
+  getNextSku,
   listSerializedItems,
   getSerializedItemHistory,
   createStockMovement,
@@ -24,6 +25,16 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
   try {
     const result = await listProducts(req.query);
     res.json({ success: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Get next auto-incremented SKU
+router.get('/next-sku', requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const nextSku = await getNextSku();
+    res.json({ success: true, data: { nextSku } });
   } catch (err) {
     next(err);
   }

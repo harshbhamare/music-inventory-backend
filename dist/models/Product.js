@@ -11,7 +11,7 @@ const ProductSchema = new Schema({
     name: { type: String, required: true, trim: true },
     sku: { type: String, required: true, unique: true, uppercase: true, trim: true },
     category: { type: Schema.Types.ObjectId, ref: 'Category', required: true },
-    brand: { type: String, required: true, trim: true },
+    brand: { type: String, required: false, default: 'StereoBliss', trim: true },
     modelName: { type: String, trim: true },
     description: { type: String, trim: true },
     trackingMode: {
