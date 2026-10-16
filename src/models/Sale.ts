@@ -14,6 +14,10 @@ export interface ISaleLineItem {
   unitPrice: number;
   discount: number;
   total: number;
+  hsnCode?: string;
+  taxableAmount?: number;
+  cgstAmount?: number;
+  sgstAmount?: number;
   serializedItemIds?: Types.ObjectId[];
 }
 
@@ -26,12 +30,18 @@ export interface ISale extends Document {
   lineItems: ISaleLineItem[];
   subtotal: number;
   discountTotal: number;
+  taxableAmount: number;
+  cgstRate: number;
+  cgstAmount: number;
+  sgstRate: number;
+  sgstAmount: number;
   taxTotal: number;
   grandTotal: number;
   paymentStatus: PaymentStatus;
   paymentMethod: PaymentMethod;
   saleStatus: SaleStatus;
   notes?: string;
+  remarks?: string;
   soldBy: Types.ObjectId;
   confirmedAt?: Date;
   idempotencyKey?: string;
@@ -45,6 +55,10 @@ const SaleLineItemSchema = new Schema<ISaleLineItem>(
     quantity: { type: Number, required: true, min: 1 },
     unitPrice: { type: Number, required: true, min: 0 },
     discount: { type: Number, default: 0, min: 0 },
+    taxableAmount: { type: Number, default: 0, min: 0 },
+    hsnCode: { type: String, default: '9202', trim: true },
+    cgstAmount: { type: Number, default: 0, min: 0 },
+    sgstAmount: { type: Number, default: 0, min: 0 },
     total: { type: Number, required: true, min: 0 },
     serializedItemIds: [{ type: Schema.Types.ObjectId, ref: 'SerializedItem' }],
   },
@@ -61,6 +75,11 @@ const SaleSchema = new Schema<ISale>(
     lineItems: [SaleLineItemSchema],
     subtotal: { type: Number, required: true, min: 0 },
     discountTotal: { type: Number, default: 0, min: 0 },
+    taxableAmount: { type: Number, default: 0, min: 0 },
+    cgstRate: { type: Number, default: 9, min: 0 },
+    cgstAmount: { type: Number, default: 0, min: 0 },
+    sgstRate: { type: Number, default: 9, min: 0 },
+    sgstAmount: { type: Number, default: 0, min: 0 },
     taxTotal: { type: Number, default: 0, min: 0 },
     grandTotal: { type: Number, required: true, min: 0 },
     paymentStatus: {
@@ -82,6 +101,7 @@ const SaleSchema = new Schema<ISale>(
       required: true,
     },
     notes: { type: String, trim: true },
+    remarks: { type: String, trim: true },
     soldBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     confirmedAt: { type: Date, default: Date.now },
     idempotencyKey: { type: String, trim: true },

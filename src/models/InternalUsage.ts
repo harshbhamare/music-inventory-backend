@@ -16,12 +16,34 @@ export interface IUsageItem {
   issueCondition: ItemCondition;
 }
 
+export interface IRentalMonthlyPayment {
+  monthIndex: number;
+  billingMonth: string;
+  dueDate: Date;
+  amountDue: number;
+  amountPaid: number;
+  paidAt?: Date;
+  paymentMethod?: string;
+  transactionRef?: string;
+  status: 'PAID' | 'DUE' | 'OVERDUE';
+  notes?: string;
+}
+
+export interface IRentalReminder {
+  sentAt: Date;
+  sentTo: string;
+  channel: 'EMAIL' | 'SMS' | 'WHATSAPP';
+  message: string;
+  sentBy: Types.ObjectId;
+}
+
 export interface IInternalUsage extends Document {
   issueReference: string;
   purpose: UsagePurpose;
   customPurposeDetail?: string;
-  assignedPerson: string; // student, teacher, or band member responsible
+  assignedPerson: string; // Renter / Student / Customer
   assignedPersonContact?: string;
+  customerEmail?: string;
   location: Types.ObjectId;
   items: IUsageItem[];
   issueDate: Date;
@@ -30,6 +52,15 @@ export interface IInternalUsage extends Document {
   status: UsageStatus;
   notes?: string;
   issuedBy: Types.ObjectId;
+  isRental: boolean;
+  lockInPeriodMonths: number;
+  securityDeposit: number;
+  monthlyRent: number;
+  includedAccessories: string[];
+  monthlyPayments: IRentalMonthlyPayment[];
+  totalRentPaid: number;
+  totalRentDue: number;
+  remindersSent: IRentalReminder[];
   extensions: Array<{
     extendedDate: Date;
     reason: string;
@@ -56,6 +87,33 @@ const UsageItemSchema = new Schema<IUsageItem>(
   { _id: false }
 );
 
+const RentalMonthlyPaymentSchema = new Schema<IRentalMonthlyPayment>(
+  {
+    monthIndex: { type: Number, required: true },
+    billingMonth: { type: String, required: true },
+    dueDate: { type: Date, required: true },
+    amountDue: { type: Number, required: true, min: 0 },
+    amountPaid: { type: Number, default: 0, min: 0 },
+    paidAt: { type: Date },
+    paymentMethod: { type: String },
+    transactionRef: { type: String, trim: true },
+    status: { type: String, enum: ['PAID', 'DUE', 'OVERDUE'], default: 'DUE' },
+    notes: { type: String, trim: true },
+  },
+  { _id: true }
+);
+
+const RentalReminderSchema = new Schema<IRentalReminder>(
+  {
+    sentAt: { type: Date, default: Date.now },
+    sentTo: { type: String, required: true },
+    channel: { type: String, enum: ['EMAIL', 'SMS', 'WHATSAPP'], default: 'EMAIL' },
+    message: { type: String, required: true },
+    sentBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  },
+  { _id: true }
+);
+
 const InternalUsageSchema = new Schema<IInternalUsage>(
   {
     issueReference: { type: String, required: true, unique: true, uppercase: true, trim: true },
@@ -67,6 +125,7 @@ const InternalUsageSchema = new Schema<IInternalUsage>(
     customPurposeDetail: { type: String, trim: true },
     assignedPerson: { type: String, required: true, trim: true },
     assignedPersonContact: { type: String, trim: true },
+    customerEmail: { type: String, lowercase: true, trim: true },
     location: { type: Schema.Types.ObjectId, ref: 'StockLocation', required: true },
     items: [UsageItemSchema],
     issueDate: { type: Date, default: Date.now },
@@ -80,6 +139,15 @@ const InternalUsageSchema = new Schema<IInternalUsage>(
     },
     notes: { type: String, trim: true },
     issuedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    isRental: { type: Boolean, default: true },
+    lockInPeriodMonths: { type: Number, default: 3, min: 1 },
+    securityDeposit: { type: Number, default: 0, min: 0 },
+    monthlyRent: { type: Number, default: 0, min: 0 },
+    includedAccessories: [{ type: String, trim: true }],
+    monthlyPayments: [RentalMonthlyPaymentSchema],
+    totalRentPaid: { type: Number, default: 0, min: 0 },
+    totalRentDue: { type: Number, default: 0, min: 0 },
+    remindersSent: [RentalReminderSchema],
     extensions: [
       {
         extendedDate: { type: Date, required: true },

@@ -5,6 +5,8 @@ import {
   issueInstruments,
   returnInstruments,
   extendExpectedReturnDate,
+  recordRentalPayment,
+  sendRentalReminder,
 } from '../services/internalUsageService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
@@ -13,6 +15,7 @@ import {
   issueInternalUsageSchema,
   returnInternalUsageSchema,
   extendUsageSchema,
+  recordRentalPaymentSchema,
 } from '../validators/index.js';
 import { ROLES, USAGE_STATUSES } from '../config/constants.js';
 
@@ -159,5 +162,36 @@ router.get('/returns/all', requireAuth, async (_req: Request, res: Response, nex
     next(err);
   }
 });
+
+// Record monthly rental payment
+router.post(
+  '/:id/payments',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  validate(recordRentalPaymentSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const usage = await recordRentalPayment(req.params.id as string, req.body, req.user!);
+      res.json({ success: true, data: { usage } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Send rental payment / overdue email reminder
+router.post(
+  '/:id/send-reminder',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await sendRentalReminder(req.params.id as string, req.user!);
+      res.json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 export default router;

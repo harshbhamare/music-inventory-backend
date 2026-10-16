@@ -257,7 +257,10 @@ describe('StereoBliss Retail Inventory Management Core Invariants & Workflows', 
 
     expect(saleRes.status).toBe(201);
     expect(saleRes.body.data.sale.invoiceNumber).toMatch(/^INV-/);
-    expect(saleRes.body.data.sale.grandTotal).toBe(3250); // (700 - 50) * 5
+    expect(saleRes.body.data.sale.taxableAmount).toBe(3250); // (700 - 50) * 5
+    expect(saleRes.body.data.sale.cgstAmount).toBe(292.5); // 9% CGST
+    expect(saleRes.body.data.sale.sgstAmount).toBe(292.5); // 9% SGST
+    expect(saleRes.body.data.sale.grandTotal).toBe(3835); // 3250 + 585 GST
 
     const updatedProd = await Product.findById(quantityProductId);
     expect(updatedProd?.stockQuantity.onHand).toBe(15); // 20 - 5 = 15
@@ -530,5 +533,88 @@ describe('StereoBliss Retail Inventory Management Core Invariants & Workflows', 
     const report = await runInventoryReconciliation();
     expect(report.totalProductsChecked).toBeGreaterThan(0);
     expect(report.mismatchesFound).toBe(0); // 100% verified!
+  });
+
+  // 13. Direct Quick Receive Stock & Instrument Rental Tracking
+  it('13. should execute quick stock receive without validation errors and track instrument rentals', async () => {
+    // A. Quick Stock Receive
+    const quickRes = await request(app)
+      .post('/api/v1/intake/quick-receive')
+      .set('Authorization', `Bearer ${managerToken}`)
+      .send({
+        supplier: testSupplierId,
+        destinationLocation: testLocationId,
+        invoiceReference: 'QR-TEST-999',
+        items: [
+          {
+            product: quantityProductId,
+            quantity: 4,
+            unitCost: 500,
+          },
+        ],
+      });
+
+    expect(quickRes.status).toBe(201);
+    expect(quickRes.body.success).toBe(true);
+
+    // B. Create Rental Agreement with 3-Month Lock-in and Accessories (Stand + Adapter)
+    const futureDate = new Date();
+    futureDate.setMonth(futureDate.getMonth() + 3);
+
+    const rentalRes = await request(app)
+      .post('/api/v1/usage')
+      .set('Authorization', `Bearer ${managerToken}`)
+      .send({
+        assignedPerson: 'Rohan Deshmukh',
+        assignedPersonContact: '+91 98765 43210',
+        customerEmail: 'rohan.deshmukh@example.com',
+        location: testLocationId,
+        expectedReturnDate: futureDate.toISOString(),
+        isRental: true,
+        lockInPeriodMonths: 3,
+        securityDeposit: 5000,
+        monthlyRent: 1500,
+        includedAccessories: ['Keyboard Stand', 'Power Adapter', 'Padded Bag'],
+        items: [
+          {
+            product: quantityProductId,
+            quantityIssued: 1,
+            issueCondition: 'GOOD',
+          },
+        ],
+      });
+
+    expect(rentalRes.status).toBe(201);
+    const rentalId = rentalRes.body.data.usage._id;
+    expect(rentalRes.body.data.usage.lockInPeriodMonths).toBe(3);
+    expect(rentalRes.body.data.usage.securityDeposit).toBe(5000);
+    expect(rentalRes.body.data.usage.monthlyRent).toBe(1500);
+    expect(rentalRes.body.data.usage.includedAccessories).toEqual(['Keyboard Stand', 'Power Adapter', 'Padded Bag']);
+    expect(rentalRes.body.data.usage.monthlyPayments.length).toBe(3);
+    expect(rentalRes.body.data.usage.totalRentDue).toBe(4500);
+
+    // C. Record a Monthly Rent Payment
+    const paymentRes = await request(app)
+      .post(`/api/v1/usage/${rentalId}/payments`)
+      .set('Authorization', `Bearer ${managerToken}`)
+      .send({
+        amount: 1500,
+        paymentMethod: 'UPI',
+        transactionRef: 'UPI-RENT-101',
+        notes: 'Month 1 rent cleared',
+      });
+
+    expect(paymentRes.status).toBe(200);
+    expect(paymentRes.body.data.usage.totalRentPaid).toBe(1500);
+    expect(paymentRes.body.data.usage.totalRentDue).toBe(3000);
+
+    // D. Dispatch Payment Reminder
+    const reminderRes = await request(app)
+      .post(`/api/v1/usage/${rentalId}/send-reminder`)
+      .set('Authorization', `Bearer ${managerToken}`);
+
+    expect(reminderRes.status).toBe(200);
+    expect(reminderRes.body.success).toBe(true);
+    expect(reminderRes.body.data.sentTo).toBe('rohan.deshmukh@example.com');
   });
 });

@@ -26,12 +26,14 @@ export interface CreateSaleInput {
   location: string;
   paymentMethod?: string;
   notes?: string;
+  remarks?: string;
   idempotencyKey?: string;
   lineItems: Array<{
     product: string;
     quantity: number;
     unitPrice: number;
     discount?: number;
+    hsnCode?: string;
     serializedItemIds?: string[];
   }>;
 }
@@ -221,18 +223,32 @@ export async function createSale(input: CreateSaleInput, actor: AuthenticatedUse
         );
       }
 
+      const itemHsn = itemInput.hsnCode || (product as any).hsnCode || '9202';
+      const itemTaxable = itemTotal;
+      const itemCgst = Math.round(itemTaxable * 0.09 * 100) / 100;
+      const itemSgst = Math.round(itemTaxable * 0.09 * 100) / 100;
+
       processedLineItems.push({
         product: product._id,
         quantity: itemInput.quantity,
         unitPrice: itemInput.unitPrice,
         discount: itemInput.discount || 0,
+        taxableAmount: itemTaxable,
+        hsnCode: itemHsn,
+        cgstAmount: itemCgst,
+        sgstAmount: itemSgst,
         total: itemTotal,
         serializedItemIds: itemInput.serializedItemIds?.map((id) => new Types.ObjectId(id)),
       });
     }
 
-    const taxTotal = 0; // Tax calculation if required by settings
-    const grandTotal = Math.max(0, subtotal - discountTotal + taxTotal);
+    const taxableAmount = Math.max(0, subtotal - discountTotal);
+    const cgstRate = 9;
+    const sgstRate = 9;
+    const cgstAmount = Math.round(taxableAmount * 0.09 * 100) / 100;
+    const sgstAmount = Math.round(taxableAmount * 0.09 * 100) / 100;
+    const taxTotal = Math.round((cgstAmount + sgstAmount) * 100) / 100;
+    const grandTotal = Math.round((taxableAmount + taxTotal) * 100) / 100;
 
     const sale = new Sale({
       invoiceNumber,
@@ -243,12 +259,18 @@ export async function createSale(input: CreateSaleInput, actor: AuthenticatedUse
       lineItems: processedLineItems,
       subtotal,
       discountTotal,
+      taxableAmount,
+      cgstRate,
+      cgstAmount,
+      sgstRate,
+      sgstAmount,
       taxTotal,
       grandTotal,
       paymentStatus: PAYMENT_STATUSES.PAID,
       paymentMethod: input.paymentMethod || PAYMENT_METHODS.UPI,
       saleStatus: SALE_STATUSES.CONFIRMED,
       notes: input.notes,
+      remarks: input.remarks || input.notes,
       soldBy: new Types.ObjectId(actor.id),
       confirmedAt: new Date(),
       idempotencyKey: input.idempotencyKey,

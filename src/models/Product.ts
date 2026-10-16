@@ -12,6 +12,7 @@ export interface ILocationStock {
 export interface IProduct extends Document {
   name: string;
   sku: string;
+  hsnCode?: string;
   category: Types.ObjectId;
   brand: string;
   modelName?: string;
@@ -51,6 +52,7 @@ const ProductSchema = new Schema<IProduct>(
   {
     name: { type: String, required: true, trim: true },
     sku: { type: String, required: true, unique: true, uppercase: true, trim: true },
+    hsnCode: { type: String, default: '9202', trim: true },
     category: { type: Schema.Types.ObjectId, ref: 'Category', required: true },
     brand: { type: String, required: false, default: 'StereoBliss', trim: true },
     modelName: { type: String, trim: true },

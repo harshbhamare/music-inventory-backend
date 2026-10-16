@@ -30,6 +30,7 @@ export const createProductSchema = z.object({
   body: z.object({
     name: z.string().min(2, 'Product name is required'),
     sku: z.string().optional(),
+    hsnCode: z.string().optional().default('9202'),
     category: z.string().min(1, 'Category ID is required'),
     brand: z.string().optional().default('StereoBliss'),
     modelName: z.string().optional(),
@@ -47,6 +48,7 @@ export const createProductSchema = z.object({
 export const updateProductSchema = z.object({
   body: z.object({
     name: z.string().min(2).optional(),
+    hsnCode: z.string().optional(),
     category: z.string().optional(),
     brand: z.string().optional(),
     modelName: z.string().optional(),
@@ -121,11 +123,13 @@ export const createSaleSchema = z.object({
     location: z.string().min(1, 'Location is required'),
     paymentMethod: z.enum(Object.values(PAYMENT_METHODS) as [string, ...string[]]).default(PAYMENT_METHODS.UPI),
     notes: z.string().optional(),
+    remarks: z.string().optional(),
     idempotencyKey: z.string().optional(),
     lineItems: z
       .array(
         z.object({
           product: z.string().min(1, 'Product ID is required'),
+          hsnCode: z.string().optional(),
           quantity: z.number().int().min(1, 'Quantity must be at least 1'),
           unitPrice: z.number().min(0, 'Unit price must be positive'),
           discount: z.number().min(0).default(0),
@@ -136,16 +140,22 @@ export const createSaleSchema = z.object({
   }),
 });
 
-// Internal Usage
+// Rentals & Instrument Loans
 export const issueInternalUsageSchema = z.object({
   body: z.object({
-    purpose: z.enum(Object.values(USAGE_PURPOSES) as [string, ...string[]]),
+    purpose: z.enum(Object.values(USAGE_PURPOSES) as [string, ...string[]]).default(USAGE_PURPOSES.CLASS),
     customPurposeDetail: z.string().optional(),
-    assignedPerson: z.string().min(1, 'Responsible person name is required'),
+    assignedPerson: z.string().min(1, 'Renter / Customer name is required'),
     assignedPersonContact: z.string().optional(),
+    customerEmail: z.string().email().optional().or(z.literal('')),
     location: z.string().min(1, 'Location is required'),
     expectedReturnDate: z.string().min(1, 'Expected return date is required'),
     notes: z.string().optional(),
+    isRental: z.boolean().optional().default(true),
+    lockInPeriodMonths: z.number().int().min(1).max(36).optional().default(3),
+    securityDeposit: z.number().min(0).optional().default(0),
+    monthlyRent: z.number().min(0).optional().default(0),
+    includedAccessories: z.array(z.string()).optional().default([]),
     items: z
       .array(
         z.object({
@@ -156,6 +166,16 @@ export const issueInternalUsageSchema = z.object({
         })
       )
       .min(1, 'At least one item must be issued'),
+  }),
+});
+
+export const recordRentalPaymentSchema = z.object({
+  body: z.object({
+    amount: z.number().min(1, 'Payment amount must be greater than 0'),
+    billingMonth: z.string().optional(),
+    paymentMethod: z.enum(Object.values(PAYMENT_METHODS) as [string, ...string[]]).default(PAYMENT_METHODS.UPI),
+    transactionRef: z.string().optional(),
+    notes: z.string().optional(),
   }),
 });
 

@@ -400,13 +400,15 @@ export async function quickReceiveStock(input: QuickReceiveInput, actor: Authent
 
       const qty = Math.max(1, itemInput.quantity);
       const unitCost = typeof itemInput.unitCost === 'number' ? itemInput.unitCost : product.purchaseCost;
-      totalAmount += unitCost * qty;
+      const lineTotalCost = unitCost * qty;
+      totalAmount += lineTotalCost;
 
       poLines.push({
         product: product._id,
         quantityOrdered: qty,
         quantityReceived: qty,
         unitCost,
+        totalCost: lineTotalCost,
       });
 
       const serializedItemIds: Types.ObjectId[] = [];
@@ -506,7 +508,9 @@ export async function quickReceiveStock(input: QuickReceiveInput, actor: Authent
       status: PURCHASE_STATUSES.COMPLETED,
       invoiceReference: input.invoiceReference?.trim() || undefined,
       lineItems: poLines,
-      totalAmount,
+      subtotal: totalAmount,
+      additionalCosts: 0,
+      totalCost: totalAmount,
       createdBy: new Types.ObjectId(actor.id),
       notes: input.notes,
     });

@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { InternalUsage } from '../models/InternalUsage.js';
 import { UsageReturn } from '../models/UsageReturn.js';
-import { issueInstruments, returnInstruments, extendExpectedReturnDate, } from '../services/internalUsageService.js';
+import { issueInstruments, returnInstruments, extendExpectedReturnDate, recordRentalPayment, sendRentalReminder, } from '../services/internalUsageService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { validate } from '../middleware/validate.js';
-import { issueInternalUsageSchema, returnInternalUsageSchema, extendUsageSchema, } from '../validators/index.js';
+import { issueInternalUsageSchema, returnInternalUsageSchema, extendUsageSchema, recordRentalPaymentSchema, } from '../validators/index.js';
 import { ROLES, USAGE_STATUSES } from '../config/constants.js';
 const router = Router();
 // List internal usage loans
@@ -115,6 +115,26 @@ router.get('/returns/all', requireAuth, async (_req, res, next) => {
             .sort({ createdAt: -1 })
             .lean();
         res.json({ success: true, data: { returns } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Record monthly rental payment
+router.post('/:id/payments', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(recordRentalPaymentSchema), async (req, res, next) => {
+    try {
+        const usage = await recordRentalPayment(req.params.id, req.body, req.user);
+        res.json({ success: true, data: { usage } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Send rental payment / overdue email reminder
+router.post('/:id/send-reminder', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
+    try {
+        const result = await sendRentalReminder(req.params.id, req.user);
+        res.json({ success: true, data: result });
     }
     catch (err) {
         next(err);

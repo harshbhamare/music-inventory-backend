@@ -12,6 +12,25 @@ const UsageItemSchema = new Schema({
         required: true,
     },
 }, { _id: false });
+const RentalMonthlyPaymentSchema = new Schema({
+    monthIndex: { type: Number, required: true },
+    billingMonth: { type: String, required: true },
+    dueDate: { type: Date, required: true },
+    amountDue: { type: Number, required: true, min: 0 },
+    amountPaid: { type: Number, default: 0, min: 0 },
+    paidAt: { type: Date },
+    paymentMethod: { type: String },
+    transactionRef: { type: String, trim: true },
+    status: { type: String, enum: ['PAID', 'DUE', 'OVERDUE'], default: 'DUE' },
+    notes: { type: String, trim: true },
+}, { _id: true });
+const RentalReminderSchema = new Schema({
+    sentAt: { type: Date, default: Date.now },
+    sentTo: { type: String, required: true },
+    channel: { type: String, enum: ['EMAIL', 'SMS', 'WHATSAPP'], default: 'EMAIL' },
+    message: { type: String, required: true },
+    sentBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+}, { _id: true });
 const InternalUsageSchema = new Schema({
     issueReference: { type: String, required: true, unique: true, uppercase: true, trim: true },
     purpose: {
@@ -22,6 +41,7 @@ const InternalUsageSchema = new Schema({
     customPurposeDetail: { type: String, trim: true },
     assignedPerson: { type: String, required: true, trim: true },
     assignedPersonContact: { type: String, trim: true },
+    customerEmail: { type: String, lowercase: true, trim: true },
     location: { type: Schema.Types.ObjectId, ref: 'StockLocation', required: true },
     items: [UsageItemSchema],
     issueDate: { type: Date, default: Date.now },
@@ -35,6 +55,15 @@ const InternalUsageSchema = new Schema({
     },
     notes: { type: String, trim: true },
     issuedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    isRental: { type: Boolean, default: true },
+    lockInPeriodMonths: { type: Number, default: 3, min: 1 },
+    securityDeposit: { type: Number, default: 0, min: 0 },
+    monthlyRent: { type: Number, default: 0, min: 0 },
+    includedAccessories: [{ type: String, trim: true }],
+    monthlyPayments: [RentalMonthlyPaymentSchema],
+    totalRentPaid: { type: Number, default: 0, min: 0 },
+    totalRentDue: { type: Number, default: 0, min: 0 },
+    remindersSent: [RentalReminderSchema],
     extensions: [
         {
             extendedDate: { type: Date, required: true },

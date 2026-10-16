@@ -23,9 +23,15 @@ export interface IssueInternalUsageInput {
   customPurposeDetail?: string;
   assignedPerson: string;
   assignedPersonContact?: string;
+  customerEmail?: string;
   location: string;
   expectedReturnDate: string;
   notes?: string;
+  isRental?: boolean;
+  lockInPeriodMonths?: number;
+  securityDeposit?: number;
+  monthlyRent?: number;
+  includedAccessories?: string[];
   items: Array<{
     product: string;
     quantityIssued: number;
@@ -173,12 +179,39 @@ export async function issueInstruments(input: IssueInternalUsageInput, actor: Au
       }
     }
 
+    const isRental = input.isRental !== false;
+    const lockInPeriodMonths = Math.max(1, input.lockInPeriodMonths || 3);
+    const securityDeposit = Math.max(0, input.securityDeposit || 0);
+    const monthlyRent = Math.max(0, input.monthlyRent || 0);
+    const includedAccessories = input.includedAccessories || [];
+
+    const monthlyPayments: any[] = [];
+    if (monthlyRent > 0) {
+      const now = new Date();
+      for (let m = 1; m <= lockInPeriodMonths; m++) {
+        const dueDate = new Date(now);
+        dueDate.setMonth(now.getMonth() + (m - 1));
+        const monthName = dueDate.toLocaleString('default', { month: 'short', year: 'numeric' });
+        monthlyPayments.push({
+          monthIndex: m,
+          billingMonth: `Month ${m} (${monthName})`,
+          dueDate,
+          amountDue: monthlyRent,
+          amountPaid: 0,
+          status: 'DUE',
+        });
+      }
+    }
+
+    const totalRentDue = monthlyRent * lockInPeriodMonths;
+
     const usage = new InternalUsage({
       issueReference,
       purpose: input.purpose,
       customPurposeDetail: input.customPurposeDetail,
       assignedPerson: input.assignedPerson.trim(),
       assignedPersonContact: input.assignedPersonContact?.trim(),
+      customerEmail: input.customerEmail?.trim().toLowerCase() || undefined,
       location: locationId,
       items: processedItems,
       issueDate: new Date(),
@@ -186,6 +219,15 @@ export async function issueInstruments(input: IssueInternalUsageInput, actor: Au
       status: USAGE_STATUSES.ACTIVE,
       notes: input.notes,
       issuedBy: new Types.ObjectId(actor.id),
+      isRental,
+      lockInPeriodMonths,
+      securityDeposit,
+      monthlyRent,
+      includedAccessories,
+      monthlyPayments,
+      totalRentPaid: 0,
+      totalRentDue,
+      remindersSent: [],
     });
 
     await usage.save({ session });
@@ -418,4 +460,114 @@ export async function extendExpectedReturnDate(
   });
 
   return usage;
+}
+
+export async function recordRentalPayment(
+  usageId: string,
+  input: {
+    amount: number;
+    billingMonth?: string;
+    paymentMethod?: string;
+    transactionRef?: string;
+    notes?: string;
+  },
+  actor: AuthenticatedUser
+) {
+  const usage = await InternalUsage.findById(usageId);
+  if (!usage) {
+    throw new AppError('Rental record not found.', 404, 'RENTAL_NOT_FOUND');
+  }
+
+  let payment = usage.monthlyPayments.find(
+    (p) => input.billingMonth ? p.billingMonth === input.billingMonth : p.status !== 'PAID'
+  );
+
+  if (!payment) {
+    const nextIndex = usage.monthlyPayments.length + 1;
+    const now = new Date();
+    const monthName = now.toLocaleString('default', { month: 'short', year: 'numeric' });
+    usage.monthlyPayments.push({
+      monthIndex: nextIndex,
+      billingMonth: `Month ${nextIndex} (${monthName})`,
+      dueDate: now,
+      amountDue: input.amount,
+      amountPaid: input.amount,
+      paidAt: now,
+      paymentMethod: input.paymentMethod || 'UPI',
+      transactionRef: input.transactionRef,
+      status: 'PAID',
+      notes: input.notes,
+    });
+  } else {
+    payment.amountPaid = (payment.amountPaid || 0) + input.amount;
+    payment.paidAt = new Date();
+    payment.paymentMethod = input.paymentMethod || 'UPI';
+    payment.transactionRef = input.transactionRef || payment.transactionRef;
+    payment.notes = input.notes || payment.notes;
+    if (payment.amountPaid >= payment.amountDue) {
+      payment.status = 'PAID';
+    }
+  }
+
+  const totalPaid = usage.monthlyPayments.reduce((acc, p) => acc + (p.amountPaid || 0), 0);
+  const totalDue = usage.monthlyPayments.reduce(
+    (acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)),
+    0
+  );
+  usage.totalRentPaid = totalPaid;
+  usage.totalRentDue = totalDue;
+
+  await usage.save();
+
+  await logAudit({
+    actor,
+    action: 'RENTAL_PAYMENT_RECORDED',
+    entityType: 'InternalUsage',
+    entityId: usage._id.toString(),
+    afterState: { totalPaid, totalDue, recordedAmount: input.amount },
+    reason: `Recorded rent payment of ₹${input.amount} for ${usage.assignedPerson}`,
+  });
+
+  return usage;
+}
+
+export async function sendRentalReminder(usageId: string, actor: AuthenticatedUser) {
+  const usage = await InternalUsage.findById(usageId).populate('items.product', 'name');
+  if (!usage) {
+    throw new AppError('Rental record not found.', 404, 'RENTAL_NOT_FOUND');
+  }
+
+  const recipient = usage.customerEmail || usage.assignedPersonContact || usage.assignedPerson;
+  const prodName = (usage.items[0]?.product as any)?.name || 'Musical Instrument';
+  const pendingAmount = usage.totalRentDue > 0 ? usage.totalRentDue : usage.monthlyRent;
+
+  const reminderMessage = `Dear ${usage.assignedPerson}, this is a payment reminder from StereoBliss Retail & Rentals. Your rental payment of ₹${pendingAmount} for "${prodName}" (Ref: ${usage.issueReference}) is due. Please pay via UPI/Card at your earliest convenience. Thank you!`;
+
+  usage.remindersSent.push({
+    sentAt: new Date(),
+    sentTo: recipient,
+    channel: usage.customerEmail ? 'EMAIL' : 'SMS',
+    message: reminderMessage,
+    sentBy: new Types.ObjectId(actor.id),
+  });
+
+  await usage.save();
+
+  await logAudit({
+    actor,
+    action: 'RENTAL_REMINDER_SENT',
+    entityType: 'InternalUsage',
+    entityId: usage._id.toString(),
+    afterState: { recipient, pendingAmount },
+    reason: `Dispatched payment reminder to ${recipient}`,
+  });
+
+  return {
+    success: true,
+    message: reminderMessage,
+    sentTo: recipient,
+    channel: usage.customerEmail ? 'EMAIL' : 'SMS',
+    sentAt: new Date(),
+    usage,
+  };
 }
