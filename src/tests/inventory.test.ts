@@ -607,6 +607,61 @@ describe('StereoBliss Retail Inventory Management Core Invariants & Workflows', 
     expect(paymentRes.status).toBe(200);
     expect(paymentRes.body.data.usage.totalRentPaid).toBe(1500);
     expect(paymentRes.body.data.usage.totalRentDue).toBe(3000);
+    const month1PaymentId = paymentRes.body.data.usage.monthlyPayments[0]._id;
+
+    // C2. Prevent duplicate payment when clicking multiple times on the same month
+    const dupPaymentRes = await request(app)
+      .post(`/api/v1/usage/${rentalId}/payments`)
+      .set('Authorization', `Bearer ${managerToken}`)
+      .send({
+        paymentId: month1PaymentId,
+        amount: 1500,
+        paymentMethod: 'UPI',
+      });
+
+    expect(dupPaymentRes.status).toBe(400);
+    expect(dupPaymentRes.body.error.code).toBe('PAYMENT_ALREADY_RECORDED');
+
+    // C3. Edit payment price and transaction number (trn no.)
+    const editPaymentRes = await request(app)
+      .put(`/api/v1/usage/${rentalId}/payments/${month1PaymentId}`)
+      .set('Authorization', `Bearer ${managerToken}`)
+      .send({
+        amountPaid: 1600,
+        transactionRef: 'UPI-RENT-101-CORRECTED',
+        notes: 'Updated price and txn ref',
+      });
+
+    expect(editPaymentRes.status).toBe(200);
+    expect(editPaymentRes.body.data.usage.totalRentPaid).toBe(1600);
+    const updatedM1 = editPaymentRes.body.data.usage.monthlyPayments[0];
+    expect(updatedM1.amountPaid).toBe(1600);
+    expect(updatedM1.transactionRef).toBe('UPI-RENT-101-CORRECTED');
+
+    // C4. Adjust next month (Month 2) rent accordingly
+    const adjustRes = await request(app)
+      .put(`/api/v1/usage/${rentalId}/adjust-month-due`)
+      .set('Authorization', `Bearer ${managerToken}`)
+      .send({
+        monthIndex: 2,
+        newAmountDue: 1400,
+        reason: 'Adjusted with ₹100 surplus credit from Month 1',
+      });
+
+    expect(adjustRes.status).toBe(200);
+    const updatedM2 = adjustRes.body.data.usage.monthlyPayments.find((p: any) => p.monthIndex === 2);
+    expect(updatedM2.amountDue).toBe(1400);
+
+    // C5. Add an extra rental month
+    const addMonthRes = await request(app)
+      .post(`/api/v1/usage/${rentalId}/add-month`)
+      .set('Authorization', `Bearer ${managerToken}`)
+      .send({
+        amountDue: 1500,
+      });
+
+    expect(addMonthRes.status).toBe(200);
+    expect(addMonthRes.body.data.usage.monthlyPayments.length).toBe(4);
 
     // D. Dispatch Payment Reminder
     const reminderRes = await request(app)

@@ -332,32 +332,64 @@ export async function recordRentalPayment(usageId, input, actor) {
     if (!usage) {
         throw new AppError('Rental record not found.', 404, 'RENTAL_NOT_FOUND');
     }
-    let payment = usage.monthlyPayments.find((p) => input.billingMonth ? p.billingMonth === input.billingMonth : p.status !== 'PAID');
-    if (!payment) {
-        const nextIndex = usage.monthlyPayments.length + 1;
+    let payment = null;
+    if (input.paymentId) {
+        payment = usage.monthlyPayments.find((p) => p._id?.toString() === input.paymentId || p.id === input.paymentId);
+    }
+    else if (input.monthIndex) {
+        payment = usage.monthlyPayments.find((p) => p.monthIndex === input.monthIndex);
+    }
+    else if (input.billingMonth) {
+        payment = usage.monthlyPayments.find((p) => p.billingMonth === input.billingMonth);
+    }
+    else {
+        payment = usage.monthlyPayments.find((p) => p.status !== 'PAID');
+    }
+    if (payment) {
+        // If user clicked confirm payment on an already PAID month (e.g. repeated clicks):
+        if (payment.status === 'PAID' && (payment.amountPaid || 0) >= payment.amountDue) {
+            throw new AppError(`Payment for ${payment.billingMonth} is already recorded as PAID (₹${payment.amountPaid}). Use the Edit button on this month to modify payment details.`, 400, 'PAYMENT_ALREADY_RECORDED');
+        }
+        // Set the amount paid directly (prevent accidental compound multiplication on rapid duplicate requests)
+        payment.amountPaid = input.amount;
+        payment.paidAt = new Date();
+        payment.paymentMethod = input.paymentMethod || 'UPI';
+        payment.transactionRef = input.transactionRef?.trim() || payment.transactionRef;
+        payment.notes = input.notes?.trim() || payment.notes;
+        payment.status = payment.amountPaid >= payment.amountDue ? 'PAID' : 'DUE';
+    }
+    else {
+        // No target month was found. If no month was specified and all months are paid, DO NOT silently append duplicate months!
+        if (!input.billingMonth && !input.monthIndex && !input.paymentId) {
+            throw new AppError('All scheduled rental months are already fully paid. Use "Add Rental Month" to extend the rental agreement.', 400, 'ALL_MONTHS_ALREADY_PAID');
+        }
+        const nextIndex = (usage.monthlyPayments.length > 0
+            ? Math.max(...usage.monthlyPayments.map((p) => p.monthIndex))
+            : 0) + 1;
         const now = new Date();
         const monthName = now.toLocaleString('default', { month: 'short', year: 'numeric' });
-        usage.monthlyPayments.push({
+        payment = {
             monthIndex: nextIndex,
-            billingMonth: `Month ${nextIndex} (${monthName})`,
+            billingMonth: input.billingMonth || `Month ${nextIndex} (${monthName})`,
             dueDate: now,
             amountDue: input.amount,
             amountPaid: input.amount,
             paidAt: now,
             paymentMethod: input.paymentMethod || 'UPI',
-            transactionRef: input.transactionRef,
+            transactionRef: input.transactionRef?.trim(),
             status: 'PAID',
-            notes: input.notes,
-        });
+            notes: input.notes?.trim(),
+        };
+        usage.monthlyPayments.push(payment);
     }
-    else {
-        payment.amountPaid = (payment.amountPaid || 0) + input.amount;
-        payment.paidAt = new Date();
-        payment.paymentMethod = input.paymentMethod || 'UPI';
-        payment.transactionRef = input.transactionRef || payment.transactionRef;
-        payment.notes = input.notes || payment.notes;
-        if (payment.amountPaid >= payment.amountDue) {
-            payment.status = 'PAID';
+    // Adjust next month rent if requested
+    if (input.adjustNextMonth && payment) {
+        const difference = payment.amountDue - payment.amountPaid;
+        const nextPayment = usage.monthlyPayments.find((p) => p.monthIndex === payment.monthIndex + 1);
+        if (nextPayment) {
+            nextPayment.amountDue = Math.max(0, nextPayment.amountDue + difference);
+            const diffText = difference > 0 ? `+₹${difference}` : `-₹${Math.abs(difference)}`;
+            nextPayment.notes = `${nextPayment.notes ? nextPayment.notes + ' | ' : ''}Adjusted ${diffText} from ${payment.billingMonth} balance`;
         }
     }
     const totalPaid = usage.monthlyPayments.reduce((acc, p) => acc + (p.amountPaid || 0), 0);
@@ -370,8 +402,155 @@ export async function recordRentalPayment(usageId, input, actor) {
         action: 'RENTAL_PAYMENT_RECORDED',
         entityType: 'InternalUsage',
         entityId: usage._id.toString(),
-        afterState: { totalPaid, totalDue, recordedAmount: input.amount },
-        reason: `Recorded rent payment of ₹${input.amount} for ${usage.assignedPerson}`,
+        afterState: { totalPaid, totalDue, recordedAmount: input.amount, month: payment.billingMonth },
+        reason: `Recorded rent payment of ₹${input.amount} for ${usage.assignedPerson} (${payment.billingMonth})`,
+    });
+    return usage;
+}
+export async function updateRentalPayment(usageId, paymentId, input, actor) {
+    const usage = await InternalUsage.findById(usageId);
+    if (!usage) {
+        throw new AppError('Rental record not found.', 404, 'RENTAL_NOT_FOUND');
+    }
+    const payment = usage.monthlyPayments.find((p) => p._id?.toString() === paymentId || p.id === paymentId);
+    if (!payment) {
+        throw new AppError('Rental payment entry not found.', 404, 'PAYMENT_NOT_FOUND');
+    }
+    if (input.amountDue !== undefined) {
+        payment.amountDue = Math.max(0, input.amountDue);
+    }
+    if (input.amountPaid !== undefined) {
+        payment.amountPaid = Math.max(0, input.amountPaid);
+    }
+    if (input.transactionRef !== undefined) {
+        payment.transactionRef = input.transactionRef.trim() || undefined;
+    }
+    if (input.paymentMethod !== undefined) {
+        payment.paymentMethod = input.paymentMethod;
+    }
+    if (input.notes !== undefined) {
+        payment.notes = input.notes.trim() || undefined;
+    }
+    if (input.paidAt !== undefined) {
+        payment.paidAt = input.paidAt ? new Date(input.paidAt) : undefined;
+    }
+    else if (payment.amountPaid > 0 && !payment.paidAt) {
+        payment.paidAt = new Date();
+    }
+    // Update status
+    if (payment.amountPaid >= payment.amountDue && payment.amountDue > 0) {
+        payment.status = 'PAID';
+    }
+    else {
+        payment.status = 'DUE';
+    }
+    // Adjust next month rent if requested
+    if (input.adjustNextMonth) {
+        const difference = payment.amountDue - payment.amountPaid;
+        const nextPayment = usage.monthlyPayments.find((p) => p.monthIndex === payment.monthIndex + 1);
+        if (nextPayment) {
+            nextPayment.amountDue = Math.max(0, nextPayment.amountDue + difference);
+            const diffText = difference > 0 ? `+₹${difference}` : `-₹${Math.abs(difference)}`;
+            nextPayment.notes = `${nextPayment.notes ? nextPayment.notes + ' | ' : ''}Adjusted ${diffText} from ${payment.billingMonth} adjustment`;
+        }
+    }
+    // Recalculate totals
+    usage.totalRentPaid = usage.monthlyPayments.reduce((acc, p) => acc + (p.amountPaid || 0), 0);
+    usage.totalRentDue = usage.monthlyPayments.reduce((acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)), 0);
+    await usage.save();
+    await logAudit({
+        actor,
+        action: 'RENTAL_PAYMENT_UPDATED',
+        entityType: 'InternalUsage',
+        entityId: usage._id.toString(),
+        afterState: {
+            paymentId,
+            billingMonth: payment.billingMonth,
+            amountPaid: payment.amountPaid,
+            amountDue: payment.amountDue,
+            transactionRef: payment.transactionRef,
+            totalRentPaid: usage.totalRentPaid,
+            totalRentDue: usage.totalRentDue,
+        },
+        reason: `Updated payment details for ${payment.billingMonth} (₹${payment.amountPaid}, Trn: ${payment.transactionRef || 'N/A'})`,
+    });
+    return usage;
+}
+export async function adjustRentalMonthDue(usageId, input, actor) {
+    const usage = await InternalUsage.findById(usageId);
+    if (!usage) {
+        throw new AppError('Rental record not found.', 404, 'RENTAL_NOT_FOUND');
+    }
+    const payment = usage.monthlyPayments.find((p) => p.monthIndex === input.monthIndex);
+    if (!payment) {
+        throw new AppError(`Month ${input.monthIndex} not found in rental schedule.`, 404, 'MONTH_NOT_FOUND');
+    }
+    const prevDue = payment.amountDue;
+    payment.amountDue = Math.max(0, input.newAmountDue);
+    if (input.reason) {
+        payment.notes = (payment.notes ? payment.notes + ' | ' : '') + input.reason;
+    }
+    if (payment.amountPaid >= payment.amountDue && payment.amountDue > 0) {
+        payment.status = 'PAID';
+    }
+    else {
+        payment.status = 'DUE';
+    }
+    // Recalculate totals
+    usage.totalRentPaid = usage.monthlyPayments.reduce((acc, p) => acc + (p.amountPaid || 0), 0);
+    usage.totalRentDue = usage.monthlyPayments.reduce((acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)), 0);
+    await usage.save();
+    await logAudit({
+        actor,
+        action: 'RENTAL_MONTH_DUE_ADJUSTED',
+        entityType: 'InternalUsage',
+        entityId: usage._id.toString(),
+        afterState: { monthIndex: input.monthIndex, prevDue, newDue: payment.amountDue },
+        reason: `Adjusted rent for Month ${input.monthIndex} from ₹${prevDue} to ₹${payment.amountDue}. ${input.reason || ''}`,
+    });
+    return usage;
+}
+export async function addRentalMonth(usageId, input, actor) {
+    const usage = await InternalUsage.findById(usageId);
+    if (!usage) {
+        throw new AppError('Rental record not found.', 404, 'RENTAL_NOT_FOUND');
+    }
+    const nextIndex = (usage.monthlyPayments.length > 0
+        ? Math.max(...usage.monthlyPayments.map((p) => p.monthIndex))
+        : 0) + 1;
+    let newDueDate;
+    if (input.dueDate) {
+        newDueDate = new Date(input.dueDate);
+    }
+    else if (usage.monthlyPayments.length > 0) {
+        const lastPayment = usage.monthlyPayments[usage.monthlyPayments.length - 1];
+        newDueDate = new Date(lastPayment.dueDate);
+        newDueDate.setMonth(newDueDate.getMonth() + 1);
+    }
+    else {
+        newDueDate = new Date();
+    }
+    const monthName = newDueDate.toLocaleString('default', { month: 'short', year: 'numeric' });
+    const agreedRent = input.amountDue !== undefined ? Math.max(0, input.amountDue) : usage.monthlyRent;
+    usage.monthlyPayments.push({
+        monthIndex: nextIndex,
+        billingMonth: `Month ${nextIndex} (${monthName})`,
+        dueDate: newDueDate,
+        amountDue: agreedRent,
+        amountPaid: 0,
+        status: 'DUE',
+    });
+    // Re-calculate totals
+    usage.totalRentPaid = usage.monthlyPayments.reduce((acc, p) => acc + (p.amountPaid || 0), 0);
+    usage.totalRentDue = usage.monthlyPayments.reduce((acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)), 0);
+    await usage.save();
+    await logAudit({
+        actor,
+        action: 'RENTAL_MONTH_ADDED',
+        entityType: 'InternalUsage',
+        entityId: usage._id.toString(),
+        afterState: { nextIndex, agreedRent, dueDate: newDueDate },
+        reason: `Added Month ${nextIndex} to rental schedule for ${usage.assignedPerson}`,
     });
     return usage;
 }

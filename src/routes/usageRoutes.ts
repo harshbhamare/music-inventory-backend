@@ -6,6 +6,9 @@ import {
   returnInstruments,
   extendExpectedReturnDate,
   recordRentalPayment,
+  updateRentalPayment,
+  adjustRentalMonthDue,
+  addRentalMonth,
   sendRentalReminder,
 } from '../services/internalUsageService.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -16,6 +19,9 @@ import {
   returnInternalUsageSchema,
   extendUsageSchema,
   recordRentalPaymentSchema,
+  updateRentalPaymentSchema,
+  adjustRentalMonthDueSchema,
+  addRentalMonthSchema,
 } from '../validators/index.js';
 import { ROLES, USAGE_STATUSES } from '../config/constants.js';
 
@@ -172,6 +178,59 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const usage = await recordRentalPayment(req.params.id as string, req.body, req.user!);
+      res.json({ success: true, data: { usage } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Update specific rental payment / price / transaction reference
+router.put(
+  '/:id/payments/:paymentId',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  validate(updateRentalPaymentSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const usage = await updateRentalPayment(
+        req.params.id as string,
+        req.params.paymentId as string,
+        req.body,
+        req.user!
+      );
+      res.json({ success: true, data: { usage } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Adjust scheduled rent amount due for a specific month
+router.put(
+  '/:id/adjust-month-due',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  validate(adjustRentalMonthDueSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const usage = await adjustRentalMonthDue(req.params.id as string, req.body, req.user!);
+      res.json({ success: true, data: { usage } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Add an additional month to the rental schedule
+router.post(
+  '/:id/add-month',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  validate(addRentalMonthSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const usage = await addRentalMonth(req.params.id as string, req.body, req.user!);
       res.json({ success: true, data: { usage } });
     } catch (err) {
       next(err);

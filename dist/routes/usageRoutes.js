@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { InternalUsage } from '../models/InternalUsage.js';
 import { UsageReturn } from '../models/UsageReturn.js';
-import { issueInstruments, returnInstruments, extendExpectedReturnDate, recordRentalPayment, sendRentalReminder, } from '../services/internalUsageService.js';
+import { issueInstruments, returnInstruments, extendExpectedReturnDate, recordRentalPayment, updateRentalPayment, adjustRentalMonthDue, addRentalMonth, sendRentalReminder, } from '../services/internalUsageService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { validate } from '../middleware/validate.js';
-import { issueInternalUsageSchema, returnInternalUsageSchema, extendUsageSchema, recordRentalPaymentSchema, } from '../validators/index.js';
+import { issueInternalUsageSchema, returnInternalUsageSchema, extendUsageSchema, recordRentalPaymentSchema, updateRentalPaymentSchema, adjustRentalMonthDueSchema, addRentalMonthSchema, } from '../validators/index.js';
 import { ROLES, USAGE_STATUSES } from '../config/constants.js';
 const router = Router();
 // List internal usage loans
@@ -124,6 +124,36 @@ router.get('/returns/all', requireAuth, async (_req, res, next) => {
 router.post('/:id/payments', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(recordRentalPaymentSchema), async (req, res, next) => {
     try {
         const usage = await recordRentalPayment(req.params.id, req.body, req.user);
+        res.json({ success: true, data: { usage } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Update specific rental payment / price / transaction reference
+router.put('/:id/payments/:paymentId', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(updateRentalPaymentSchema), async (req, res, next) => {
+    try {
+        const usage = await updateRentalPayment(req.params.id, req.params.paymentId, req.body, req.user);
+        res.json({ success: true, data: { usage } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Adjust scheduled rent amount due for a specific month
+router.put('/:id/adjust-month-due', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(adjustRentalMonthDueSchema), async (req, res, next) => {
+    try {
+        const usage = await adjustRentalMonthDue(req.params.id, req.body, req.user);
+        res.json({ success: true, data: { usage } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Add an additional month to the rental schedule
+router.post('/:id/add-month', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(addRentalMonthSchema), async (req, res, next) => {
+    try {
+        const usage = await addRentalMonth(req.params.id, req.body, req.user);
         res.json({ success: true, data: { usage } });
     }
     catch (err) {

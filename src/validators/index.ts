@@ -173,9 +173,39 @@ export const recordRentalPaymentSchema = z.object({
   body: z.object({
     amount: z.number().min(1, 'Payment amount must be greater than 0'),
     billingMonth: z.string().optional(),
+    paymentId: z.string().optional(),
+    monthIndex: z.number().optional(),
     paymentMethod: z.enum(Object.values(PAYMENT_METHODS) as [string, ...string[]]).default(PAYMENT_METHODS.UPI),
     transactionRef: z.string().optional(),
     notes: z.string().optional(),
+    adjustNextMonth: z.boolean().optional(),
+  }),
+});
+
+export const updateRentalPaymentSchema = z.object({
+  body: z.object({
+    amountPaid: z.number().min(0, 'Paid amount cannot be negative').optional(),
+    amountDue: z.number().min(0, 'Due amount cannot be negative').optional(),
+    transactionRef: z.string().optional(),
+    paymentMethod: z.enum(Object.values(PAYMENT_METHODS) as [string, ...string[]]).optional(),
+    notes: z.string().optional(),
+    paidAt: z.string().optional(),
+    adjustNextMonth: z.boolean().optional(),
+  }),
+});
+
+export const adjustRentalMonthDueSchema = z.object({
+  body: z.object({
+    monthIndex: z.number().int().min(1, 'Month index must be at least 1'),
+    newAmountDue: z.number().min(0, 'New amount due cannot be negative'),
+    reason: z.string().optional(),
+  }),
+});
+
+export const addRentalMonthSchema = z.object({
+  body: z.object({
+    amountDue: z.number().min(0).optional(),
+    dueDate: z.string().optional(),
   }),
 });
 

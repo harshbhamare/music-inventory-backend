@@ -17,6 +17,7 @@ export interface IUsageItem {
 }
 
 export interface IRentalMonthlyPayment {
+  _id?: Types.ObjectId;
   monthIndex: number;
   billingMonth: string;
   dueDate: Date;
