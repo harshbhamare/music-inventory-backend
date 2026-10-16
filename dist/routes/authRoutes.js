@@ -10,12 +10,20 @@ import { loginSchema, createUserSchema } from '../validators/index.js';
 import { ROLES } from '../config/constants.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { logAudit } from '../services/auditService.js';
+import { ensureDatabaseSeeded } from '../scripts/seed.js';
 const router = Router();
 router.post('/login', validate(loginSchema), async (req, res, next) => {
     try {
         const { email, password } = req.body;
         const normalizedEmail = email.toLowerCase().trim();
         let user = await User.findOne({ email: normalizedEmail });
+        if (!user) {
+            // Auto-seed if database has 0 users (e.g. freshly deployed database on Vercel)
+            const didSeed = await ensureDatabaseSeeded();
+            if (didSeed) {
+                user = await User.findOne({ email: normalizedEmail });
+            }
+        }
         if (!user) {
             throw new AppError('Invalid email or password.', 401, 'INVALID_CREDENTIALS');
         }

@@ -2,8 +2,7 @@ import { createApp } from './app.js';
 import { connectDB } from './config/db.js';
 import { ENV } from './config/env.js';
 import { initializeScheduledJobs } from './jobs/cronJobs.js';
-import { User } from './models/User.js';
-import { seedDatabase } from './scripts/seed.js';
+import { ensureDatabaseSeeded } from './scripts/seed.js';
 
 async function bootstrap() {
   try {
@@ -11,11 +10,7 @@ async function bootstrap() {
     await connectDB();
 
     // Auto-seed if database is empty
-    const userCount = await User.countDocuments();
-    if (userCount === 0) {
-      console.log('[SERVER] Empty database detected. Running initial seed...');
-      await seedDatabase();
-    }
+    await ensureDatabaseSeeded();
 
     // Start background cron jobs
     initializeScheduledJobs();

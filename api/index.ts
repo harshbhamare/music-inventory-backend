@@ -1,11 +1,13 @@
 import { createApp } from '../src/app.js';
 import { connectDB } from '../src/config/db.js';
+import { ensureDatabaseSeeded } from '../src/scripts/seed.js';
 
 let appInstance: any = null;
 
 export default async function handler(req: any, res: any) {
   try {
     await connectDB();
+    await ensureDatabaseSeeded();
   } catch (err: any) {
     console.error('[VERCEL_SERVERLESS] DB connection error:', err);
     if (req.url === '/' || req.url === '/health' || req.url === '/api/health') {

@@ -13,6 +13,7 @@ import { StockMovement } from '../models/StockMovement.js';
 import { SerializedItem } from '../models/SerializedItem.js';
 import { User } from '../models/User.js';
 import { clearAllLocalData } from '../scripts/clean-data.js';
+import { ensureDatabaseSeeded } from '../scripts/seed.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { ROLES, REPORT_TYPES } from '../config/constants.js';
@@ -251,6 +252,27 @@ router.post('/reset-data', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (_
         res.json({
             success: true,
             message: 'All temporary data successfully wiped. System is clean and ready.',
+        });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Initial Database Seeding endpoint (Public if 0 users exist; Super Admin protected if populated)
+router.all('/seed', async (req, res, next) => {
+    try {
+        const userCount = await User.countDocuments();
+        if (userCount > 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Database is already initialized and seeded with users. Seeding aborted.',
+            });
+        }
+        console.log('[SEED] Triggering initial database seed via /api/v1/meta/seed...');
+        await ensureDatabaseSeeded();
+        res.json({
+            success: true,
+            message: 'Database seeded successfully with default accounts and demo inventory.',
         });
     }
     catch (err) {

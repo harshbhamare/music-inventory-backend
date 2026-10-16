@@ -578,6 +578,26 @@ export async function seedDatabase() {
     ]);
     console.log('[SEED] Database seeded successfully with realistic data!');
 }
+let seedPromise = null;
+export async function ensureDatabaseSeeded() {
+    const userCount = await User.countDocuments();
+    if (userCount > 0) {
+        return false;
+    }
+    if (!seedPromise) {
+        seedPromise = (async () => {
+            try {
+                console.log('[SEED] Database is empty (0 users). Auto-initializing with default roles and data...');
+                await seedDatabase();
+            }
+            finally {
+                seedPromise = null;
+            }
+        })();
+    }
+    await seedPromise;
+    return true;
+}
 if (process.argv[1] && process.argv[1].endsWith('seed.ts')) {
     seedDatabase()
         .then(async () => {
