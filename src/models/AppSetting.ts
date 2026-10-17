@@ -2,6 +2,8 @@ import mongoose, { Schema, Document, Types } from 'mongoose';
 
 export interface IAppSetting extends Document {
   companyName: string;
+  storeName?: string;
+  storeCode?: string;
   contactEmail: string;
   contactPhone?: string;
   address?: string;
@@ -17,8 +19,10 @@ export interface IAppSetting extends Document {
 
 const AppSettingSchema = new Schema<IAppSetting>(
   {
-    companyName: { type: String, default: 'SoundStock Studio Academy & Store' },
-    contactEmail: { type: String, default: 'contact@soundstock.io' },
+    companyName: { type: String, default: 'Muziclub Inventory' },
+    storeName: { type: String, default: 'Muziclub Central Studio & Academy' },
+    storeCode: { type: String, default: 'CENTRAL' },
+    contactEmail: { type: String, default: 'contact@muziclub.com' },
     contactPhone: { type: String, default: '+91 98765 43210' },
     address: { type: String, default: 'Aundh & Hinjawadi, Pune, Maharashtra, India' },
     currency: { type: String, default: 'INR' },

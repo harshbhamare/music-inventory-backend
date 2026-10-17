@@ -7,16 +7,19 @@ import { InternalUsage } from '../models/InternalUsage.js';
 import { MaintenanceRecord } from '../models/MaintenanceRecord.js';
 import { InventoryAdjustment } from '../models/InventoryAdjustment.js';
 import { StockMovement } from '../models/StockMovement.js';
+import '../models/User.js';
+import '../models/StockLocation.js';
 import {
   SERIALIZED_STATUSES,
   USAGE_STATUSES,
   MAINTENANCE_STATUSES,
   ADJUSTMENT_STATUSES,
+  TRACKING_MODES,
 } from '../config/constants.js';
 
 export async function getDashboardMetrics(startDate?: Date, endDate?: Date) {
-  const start = startDate || new Date(new Date().setHours(0, 0, 0, 0));
-  const end = endDate || new Date(new Date().setHours(23, 59, 59, 999));
+  const start = startDate ? new Date(startDate) : new Date(0);
+  const end = endDate ? new Date(endDate) : new Date();
   const now = new Date();
 
   const sevenDaysAgo = new Date();
@@ -26,6 +29,7 @@ export async function getDashboardMetrics(startDate?: Date, endDate?: Date) {
   // Execute all dashboard queries in parallel with field projections for maximum performance
   const [
     products,
+    serializedSummary,
     serializedInUseCount,
     activeUsageCount,
     overdueUsageCount,
@@ -37,8 +41,22 @@ export async function getDashboardMetrics(startDate?: Date, endDate?: Date) {
     last7DaysSales,
   ] = await Promise.all([
     Product.find({ isActive: true })
-      .select('stockQuantity minStockThreshold purchaseCost defaultSellingPrice')
+      .select('stockQuantity minStockThreshold purchaseCost defaultSellingPrice trackingMode')
       .lean(),
+    SerializedItem.aggregate([
+      {
+        $match: {
+          status: { $nin: [SERIALIZED_STATUSES.SOLD, SERIALIZED_STATUSES.RETIRED] },
+        },
+      },
+      {
+        $group: {
+          _id: '$product',
+          count: { $sum: 1 },
+          totalCost: { $sum: '$unitCost' },
+        },
+      },
+    ]),
     SerializedItem.countDocuments({ status: SERIALIZED_STATUSES.ISSUED_INTERNAL }),
     InternalUsage.countDocuments({
       status: { $in: [USAGE_STATUSES.ACTIVE, USAGE_STATUSES.PARTIALLY_RETURNED] },
@@ -49,7 +67,12 @@ export async function getDashboardMetrics(startDate?: Date, endDate?: Date) {
     }),
     SerializedItem.countDocuments({ status: SERIALIZED_STATUSES.MAINTENANCE }),
     PurchaseReceipt.countDocuments({ receivedDate: { $gte: start, $lte: end } }),
-    Sale.find({ createdAt: { $gte: start, $lte: end } }).select('grandTotal').lean(),
+    Sale.find({
+      status: { $ne: 'CANCELLED' },
+      createdAt: { $gte: start, $lte: end },
+    })
+      .select('grandTotal')
+      .lean(),
     InventoryAdjustment.countDocuments({ status: ADJUSTMENT_STATUSES.PENDING_APPROVAL }),
     StockMovement.find()
       .populate('product', 'name sku brand color')
@@ -60,7 +83,12 @@ export async function getDashboardMetrics(startDate?: Date, endDate?: Date) {
       .limit(10)
       .lean(),
     Sale.aggregate([
-      { $match: { createdAt: { $gte: sevenDaysAgo } } },
+      {
+        $match: {
+          status: { $ne: 'CANCELLED' },
+          createdAt: { $gte: sevenDaysAgo },
+        },
+      },
       {
         $group: {
           _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
@@ -72,6 +100,14 @@ export async function getDashboardMetrics(startDate?: Date, endDate?: Date) {
     ]),
   ]);
 
+  // Index serialized aggregation by productId string
+  const serializedMap = new Map<string, { count: number; totalCost: number }>();
+  for (const s of serializedSummary) {
+    if (s._id) {
+      serializedMap.set(s._id.toString(), { count: s.count, totalCost: s.totalCost });
+    }
+  }
+
   const distinctProductCount = products.length;
   let totalUnitsOnHand = 0;
   let totalAvailableForSale = 0;
@@ -81,17 +117,32 @@ export async function getDashboardMetrics(startDate?: Date, endDate?: Date) {
 
   for (const p of products) {
     const sq = p.stockQuantity || { onHand: 0, reserved: 0, issuedInternal: 0, quarantined: 0 };
-    const unavailable = (sq.reserved || 0) + (sq.issuedInternal || 0) + (sq.quarantined || 0);
-    const available = Math.max(0, (sq.onHand || 0) - unavailable);
+    let onHand = sq.onHand || 0;
 
-    totalUnitsOnHand += sq.onHand || 0;
+    // For serialized items, use verified serial counts if available
+    const serData = serializedMap.get(p._id.toString());
+    if (p.trackingMode === TRACKING_MODES.SERIALIZED && serData && serData.count > 0) {
+      onHand = Math.max(onHand, serData.count);
+    }
+
+    const unavailable = (sq.reserved || 0) + (sq.issuedInternal || 0) + (sq.quarantined || 0);
+    const available = Math.max(0, onHand - unavailable);
+
+    totalUnitsOnHand += onHand;
     totalAvailableForSale += available;
+
     if (available <= (p.minStockThreshold || 5)) {
       lowStockCount++;
     }
 
-    totalInventoryValuationAtCost += (sq.onHand || 0) * (p.purchaseCost || 0);
-    totalPotentialRetailValuation += (sq.onHand || 0) * (p.defaultSellingPrice || 0);
+    // Accurate Valuation calculation
+    if (p.trackingMode === TRACKING_MODES.SERIALIZED && serData && serData.totalCost > 0) {
+      totalInventoryValuationAtCost += serData.totalCost;
+    } else {
+      totalInventoryValuationAtCost += onHand * (p.purchaseCost || 0);
+    }
+
+    totalPotentialRetailValuation += onHand * (p.defaultSellingPrice || 0);
   }
 
   const periodSalesCount = periodSales.length;
@@ -120,15 +171,47 @@ export async function getDashboardMetrics(startDate?: Date, endDate?: Date) {
 }
 
 export async function getInventoryValuationReport() {
-  const products = await Product.find({ isActive: true })
-    .populate('category', 'name')
-    .lean();
+  const [products, serializedSummary] = await Promise.all([
+    Product.find({ isActive: true })
+      .populate('category', 'name')
+      .lean(),
+    SerializedItem.aggregate([
+      {
+        $match: {
+          status: { $nin: [SERIALIZED_STATUSES.SOLD, SERIALIZED_STATUSES.RETIRED] },
+        },
+      },
+      {
+        $group: {
+          _id: '$product',
+          count: { $sum: 1 },
+          totalCost: { $sum: '$unitCost' },
+        },
+      },
+    ]),
+  ]);
+
+  const serializedMap = new Map<string, { count: number; totalCost: number }>();
+  for (const s of serializedSummary) {
+    if (s._id) {
+      serializedMap.set(s._id.toString(), { count: s.count, totalCost: s.totalCost });
+    }
+  }
 
   const reportItems = products.map((p) => {
     const sq = p.stockQuantity || { onHand: 0, reserved: 0, issuedInternal: 0, quarantined: 0 };
-    const onHand = sq.onHand || 0;
-    const valuationCost = onHand * p.purchaseCost;
-    const potentialRetail = onHand * p.defaultSellingPrice;
+    let onHand = sq.onHand || 0;
+    const serData = serializedMap.get(p._id.toString());
+    if (p.trackingMode === TRACKING_MODES.SERIALIZED && serData && serData.count > 0) {
+      onHand = Math.max(onHand, serData.count);
+    }
+
+    const valuationCost =
+      p.trackingMode === TRACKING_MODES.SERIALIZED && serData && serData.totalCost > 0
+        ? serData.totalCost
+        : onHand * (p.purchaseCost || 0);
+
+    const potentialRetail = onHand * (p.defaultSellingPrice || 0);
     const potentialGrossMargin = potentialRetail - valuationCost;
 
     return {

@@ -23,7 +23,7 @@ export const createProductSchema = z.object({
         color: z.string().optional(),
         hsnCode: z.string().optional().default('9202'),
         category: z.string().min(1, 'Category ID is required'),
-        brand: z.string().optional().default('StereoBliss'),
+        brand: z.string().optional().default('Muziclub'),
         modelName: z.string().optional(),
         description: z.string().optional(),
         trackingMode: z.enum([TRACKING_MODES.QUANTITY, TRACKING_MODES.SERIALIZED]).optional().default(TRACKING_MODES.QUANTITY),
@@ -32,6 +32,9 @@ export const createProductSchema = z.object({
         defaultSellingPrice: z.number().min(0, 'Selling price must be positive'),
         supplier: z.string().optional(),
         minStockThreshold: z.number().min(0).default(5),
+        initialStock: z.number().min(0).optional().default(0),
+        destinationLocation: z.string().optional(),
+        initialSerialNumbers: z.array(z.string()).optional(),
         imageUrl: z.string().optional(),
     }),
 });

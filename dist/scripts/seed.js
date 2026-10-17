@@ -45,7 +45,7 @@ export async function seedDatabase() {
     let defaultLocation = await StockLocation.findOne({ isDefault: true });
     if (!defaultLocation) {
         defaultLocation = await StockLocation.create({
-            name: 'Central Studio & Academy — Main Store',
+            name: 'Muziclub Central Studio & Academy',
             code: 'CENTRAL',
             type: 'STORE',
             address: 'Central Studio Campus, Floor 1, Pune, Maharashtra',
@@ -94,10 +94,12 @@ export async function seedDatabase() {
     let setting = await AppSetting.findOne();
     if (!setting) {
         await AppSetting.create({
-            companyName: 'StereoBliss - Retail Inventory',
-            contactEmail: 'inventory@stereobliss.com',
+            companyName: 'Muziclub Inventory',
+            storeName: 'Muziclub Central Studio & Academy',
+            storeCode: 'CENTRAL',
+            contactEmail: 'contact@muziclub.com',
             contactPhone: '+91 98765 43210',
-            address: 'Central Campus, 1st Floor, Retail Hub',
+            address: 'Aundh & Hinjawadi, Pune, Maharashtra, India',
             currencySymbol: '₹',
             defaultLocation: defaultLocation._id,
             managerApprovalThresholdValue: 3,
@@ -110,7 +112,7 @@ export async function seedDatabase() {
     if (reportConfigCount === 0) {
         await EmailReportConfig.create({
             reportType: REPORT_TYPES.DAILY_STOCK_SUMMARY,
-            recipients: ['admin@stereobliss.com', 'manager@stereobliss.com'],
+            recipients: ['inventory@muziclub.com'],
             scheduleCron: '0 20 * * *',
             timeZone: 'Asia/Kolkata',
             isEnabled: true,

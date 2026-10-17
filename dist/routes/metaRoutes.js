@@ -17,6 +17,9 @@ import { ensureDatabaseSeeded } from '../scripts/seed.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { ROLES, REPORT_TYPES } from '../config/constants.js';
+import { reloadScheduledJobs } from '../jobs/cronJobs.js';
+import { sendDailyStockSummary, sendOverdueUsageReminders, sendWeeklySalesSummary, sendLowStockAlert, } from '../services/emailService.js';
+import cron from 'node-cron';
 const router = Router();
 // Categories
 router.get('/categories', requireAuth, async (_req, res, next) => {
@@ -99,19 +102,61 @@ router.post('/locations', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (re
         next(err);
     }
 });
-// Settings
+// Public Settings (accessible for branding in shell / login without auth)
+router.get('/settings/public', async (_req, res, next) => {
+    try {
+        const setting = await AppSetting.findOne().populate('defaultLocation').lean();
+        const defaultLoc = setting?.defaultLocation || (await StockLocation.findOne({ isDefault: true }).lean());
+        res.json({
+            success: true,
+            data: {
+                companyName: setting?.companyName || 'Muziclub Inventory',
+                storeName: setting?.storeName || defaultLoc?.name || 'Muziclub Central Studio & Academy',
+                storeCode: setting?.storeCode || defaultLoc?.code || 'CENTRAL',
+                currencySymbol: setting?.currencySymbol || '₹',
+                timeZone: setting?.timeZone || 'Asia/Kolkata',
+            },
+        });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Full Settings
 router.get('/settings', requireAuth, async (_req, res, next) => {
     try {
-        let setting = await AppSetting.findOne().populate('defaultLocation', 'name code').lean();
+        let setting = await AppSetting.findOne().populate('defaultLocation').lean();
+        let defaultLoc = await StockLocation.findOne({ isDefault: true }) || await StockLocation.findOne();
+        if (!defaultLoc) {
+            defaultLoc = await StockLocation.create({
+                name: 'Muziclub Central Studio & Academy',
+                code: 'CENTRAL',
+                type: 'STORE',
+                address: 'Central Studio Campus, Floor 1, Pune, Maharashtra',
+                isDefault: true,
+                isActive: true,
+            });
+        }
         if (!setting) {
-            const defaultLoc = await StockLocation.findOne({ isDefault: true }) || await StockLocation.findOne();
             setting = (await AppSetting.create({
-                companyName: 'StereoBliss - Retail Inventory',
-                contactEmail: 'contact@stereobliss.com',
-                defaultLocation: defaultLoc?._id,
+                companyName: 'Muziclub Inventory',
+                storeName: defaultLoc.name,
+                storeCode: defaultLoc.code,
+                contactEmail: 'contact@muziclub.com',
+                contactPhone: '+91 98765 43210',
+                address: defaultLoc.address || 'Aundh & Hinjawadi, Pune, Maharashtra, India',
+                defaultLocation: defaultLoc._id,
             })).toObject();
         }
-        res.json({ success: true, data: { setting } });
+        else {
+            // Ensure storeName and storeCode are populated from location if not set
+            if (!setting.storeName && defaultLoc)
+                setting.storeName = defaultLoc.name;
+            if (!setting.storeCode && defaultLoc)
+                setting.storeCode = defaultLoc.code;
+        }
+        const locations = await StockLocation.find({ isActive: true }).sort({ name: 1 }).lean();
+        res.json({ success: true, data: { setting, locations, defaultLocation: defaultLoc } });
     }
     catch (err) {
         next(err);
@@ -119,15 +164,74 @@ router.get('/settings', requireAuth, async (_req, res, next) => {
 });
 router.patch('/settings', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (req, res, next) => {
     try {
+        const { companyName, storeName, storeCode, contactEmail, contactPhone, address, currency, currencySymbol, managerApprovalThresholdValue, lowStockAlertThresholdDefault, timeZone, defaultLocationId, } = req.body;
         let setting = await AppSetting.findOne();
         if (!setting) {
-            setting = new AppSetting(req.body);
+            setting = new AppSetting();
+        }
+        // Update AppSetting fields
+        if (companyName !== undefined)
+            setting.companyName = companyName.trim();
+        if (storeName !== undefined)
+            setting.storeName = storeName.trim();
+        if (storeCode !== undefined)
+            setting.storeCode = storeCode.trim().toUpperCase();
+        if (contactEmail !== undefined)
+            setting.contactEmail = contactEmail.trim().toLowerCase();
+        if (contactPhone !== undefined)
+            setting.contactPhone = contactPhone.trim();
+        if (address !== undefined)
+            setting.address = address.trim();
+        if (currency !== undefined)
+            setting.currency = currency.trim().toUpperCase();
+        if (currencySymbol !== undefined)
+            setting.currencySymbol = currencySymbol.trim();
+        if (managerApprovalThresholdValue !== undefined) {
+            setting.managerApprovalThresholdValue = Number(managerApprovalThresholdValue) || 3;
+        }
+        if (lowStockAlertThresholdDefault !== undefined) {
+            setting.lowStockAlertThresholdDefault = Number(lowStockAlertThresholdDefault) || 5;
+        }
+        if (timeZone !== undefined)
+            setting.timeZone = timeZone;
+        // Sync with StockLocation
+        let defaultLoc = null;
+        if (defaultLocationId) {
+            defaultLoc = await StockLocation.findById(defaultLocationId);
+        }
+        else if (setting.defaultLocation) {
+            defaultLoc = await StockLocation.findById(setting.defaultLocation);
         }
         else {
-            Object.assign(setting, req.body);
+            defaultLoc = await StockLocation.findOne({ isDefault: true }) || await StockLocation.findOne();
         }
+        if (!defaultLoc) {
+            defaultLoc = await StockLocation.create({
+                name: storeName?.trim() || 'Muziclub Central Studio & Academy',
+                code: storeCode?.trim().toUpperCase() || 'CENTRAL',
+                type: 'STORE',
+                address: address?.trim() || 'Central Campus, Floor 1, Pune',
+                isDefault: true,
+                isActive: true,
+            });
+        }
+        else {
+            if (storeName)
+                defaultLoc.name = storeName.trim();
+            if (storeCode)
+                defaultLoc.code = storeCode.trim().toUpperCase();
+            if (address)
+                defaultLoc.address = address.trim();
+            await defaultLoc.save();
+        }
+        setting.defaultLocation = defaultLoc._id;
         await setting.save();
-        res.json({ success: true, data: { setting } });
+        const populatedSetting = await AppSetting.findById(setting._id).populate('defaultLocation').lean();
+        res.json({
+            success: true,
+            message: 'Organization & Store Details successfully updated.',
+            data: { setting: populatedSetting, defaultLocation: defaultLoc },
+        });
     }
     catch (err) {
         next(err);
@@ -136,34 +240,50 @@ router.patch('/settings', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (re
 // Email Report Configs
 router.get('/report-configs', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (_req, res, next) => {
     try {
-        let configs = await EmailReportConfig.find().lean();
-        if (configs.length === 0) {
-            // Seed default report configs
-            await EmailReportConfig.create([
-                {
-                    reportType: REPORT_TYPES.DAILY_STOCK_SUMMARY,
-                    title: 'Daily Stock & Availability Summary',
-                    recipients: ['inventory@stereobliss.com'],
-                    scheduleCron: '0 9 * * *',
-                    isEnabled: true,
-                },
-                {
-                    reportType: REPORT_TYPES.WEEKLY_SALES_SUMMARY,
-                    title: 'Weekly Sales Performance Summary',
-                    recipients: ['accounts@stereobliss.com'],
-                    scheduleCron: '0 18 * * 0',
-                    isEnabled: true,
-                },
-                {
-                    reportType: REPORT_TYPES.OVERDUE_USAGE_REMINDER,
-                    title: 'Daily Overdue Instrument Loans Notice',
-                    recipients: ['manager@stereobliss.com'],
-                    scheduleCron: '0 10 * * *',
-                    isEnabled: true,
-                },
-            ]);
-            configs = await EmailReportConfig.find().lean();
+        const setting = await AppSetting.findOne().lean();
+        const defaultEmail = setting?.contactEmail || 'inventory@muziclub.com';
+        const existingConfigs = await EmailReportConfig.find().lean();
+        const existingTypes = new Set(existingConfigs.map((c) => c.reportType));
+        const standardConfigs = [
+            {
+                reportType: REPORT_TYPES.DAILY_STOCK_SUMMARY,
+                title: 'Daily Stock & Inventory Summary',
+                recipients: [defaultEmail],
+                scheduleCron: '0 9 * * *', // 9:00 AM daily
+                timeZone: setting?.timeZone || 'Asia/Kolkata',
+                isEnabled: true,
+            },
+            {
+                reportType: REPORT_TYPES.OVERDUE_USAGE_REMINDER,
+                title: 'Daily Overdue Instrument Loan Alerts',
+                recipients: [defaultEmail],
+                scheduleCron: '0 10 * * *', // 10:00 AM daily
+                timeZone: setting?.timeZone || 'Asia/Kolkata',
+                isEnabled: true,
+            },
+            {
+                reportType: REPORT_TYPES.WEEKLY_SALES_SUMMARY,
+                title: 'Weekly Sales Performance Summary',
+                recipients: [defaultEmail],
+                scheduleCron: '0 18 * * 0', // Sunday 6:00 PM
+                timeZone: setting?.timeZone || 'Asia/Kolkata',
+                isEnabled: true,
+            },
+            {
+                reportType: REPORT_TYPES.LOW_STOCK_ALERT,
+                title: 'Low Stock Safety Threshold Alert',
+                recipients: [defaultEmail],
+                scheduleCron: '0 8 * * *', // 8:00 AM daily
+                timeZone: setting?.timeZone || 'Asia/Kolkata',
+                isEnabled: true,
+            },
+        ];
+        for (const sc of standardConfigs) {
+            if (!existingTypes.has(sc.reportType)) {
+                await EmailReportConfig.create(sc);
+            }
         }
+        const configs = await EmailReportConfig.find().sort({ createdAt: 1 }).lean();
         res.json({ success: true, data: { configs } });
     }
     catch (err) {
@@ -172,10 +292,95 @@ router.get('/report-configs', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.
 });
 router.patch('/report-configs/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (req, res, next) => {
     try {
-        const config = await EmailReportConfig.findByIdAndUpdate(req.params.id, req.body, {
+        const { scheduleCron, recipients, isEnabled, title, timeZone } = req.body;
+        const updates = {};
+        if (title !== undefined)
+            updates.title = title.trim();
+        if (isEnabled !== undefined)
+            updates.isEnabled = Boolean(isEnabled);
+        if (timeZone !== undefined)
+            updates.timeZone = timeZone;
+        if (scheduleCron !== undefined) {
+            const trimmedCron = scheduleCron.trim();
+            if (!cron.validate(trimmedCron)) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Invalid cron expression: "${trimmedCron}". Standard 5-part format required (e.g. "0 9 * * *").`,
+                });
+            }
+            updates.scheduleCron = trimmedCron;
+        }
+        if (recipients !== undefined) {
+            if (Array.isArray(recipients)) {
+                const cleaned = recipients
+                    .map((r) => String(r).trim().toLowerCase())
+                    .filter((r) => r.length > 0 && r.includes('@'));
+                updates.recipients = cleaned;
+            }
+            else if (typeof recipients === 'string') {
+                const cleaned = recipients
+                    .split(/[,;\n]/)
+                    .map((r) => r.trim().toLowerCase())
+                    .filter((r) => r.length > 0 && r.includes('@'));
+                updates.recipients = cleaned;
+            }
+        }
+        const config = await EmailReportConfig.findByIdAndUpdate(req.params.id, updates, {
             new: true,
         });
-        res.json({ success: true, data: { config } });
+        if (!config) {
+            return res.status(404).json({ success: false, message: 'Report schedule config not found.' });
+        }
+        // Automatically reload node-cron background runners with the updated schedule & recipients!
+        await reloadScheduledJobs();
+        res.json({
+            success: true,
+            message: 'Automated schedule successfully updated and background runner reloaded.',
+            data: { config },
+        });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Manually trigger a scheduled report immediately to configured recipients
+router.post('/report-configs/:id/run-now', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (req, res, next) => {
+    try {
+        const config = await EmailReportConfig.findById(req.params.id);
+        if (!config) {
+            return res.status(404).json({ success: false, message: 'Report schedule config not found.' });
+        }
+        if (!config.recipients || config.recipients.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'No recipient email addresses configured for this report.',
+            });
+        }
+        console.log(`[MANUAL_TRIGGER] Triggering immediate execution of report ${config.reportType} by ${req.user.email}...`);
+        let logResult = null;
+        switch (config.reportType) {
+            case REPORT_TYPES.DAILY_STOCK_SUMMARY:
+                logResult = await sendDailyStockSummary(config.recipients);
+                break;
+            case REPORT_TYPES.OVERDUE_USAGE_REMINDER:
+                logResult = await sendOverdueUsageReminders(config.recipients);
+                break;
+            case REPORT_TYPES.WEEKLY_SALES_SUMMARY:
+                logResult = await sendWeeklySalesSummary(config.recipients);
+                break;
+            case REPORT_TYPES.LOW_STOCK_ALERT:
+                logResult = await sendLowStockAlert(config.recipients);
+                break;
+            default:
+                return res.status(400).json({ success: false, message: `Unsupported report type: ${config.reportType}` });
+        }
+        config.lastRunAt = new Date();
+        await config.save();
+        res.json({
+            success: true,
+            message: `Report "${config.title}" triggered successfully to ${config.recipients.length} recipient(s).`,
+            data: { log: logResult, lastRunAt: config.lastRunAt },
+        });
     }
     catch (err) {
         next(err);

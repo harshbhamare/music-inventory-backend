@@ -13,7 +13,7 @@ const ProductSchema = new Schema({
     color: { type: String, trim: true },
     hsnCode: { type: String, default: '9202', trim: true },
     category: { type: Schema.Types.ObjectId, ref: 'Category', required: true },
-    brand: { type: String, required: false, default: 'StereoBliss', trim: true },
+    brand: { type: String, required: false, default: 'Muziclub', trim: true },
     modelName: { type: String, trim: true },
     description: { type: String, trim: true },
     trackingMode: {

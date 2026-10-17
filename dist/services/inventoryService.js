@@ -3,7 +3,7 @@ import { Product } from '../models/Product.js';
 import { SerializedItem } from '../models/SerializedItem.js';
 import { StockMovement } from '../models/StockMovement.js';
 import { StockLocation } from '../models/StockLocation.js';
-import { TRACKING_MODES, } from '../config/constants.js';
+import { TRACKING_MODES, SERIALIZED_STATUSES, MOVEMENT_TYPES, } from '../config/constants.js';
 import { AppError } from '../middleware/errorHandler.js';
 export async function listProducts(params) {
     const page = Math.max(1, Number(params.page) || 1);
@@ -112,26 +112,40 @@ export async function createProduct(input, actor) {
             throw new AppError(`A product with SKU ${input.sku} already exists.`, 409, 'DUPLICATE_SKU');
         }
     }
-    const brand = (input.brand && input.brand.trim()) || 'StereoBliss';
+    const brand = (input.brand && input.brand.trim()) || 'Muziclub';
     const trackingMode = input.trackingMode || TRACKING_MODES.QUANTITY;
+    const initialStock = Math.max(0, Number(input.initialStock) || 0);
     // Find or create default location for initial locationStock array
-    const defaultLoc = await StockLocation.findOne({ isDefault: true }) || await StockLocation.findOne();
+    const defaultLoc = (input.destinationLocation ? await StockLocation.findById(input.destinationLocation) : null) ||
+        (await StockLocation.findOne({ isDefault: true })) ||
+        (await StockLocation.findOne());
+    const locationId = defaultLoc?._id;
     const product = await Product.create({
-        ...input,
+        name: input.name,
         sku,
+        color: input.color?.trim() || undefined,
+        category: input.category,
         brand,
+        modelName: input.modelName?.trim() || undefined,
+        description: input.description?.trim() || undefined,
         trackingMode,
+        unitOfMeasure: input.unitOfMeasure || 'pcs',
+        purchaseCost: input.purchaseCost,
+        defaultSellingPrice: input.defaultSellingPrice,
+        supplier: input.supplier || undefined,
+        minStockThreshold: input.minStockThreshold !== undefined ? input.minStockThreshold : 5,
+        imageUrl: input.imageUrl,
         stockQuantity: {
-            onHand: 0,
+            onHand: initialStock,
             reserved: 0,
             issuedInternal: 0,
             quarantined: 0,
         },
-        locationStock: defaultLoc
+        locationStock: locationId
             ? [
                 {
-                    location: defaultLoc._id,
-                    onHand: 0,
+                    location: locationId,
+                    onHand: initialStock,
                     reserved: 0,
                     issuedInternal: 0,
                     quarantined: 0,
@@ -140,6 +154,51 @@ export async function createProduct(input, actor) {
             : [],
         isActive: true,
     });
+    // If initial stock was provided, record initial stock movements and serialized units
+    if (initialStock > 0 && locationId) {
+        if (trackingMode === TRACKING_MODES.SERIALIZED) {
+            const serialCount = await SerializedItem.countDocuments();
+            const serials = input.initialSerialNumbers || [];
+            for (let i = 0; i < initialStock; i++) {
+                const assetId = `AST-${String(serialCount + i + 1).padStart(4, '0')}`;
+                const mfgSerial = serials[i]?.trim().toUpperCase() || undefined;
+                const serializedItem = await SerializedItem.create({
+                    assetId,
+                    manufacturerSerial: mfgSerial,
+                    product: product._id,
+                    unitCost: product.purchaseCost,
+                    location: locationId,
+                    status: SERIALIZED_STATUSES.AVAILABLE,
+                    condition: 'NEW',
+                    notes: 'Opening stock item',
+                });
+                await createStockMovement({
+                    product: product._id,
+                    serializedItem: serializedItem._id,
+                    location: locationId,
+                    movementType: MOVEMENT_TYPES.MANUAL_ADJUSTMENT,
+                    quantityDelta: 1,
+                    destinationStatus: SERIALIZED_STATUSES.AVAILABLE,
+                    transactionRef: `INIT-${product.sku}`,
+                    transactionModel: 'Product',
+                    reason: 'Initial opening stock intake',
+                    performedBy: actor.id,
+                });
+            }
+        }
+        else {
+            await createStockMovement({
+                product: product._id,
+                location: locationId,
+                movementType: MOVEMENT_TYPES.MANUAL_ADJUSTMENT,
+                quantityDelta: initialStock,
+                transactionRef: `INIT-${product.sku}`,
+                transactionModel: 'Product',
+                reason: 'Initial opening stock balance',
+                performedBy: actor.id,
+            });
+        }
+    }
     return product;
 }
 export async function updateProduct(id, updates, actor) {

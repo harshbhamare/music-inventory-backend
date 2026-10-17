@@ -52,9 +52,9 @@ export async function clearAllLocalData() {
     let defaultLoc = await StockLocation.findOne({ isDefault: true });
     if (!defaultLoc) {
         defaultLoc = await StockLocation.create({
-            name: 'Central Studio & Academy — Main Store',
+            name: 'Muziclub Central Studio & Academy',
             code: 'CENTRAL',
-            address: 'Central Studio Campus, Floor 1',
+            address: 'Central Studio Campus, Floor 1, Pune, Maharashtra',
             isDefault: true,
             isActive: true,
         });
@@ -64,10 +64,12 @@ export async function clearAllLocalData() {
     let setting = await AppSetting.findOne();
     if (!setting) {
         await AppSetting.create({
-            companyName: 'StereoBliss - Retail Inventory',
-            contactEmail: 'inventory@stereobliss.com',
+            companyName: 'Muziclub Inventory',
+            storeName: 'Muziclub Central Studio & Academy',
+            storeCode: 'CENTRAL',
+            contactEmail: 'contact@muziclub.com',
             contactPhone: '+91 98765 43210',
-            address: 'Central Campus, 1st Floor, Retail Hub',
+            address: 'Aundh & Hinjawadi, Pune, Maharashtra, India',
             currencySymbol: '₹',
             defaultLocation: defaultLoc._id,
             managerApprovalThresholdValue: 3,
