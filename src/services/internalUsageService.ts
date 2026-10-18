@@ -794,7 +794,7 @@ export async function sendRentalReminder(usageId: string, actor: AuthenticatedUs
   const prodName = (usage.items[0]?.product as any)?.name || 'Musical Instrument';
   const pendingAmount = usage.totalRentDue > 0 ? usage.totalRentDue : usage.monthlyRent;
 
-  const reminderMessage = `Dear ${usage.assignedPerson}, this is a payment reminder from StereoBliss Retail & Rentals. Your rental payment of ₹${pendingAmount} for "${prodName}" (Ref: ${usage.issueReference}) is due. Please pay via UPI/Card at your earliest convenience. Thank you!`;
+  const reminderMessage = `Dear ${usage.assignedPerson}, this is a payment reminder from Stereobliss Retail & Rentals. Your rental payment of ₹${pendingAmount} for "${prodName}" (Ref: ${usage.issueReference}) is due. Please pay via UPI/Card at your earliest convenience. Thank you!`;
 
   usage.remindersSent.push({
     sentAt: new Date(),

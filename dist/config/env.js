@@ -10,5 +10,5 @@ export const ENV = {
     RESEND_API_KEY: process.env.RESEND_API_KEY || '',
     EMAIL_FROM: process.env.EMAIL_FROM || 'inventory@stereobliss.com',
     DEFAULT_LOCATION_CODE: 'PUNE_HQ',
-    DEFAULT_LOCATION_NAME: 'StereoBliss Central Store',
+    DEFAULT_LOCATION_NAME: 'Stereobliss Central Store',
 };

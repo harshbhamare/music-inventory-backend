@@ -26,7 +26,7 @@ import {
 } from '../config/constants.js';
 
 export async function seedDatabase() {
-  console.log('[SEED] Starting StereoBliss clean initialization script...');
+  console.log('[SEED] Starting Stereobliss clean initialization script...');
   await connectDB();
 
   // 1. Wipe all previous dummy/mock data
@@ -53,10 +53,10 @@ export async function seedDatabase() {
   let defaultLocation = await StockLocation.findOne({ isDefault: true });
   if (!defaultLocation) {
     defaultLocation = await StockLocation.create({
-      name: 'Muziclub Central Studio & Academy',
+      name: 'Stereobliss Central Store',
       code: 'CENTRAL',
       type: 'STORE',
-      address: 'Central Studio Campus, Floor 1, Pune, Maharashtra',
+      address: 'Stereobliss Central Store, Pune, Maharashtra',
       isDefault: true,
       isActive: true,
     });
@@ -107,12 +107,12 @@ export async function seedDatabase() {
   let setting = await AppSetting.findOne();
   if (!setting) {
     await AppSetting.create({
-      companyName: 'Muziclub Inventory',
-      storeName: 'Muziclub Central Studio & Academy',
+      companyName: 'Stereobliss Retail',
+      storeName: 'Stereobliss Central Store',
       storeCode: 'CENTRAL',
-      contactEmail: 'contact@muziclub.com',
+      contactEmail: 'contact@stereobliss.com',
       contactPhone: '+91 98765 43210',
-      address: 'Aundh & Hinjawadi, Pune, Maharashtra, India',
+      address: 'Stereobliss Central Store, Pune, Maharashtra, India',
       currencySymbol: '₹',
       defaultLocation: defaultLocation._id,
       managerApprovalThresholdValue: 3,
@@ -126,7 +126,7 @@ export async function seedDatabase() {
   if (reportConfigCount === 0) {
     await EmailReportConfig.create({
       reportType: REPORT_TYPES.DAILY_STOCK_SUMMARY,
-      recipients: ['inventory@muziclub.com'],
+      recipients: ['inventory@stereobliss.com'],
       scheduleCron: '0 20 * * *',
       timeZone: 'Asia/Kolkata',
       isEnabled: true,
@@ -142,7 +142,7 @@ let seedPromise: Promise<void> | null = null;
 export async function ensureDatabaseSeeded(): Promise<boolean> {
   const userCount = await User.countDocuments();
   if (userCount > 0) {
-    // Ensure both StereoBliss accounts exist with proper roles
+    // Ensure both Stereobliss accounts exist with proper roles
     const adminExists = await User.findOne({ email: 'admin@stereobliss.com' });
     if (!adminExists) {
       const passwordHash = await bcrypt.hash('Stock@2026', 10);

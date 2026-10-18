@@ -24,10 +24,10 @@ export interface SendEmailParams {
 async function getOrgInfo() {
   const setting = await AppSetting.findOne().lean();
   return {
-    companyName: setting?.companyName || 'Muziclub Inventory',
-    storeName: setting?.storeName || 'Main Store & Academy',
+    companyName: setting?.companyName || 'Stereobliss Retail',
+    storeName: setting?.storeName || 'Stereobliss Central Store',
     currencySymbol: setting?.currencySymbol || '₹',
-    contactEmail: setting?.contactEmail || 'inventory@muziclub.com',
+    contactEmail: setting?.contactEmail || 'inventory@stereobliss.com',
   };
 }
 
@@ -59,7 +59,7 @@ export async function sendNotificationEmail(params: SendEmailParams) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          from: ENV.EMAIL_FROM || 'inventory@muziclub.com',
+          from: ENV.EMAIL_FROM || 'inventory@stereobliss.com',
           to: validRecipients,
           subject: params.subject,
           html: params.htmlContent,

@@ -74,11 +74,11 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
   }
 });
 
-// Create product (Superadmin only)
+// Create product (Superadmin & Manager)
 router.post(
   '/',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   validate(createProductSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -98,11 +98,11 @@ router.post(
   }
 );
 
-// Update product (Superadmin only)
+// Update product (Superadmin & Manager)
 router.patch(
   '/:id',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   validate(updateProductSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -183,11 +183,11 @@ router.post(
   }
 );
 
-// Delete / Deactivate Product (Superadmin only)
+// Delete / Deactivate Product (Superadmin & Manager)
 router.delete(
   '/:id',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const product = await Product.findById(req.params.id);

@@ -59,8 +59,8 @@ router.get('/:id', requireAuth, async (req, res, next) => {
         next(err);
     }
 });
-// Create product (Superadmin only)
-router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN), validate(createProductSchema), async (req, res, next) => {
+// Create product (Superadmin & Manager)
+router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(createProductSchema), async (req, res, next) => {
     try {
         const product = await createProduct(req.body, req.user);
         await logAudit({
@@ -77,8 +77,8 @@ router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN), validate(createPro
         next(err);
     }
 });
-// Update product (Superadmin only)
-router.patch('/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN), validate(updateProductSchema), async (req, res, next) => {
+// Update product (Superadmin & Manager)
+router.patch('/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(updateProductSchema), async (req, res, next) => {
     try {
         const product = await updateProduct(req.params.id, req.body, req.user);
         await logAudit({
@@ -145,8 +145,8 @@ router.post('/:id/adjust-stock', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROL
         next(err);
     }
 });
-// Delete / Deactivate Product (Superadmin only)
-router.delete('/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (req, res, next) => {
+// Delete / Deactivate Product (Superadmin & Manager)
+router.delete('/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
     try {
         const product = await Product.findById(req.params.id);
         if (!product) {

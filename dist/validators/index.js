@@ -23,7 +23,7 @@ export const createProductSchema = z.object({
         color: z.string().optional(),
         hsnCode: z.string().optional().default('9202'),
         category: z.string().min(1, 'Category ID is required'),
-        brand: z.string().optional().default('Muziclub'),
+        brand: z.string().optional().default('Stereobliss'),
         modelName: z.string().optional(),
         description: z.string().optional(),
         trackingMode: z.enum([TRACKING_MODES.QUANTITY, TRACKING_MODES.SERIALIZED]).optional().default(TRACKING_MODES.QUANTITY),

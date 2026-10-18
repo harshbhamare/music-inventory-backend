@@ -112,7 +112,7 @@ export async function createProduct(input, actor) {
             throw new AppError(`A product with SKU ${input.sku} already exists.`, 409, 'DUPLICATE_SKU');
         }
     }
-    const brand = (input.brand && input.brand.trim()) || 'Muziclub';
+    const brand = (input.brand && input.brand.trim()) || 'Stereobliss';
     const trackingMode = input.trackingMode || TRACKING_MODES.QUANTITY;
     const initialStock = Math.max(0, Number(input.initialStock) || 0);
     // Find or create default location for initial locationStock array

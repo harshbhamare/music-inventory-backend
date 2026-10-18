@@ -19,10 +19,10 @@ export interface IAppSetting extends Document {
 
 const AppSettingSchema = new Schema<IAppSetting>(
   {
-    companyName: { type: String, default: 'Muziclub Inventory' },
-    storeName: { type: String, default: 'Muziclub Central Studio & Academy' },
+    companyName: { type: String, default: 'Stereobliss Retail' },
+    storeName: { type: String, default: 'Stereobliss Central Store' },
     storeCode: { type: String, default: 'CENTRAL' },
-    contactEmail: { type: String, default: 'contact@muziclub.com' },
+    contactEmail: { type: String, default: 'contact@stereobliss.com' },
     contactPhone: { type: String, default: '+91 98765 43210' },
     address: { type: String, default: 'Aundh & Hinjawadi, Pune, Maharashtra, India' },
     currency: { type: String, default: 'INR' },

@@ -163,7 +163,7 @@ export async function createProduct(input: CreateProductInput, actor: Authentica
     }
   }
 
-  const brand = (input.brand && input.brand.trim()) || 'Muziclub';
+  const brand = (input.brand && input.brand.trim()) || 'Stereobliss';
   const trackingMode = input.trackingMode || TRACKING_MODES.QUANTITY;
   const initialStock = Math.max(0, Number(input.initialStock) || 0);
 

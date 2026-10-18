@@ -41,7 +41,7 @@ router.get('/categories', requireAuth, async (_req: Request, res: Response, next
 router.post(
   '/categories',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const category = await Category.create(req.body);
@@ -131,7 +131,7 @@ router.get('/locations', requireAuth, async (_req: Request, res: Response, next:
 router.post(
   '/locations',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const location = await StockLocation.create(req.body);
@@ -151,8 +151,8 @@ router.get('/settings/public', async (_req: Request, res: Response, next: NextFu
     res.json({
       success: true,
       data: {
-        companyName: setting?.companyName || 'Muziclub Inventory',
-        storeName: setting?.storeName || defaultLoc?.name || 'Muziclub Central Studio & Academy',
+        companyName: setting?.companyName || 'Stereobliss Retail',
+        storeName: setting?.storeName || defaultLoc?.name || 'Stereobliss Central Store',
         storeCode: setting?.storeCode || defaultLoc?.code || 'CENTRAL',
         currencySymbol: setting?.currencySymbol || '₹',
         timeZone: setting?.timeZone || 'Asia/Kolkata',
@@ -171,7 +171,7 @@ router.get('/settings', requireAuth, async (_req: Request, res: Response, next: 
 
     if (!defaultLoc) {
       defaultLoc = await StockLocation.create({
-        name: 'Muziclub Central Studio & Academy',
+        name: 'Stereobliss Central Store',
         code: 'CENTRAL',
         type: 'STORE',
         address: 'Central Studio Campus, Floor 1, Pune, Maharashtra',
@@ -183,12 +183,12 @@ router.get('/settings', requireAuth, async (_req: Request, res: Response, next: 
     if (!setting) {
       setting = (
         await AppSetting.create({
-          companyName: 'Muziclub Inventory',
+          companyName: 'Stereobliss Retail',
           storeName: defaultLoc.name,
           storeCode: defaultLoc.code,
-          contactEmail: 'contact@muziclub.com',
+          contactEmail: 'contact@stereobliss.com',
           contactPhone: '+91 98765 43210',
-          address: defaultLoc.address || 'Aundh & Hinjawadi, Pune, Maharashtra, India',
+          address: defaultLoc.address || 'Stereobliss Central Store, Pune, Maharashtra, India',
           defaultLocation: defaultLoc._id,
         })
       ).toObject();
@@ -209,7 +209,7 @@ router.get('/settings', requireAuth, async (_req: Request, res: Response, next: 
 router.patch(
   '/settings',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const {
@@ -261,7 +261,7 @@ router.patch(
 
       if (!defaultLoc) {
         defaultLoc = await StockLocation.create({
-          name: storeName?.trim() || 'Muziclub Central Studio & Academy',
+          name: storeName?.trim() || 'Stereobliss Central Store',
           code: storeCode?.trim().toUpperCase() || 'CENTRAL',
           type: 'STORE',
           address: address?.trim() || 'Central Campus, Floor 1, Pune',
@@ -299,7 +299,7 @@ router.get(
   async (_req: Request, res: Response, next: NextFunction) => {
     try {
       const setting = await AppSetting.findOne().lean();
-      const defaultEmail = setting?.contactEmail || 'inventory@muziclub.com';
+      const defaultEmail = setting?.contactEmail || 'inventory@stereobliss.com';
 
       const existingConfigs = await EmailReportConfig.find().lean();
       const existingTypes = new Set(existingConfigs.map((c) => c.reportType));
@@ -356,7 +356,7 @@ router.get(
 router.patch(
   '/report-configs/:id',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { scheduleCron, recipients, isEnabled, title, timeZone } = req.body;
@@ -418,7 +418,7 @@ router.patch(
 router.post(
   '/report-configs/:id/run-now',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const config = await EmailReportConfig.findById(req.params.id);

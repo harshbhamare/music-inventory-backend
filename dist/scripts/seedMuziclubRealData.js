@@ -13,16 +13,16 @@ import { EmailReportConfig } from '../models/EmailReportConfig.js';
 import { Sale } from '../models/Sale.js';
 import { ROLES, TRACKING_MODES, SERIALIZED_STATUSES, MOVEMENT_TYPES, USAGE_PURPOSES, USAGE_STATUSES, REPORT_TYPES, } from '../config/constants.js';
 export async function seedMuziclubRealData() {
-    console.log('[MUZICLUB_SEED] Populating authentic music academy & store inventory...');
+    console.log('[STEREOBLISS_SEED] Populating authentic music store & pro audio inventory...');
     await connectDB();
     // 1. Ensure Stock Location
     let location = await StockLocation.findOne({ isDefault: true });
     if (!location) {
         location = await StockLocation.create({
-            name: 'Muziclub Central Studio & Academy',
+            name: 'Stereobliss Central Store',
             code: 'CENTRAL',
             type: 'STORE',
-            address: 'Central Studio Campus, Floor 1, Pune, Maharashtra',
+            address: 'Stereobliss Central Store, Pune, Maharashtra',
             isDefault: true,
             isActive: true,
         });
@@ -52,12 +52,12 @@ export async function seedMuziclubRealData() {
     let setting = await AppSetting.findOne();
     if (!setting) {
         setting = await AppSetting.create({
-            companyName: 'Muziclub Inventory',
-            storeName: 'Muziclub Central Studio & Academy',
+            companyName: 'Stereobliss Retail',
+            storeName: 'Stereobliss Central Store',
             storeCode: 'CENTRAL',
-            contactEmail: 'contact@muziclub.com',
+            contactEmail: 'contact@stereobliss.com',
             contactPhone: '+91 98765 43210',
-            address: 'Aundh & Hinjawadi, Pune, Maharashtra, India',
+            address: 'Stereobliss Central Store, Pune, Maharashtra, India',
             currency: 'INR',
             currencySymbol: '₹',
             defaultLocation: location._id,
@@ -66,8 +66,8 @@ export async function seedMuziclubRealData() {
         });
     }
     else {
-        setting.companyName = 'Muziclub Inventory';
-        setting.storeName = 'Muziclub Central Studio & Academy';
+        setting.companyName = 'Stereobliss Retail';
+        setting.storeName = 'Stereobliss Central Store';
         setting.storeCode = 'CENTRAL';
         await setting.save();
     }
@@ -225,7 +225,7 @@ export async function seedMuziclubRealData() {
         {
             name: 'Dunlop Tortex Standard 0.73mm Yellow Picks (Pack of 12)',
             sku: 'SKU-0008',
-            brand: 'Muziclub',
+            brand: 'Stereobliss',
             modelName: 'Tortex 0.73',
             category: catMap.get('ACCESSORIES')._id,
             supplier: supMap.get('Bajaao Wholesale Division')._id,
@@ -281,7 +281,7 @@ export async function seedMuziclubRealData() {
                     location: location._id,
                     status: SERIALIZED_STATUSES.AVAILABLE,
                     condition: 'NEW',
-                    notes: 'Muziclub Store Verified Inventory',
+                    notes: 'Stereobliss Store Verified Inventory',
                 });
                 await StockMovement.create({
                     product: product._id,
@@ -402,10 +402,10 @@ export async function seedMuziclubRealData() {
     }
     // 10. Ensure Automated Cron Report Configs in DB
     const reportConfigs = [
-        { reportType: REPORT_TYPES.DAILY_STOCK_SUMMARY, scheduleCron: '0 20 * * *', recipients: ['inventory@muziclub.com', 'admin@muziclub.com'] },
-        { reportType: REPORT_TYPES.WEEKLY_SALES_SUMMARY, scheduleCron: '0 9 * * 1', recipients: ['management@muziclub.com'] },
-        { reportType: REPORT_TYPES.OVERDUE_USAGE_REMINDER, scheduleCron: '0 10 * * *', recipients: ['academy@muziclub.com'] },
-        { reportType: REPORT_TYPES.LOW_STOCK_ALERT, scheduleCron: '0 8 * * *', recipients: ['procurement@muziclub.com'] },
+        { reportType: REPORT_TYPES.DAILY_STOCK_SUMMARY, scheduleCron: '0 20 * * *', recipients: ['inventory@stereobliss.com', 'admin@stereobliss.com'] },
+        { reportType: REPORT_TYPES.WEEKLY_SALES_SUMMARY, scheduleCron: '0 9 * * 1', recipients: ['management@stereobliss.com'] },
+        { reportType: REPORT_TYPES.OVERDUE_USAGE_REMINDER, scheduleCron: '0 10 * * *', recipients: ['rentals@stereobliss.com'] },
+        { reportType: REPORT_TYPES.LOW_STOCK_ALERT, scheduleCron: '0 8 * * *', recipients: ['procurement@stereobliss.com'] },
     ];
     for (const rc of reportConfigs) {
         const exists = await EmailReportConfig.findOne({ reportType: rc.reportType });
@@ -417,7 +417,7 @@ export async function seedMuziclubRealData() {
             });
         }
     }
-    console.log('[MUZICLUB_SEED] Successfully seeded authentic Muziclub music inventory and real live data!');
+    console.log('[STEREOBLISS_SEED] Successfully seeded authentic Stereobliss music inventory and real live data!');
 }
 if (process.argv[1] && process.argv[1].endsWith('seedMuziclubRealData.ts')) {
     seedMuziclubRealData()

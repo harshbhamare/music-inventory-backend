@@ -19,11 +19,11 @@ async function bootstrap() {
     const port = ENV.PORT;
 
     app.listen(port, () => {
-      console.log(`[SERVER] 🎸 SoundStock Inventory API listening on port ${port} (${ENV.NODE_ENV})`);
+      console.log(`[SERVER] 🎧 Stereobliss Retail Inventory API listening on port ${port} (${ENV.NODE_ENV})`);
       console.log(`[SERVER] Health check available at: http://localhost:${port}/api/health`);
     });
   } catch (err) {
-    console.error('[SERVER_FATAL] Error starting SoundStock backend:', err);
+    console.error('[SERVER_FATAL] Error starting Stereobliss backend:', err);
     process.exit(1);
   }
 }
