@@ -148,11 +148,16 @@ router.get('/settings/public', async (_req: Request, res: Response, next: NextFu
     const setting = await AppSetting.findOne().populate('defaultLocation').lean();
     const defaultLoc = (setting?.defaultLocation as any) || (await StockLocation.findOne({ isDefault: true }).lean());
 
+    const rawCompany = setting?.companyName || '';
+    const cleanCompany = !rawCompany || /soundstock|muziclub/i.test(rawCompany) ? 'Stereobliss Retail' : rawCompany;
+    const rawStore = setting?.storeName || defaultLoc?.name || '';
+    const cleanStore = !rawStore || /central studio|academy/i.test(rawStore) ? 'Stereobliss Central Store' : rawStore;
+
     res.json({
       success: true,
       data: {
-        companyName: setting?.companyName || 'Stereobliss Retail',
-        storeName: setting?.storeName || defaultLoc?.name || 'Stereobliss Central Store',
+        companyName: cleanCompany,
+        storeName: cleanStore,
         storeCode: setting?.storeCode || defaultLoc?.code || 'CENTRAL',
         currencySymbol: setting?.currencySymbol || '₹',
         timeZone: setting?.timeZone || 'Asia/Kolkata',
@@ -174,7 +179,7 @@ router.get('/settings', requireAuth, async (_req: Request, res: Response, next: 
         name: 'Stereobliss Central Store',
         code: 'CENTRAL',
         type: 'STORE',
-        address: 'Central Studio Campus, Floor 1, Pune, Maharashtra',
+        address: 'Stereobliss Central Store, Pune, Maharashtra, India',
         isDefault: true,
         isActive: true,
       });
@@ -196,6 +201,23 @@ router.get('/settings', requireAuth, async (_req: Request, res: Response, next: 
       // Ensure storeName and storeCode are populated from location if not set
       if (!setting.storeName && defaultLoc) setting.storeName = defaultLoc.name;
       if (!setting.storeCode && defaultLoc) setting.storeCode = defaultLoc.code;
+
+      // Migrate any legacy Soundstock or Central Studio names stored in DB
+      if (/soundstock|muziclub/i.test(setting.companyName) || /central studio|academy/i.test(setting.storeName || '')) {
+        await AppSetting.updateOne(
+          { _id: setting._id },
+          {
+            $set: {
+              companyName: 'Stereobliss Retail',
+              storeName: 'Stereobliss Central Store',
+              address: 'Stereobliss Central Store, Pune, Maharashtra, India',
+            },
+          }
+        );
+        setting.companyName = 'Stereobliss Retail';
+        setting.storeName = 'Stereobliss Central Store';
+        setting.address = 'Stereobliss Central Store, Pune, Maharashtra, India';
+      }
     }
 
     const locations = await StockLocation.find({ isActive: true }).sort({ name: 1 }).lean();
@@ -264,7 +286,7 @@ router.patch(
           name: storeName?.trim() || 'Stereobliss Central Store',
           code: storeCode?.trim().toUpperCase() || 'CENTRAL',
           type: 'STORE',
-          address: address?.trim() || 'Central Campus, Floor 1, Pune',
+          address: address?.trim() || 'Stereobliss Central Store, Pune, Maharashtra, India',
           isDefault: true,
           isActive: true,
         });

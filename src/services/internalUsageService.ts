@@ -251,7 +251,7 @@ export async function issueInstruments(input: IssueInternalUsageInput, actor: Au
       entityType: 'InternalUsage',
       entityId: usage._id.toString(),
       afterState: { issueReference, assignedPerson: input.assignedPerson, purpose: input.purpose },
-      reason: `Issued equipment for academy activity`,
+      reason: `Issued equipment for rental / internal activity`,
     });
 
     return usage;

@@ -21,7 +21,8 @@ async function updateName() {
         await setting.save();
         console.log('[SUCCESS] Updated companyName to "Stereobliss Retail" in AppSetting.');
     }
-    // 2. Default StockLocation
+    // 2. Default & All StockLocations
+    await StockLocation.updateMany({ $or: [{ name: /central studio|academy/i }, { address: /central studio|academy/i }] }, { $set: { name: 'Stereobliss Central Store', address: 'Stereobliss Central Store, Pune, Maharashtra, India' } });
     const defaultLoc = await StockLocation.findOne({ isDefault: true });
     if (defaultLoc) {
         defaultLoc.name = 'Stereobliss Central Store';
@@ -38,7 +39,10 @@ async function updateName() {
         if (!rep.title) {
             rep.title = defaultTitles[rep.reportType] || `${rep.reportType} Report`;
         }
-        const updatedRecipients = rep.recipients.map((email) => email.replace(/@muziclub\.com/gi, '@stereobliss.com').replace(/@soundstock\.com/gi, '@stereobliss.com'));
+        const updatedRecipients = rep.recipients.map((email) => email
+            .replace(/@muziclub\.com/gi, '@stereobliss.com')
+            .replace(/@soundstock\.com/gi, '@stereobliss.com')
+            .replace(/^academy@/gi, 'rentals@'));
         rep.recipients = updatedRecipients;
         await rep.save();
     }
