@@ -18,11 +18,9 @@ router.post('/login', validate(loginSchema), async (req, res, next) => {
         const normalizedEmail = email.toLowerCase().trim();
         let user = await User.findOne({ email: normalizedEmail });
         if (!user) {
-            // Auto-seed if database has 0 users (e.g. freshly deployed database on Vercel)
-            const didSeed = await ensureDatabaseSeeded();
-            if (didSeed) {
-                user = await User.findOne({ email: normalizedEmail });
-            }
+            // Auto-seed if database was wiped or default accounts need initialization
+            await ensureDatabaseSeeded();
+            user = await User.findOne({ email: normalizedEmail });
         }
         if (!user) {
             throw new AppError('Invalid email or password.', 401, 'INVALID_CREDENTIALS');

@@ -24,11 +24,9 @@ router.post(
       let user = await User.findOne({ email: normalizedEmail });
 
       if (!user) {
-        // Auto-seed if database has 0 users (e.g. freshly deployed database on Vercel)
-        const didSeed = await ensureDatabaseSeeded();
-        if (didSeed) {
-          user = await User.findOne({ email: normalizedEmail });
-        }
+        // Auto-seed if database was wiped or default accounts need initialization
+        await ensureDatabaseSeeded();
+        user = await User.findOne({ email: normalizedEmail });
       }
 
       if (!user) {
