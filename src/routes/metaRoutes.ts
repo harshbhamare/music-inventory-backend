@@ -321,8 +321,6 @@ router.get(
   async (_req: Request, res: Response, next: NextFunction) => {
     try {
       const setting = await AppSetting.findOne().lean();
-      const defaultEmail = setting?.contactEmail || 'inventory@stereobliss.com';
-
       const existingConfigs = await EmailReportConfig.find().lean();
       const existingTypes = new Set(existingConfigs.map((c) => c.reportType));
 
@@ -330,7 +328,7 @@ router.get(
         {
           reportType: REPORT_TYPES.DAILY_STOCK_SUMMARY,
           title: 'Daily Stock & Inventory Summary',
-          recipients: [defaultEmail],
+          recipients: [],
           scheduleCron: '0 9 * * *', // 9:00 AM daily
           timeZone: setting?.timeZone || 'Asia/Kolkata',
           isEnabled: true,
@@ -338,7 +336,7 @@ router.get(
         {
           reportType: REPORT_TYPES.OVERDUE_USAGE_REMINDER,
           title: 'Daily Overdue Instrument Loan Alerts',
-          recipients: [defaultEmail],
+          recipients: [],
           scheduleCron: '0 10 * * *', // 10:00 AM daily
           timeZone: setting?.timeZone || 'Asia/Kolkata',
           isEnabled: true,
@@ -346,7 +344,7 @@ router.get(
         {
           reportType: REPORT_TYPES.WEEKLY_SALES_SUMMARY,
           title: 'Weekly Sales Performance Summary',
-          recipients: [defaultEmail],
+          recipients: [],
           scheduleCron: '0 18 * * 0', // Sunday 6:00 PM
           timeZone: setting?.timeZone || 'Asia/Kolkata',
           isEnabled: true,
@@ -354,7 +352,7 @@ router.get(
         {
           reportType: REPORT_TYPES.LOW_STOCK_ALERT,
           title: 'Low Stock Safety Threshold Alert',
-          recipients: [defaultEmail],
+          recipients: [],
           scheduleCron: '0 8 * * *', // 8:00 AM daily
           timeZone: setting?.timeZone || 'Asia/Kolkata',
           isEnabled: true,

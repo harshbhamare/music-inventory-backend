@@ -26,6 +26,14 @@ export interface ISale extends Document {
   customerName: string;
   customerEmail?: string;
   customerPhone?: string;
+  customerGstin?: string;
+  customerAddress?: string;
+  eWayBillNo?: string;
+  dispatchThrough?: string;
+  destination?: string;
+  irn?: string;
+  ackNo?: string;
+  ackDate?: Date;
   location: Types.ObjectId;
   lineItems: ISaleLineItem[];
   subtotal: number;
@@ -71,6 +79,14 @@ const SaleSchema = new Schema<ISale>(
     customerName: { type: String, required: true, trim: true },
     customerEmail: { type: String, lowercase: true, trim: true },
     customerPhone: { type: String, trim: true },
+    customerGstin: { type: String, uppercase: true, trim: true },
+    customerAddress: { type: String, trim: true },
+    eWayBillNo: { type: String, trim: true },
+    dispatchThrough: { type: String, trim: true },
+    destination: { type: String, trim: true },
+    irn: { type: String, trim: true },
+    ackNo: { type: String, trim: true },
+    ackDate: { type: Date },
     location: { type: Schema.Types.ObjectId, ref: 'StockLocation', required: true },
     lineItems: [SaleLineItemSchema],
     subtotal: { type: Number, required: true, min: 0 },
