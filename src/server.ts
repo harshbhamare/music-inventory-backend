@@ -12,8 +12,8 @@ async function bootstrap() {
     // Auto-seed if database is empty
     await ensureDatabaseSeeded();
 
-    // Start background cron jobs
-    initializeScheduledJobs();
+    // Background cron jobs removed per requirement (manual report emailing enabled)
+    // initializeScheduledJobs();
 
     const app = createApp();
     const port = ENV.PORT;

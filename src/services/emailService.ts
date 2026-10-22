@@ -3,7 +3,7 @@ import { EmailReportConfig } from '../models/EmailReportConfig.js';
 import { EmailDeliveryLog } from '../models/EmailDeliveryLog.js';
 import { Product } from '../models/Product.js';
 import { InternalUsage } from '../models/InternalUsage.js';
-import { Sale, ISale } from '../models/Sale.js';
+import { Sale } from '../models/Sale.js';
 import { AppSetting } from '../models/AppSetting.js';
 import {
   REPORT_TYPES,
@@ -30,12 +30,42 @@ export interface SendEmailParams {
 
 let cachedTransporter: Transporter | null = null;
 
-function getEmailTransporter(): Transporter | null {
+export function resetEmailTransporter(): void {
+  cachedTransporter = null;
+}
+
+export function getEmailTransporter(): Transporter | null {
   if (cachedTransporter) {
     return cachedTransporter;
   }
 
-  // 1. Check custom SMTP host & user credentials
+  const gmailUser = (process.env.GMAIL_USER || ENV.SMTP_USER || '').trim();
+  const rawPass = process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASS || ENV.SMTP_PASS || '';
+  const gmailPass = rawPass.replace(/\s+/g, '').trim();
+
+  // 1. Direct Gmail SMTP via SSL on port 465
+  if (gmailUser && gmailPass) {
+    try {
+      cachedTransporter = nodemailer.createTransport({
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
+        auth: {
+          user: gmailUser,
+          pass: gmailPass,
+        },
+        connectionTimeout: 15000,
+        greetingTimeout: 15000,
+        socketTimeout: 20000,
+      });
+      console.log(`[EMAIL_INIT] Configured Nodemailer Gmail SSL transporter (smtp.gmail.com:465) for ${gmailUser}`);
+      return cachedTransporter;
+    } catch (err) {
+      console.error('[EMAIL_INIT_ERROR] Failed to initialize Gmail SSL transporter:', err);
+    }
+  }
+
+  // 2. Custom SMTP host & user credentials
   if (ENV.SMTP_HOST && ENV.SMTP_USER) {
     try {
       cachedTransporter = nodemailer.createTransport({
@@ -44,37 +74,27 @@ function getEmailTransporter(): Transporter | null {
         secure: ENV.SMTP_SECURE,
         auth: {
           user: ENV.SMTP_USER,
-          pass: ENV.SMTP_PASS,
+          pass: (ENV.SMTP_PASS || '').replace(/\s+/g, '').trim(),
         },
+        connectionTimeout: 15000,
+        greetingTimeout: 15000,
       });
-      console.log(`[EMAIL_INIT] Configured Nodemailer SMTP transporter (${ENV.SMTP_HOST}:${ENV.SMTP_PORT})`);
+      console.log(`[EMAIL_INIT] Configured Nodemailer custom SMTP transporter (${ENV.SMTP_HOST}:${ENV.SMTP_PORT})`);
       return cachedTransporter;
     } catch (err) {
       console.error('[EMAIL_INIT_ERROR] Failed to initialize SMTP transporter:', err);
     }
   }
 
-  // 2. Check direct Gmail user & password
-  const gmailUser = process.env.GMAIL_USER || (ENV.SMTP_USER.includes('@gmail.com') ? ENV.SMTP_USER : '');
-  const gmailPass = process.env.GMAIL_PASS || process.env.GMAIL_APP_PASSWORD || (ENV.SMTP_USER.includes('@gmail.com') ? ENV.SMTP_PASS : '');
-
-  if (gmailUser && gmailPass) {
-    try {
-      cachedTransporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: {
-          user: gmailUser,
-          pass: gmailPass,
-        },
-      });
-      console.log(`[EMAIL_INIT] Configured Nodemailer Gmail transporter for ${gmailUser}`);
-      return cachedTransporter;
-    } catch (err) {
-      console.error('[EMAIL_INIT_ERROR] Failed to initialize Gmail transporter:', err);
-    }
-  }
-
   return null;
+}
+
+export function normalizeRecipients(input?: string | string[]): string[] {
+  if (!input) return [];
+  const list = Array.isArray(input) ? input : input.split(/[,;\s]+/);
+  return list
+    .map((e) => (typeof e === 'string' ? e.trim().toLowerCase() : ''))
+    .filter((e) => e.length > 3 && e.includes('@') && e.includes('.'));
 }
 
 async function getOrgInfo() {
@@ -85,6 +105,32 @@ async function getOrgInfo() {
     currencySymbol: setting?.currencySymbol || '₹',
     contactEmail: setting?.contactEmail || ENV.EMAIL_FROM || 'sales@stereobliss.com',
   };
+}
+
+async function resolveRecipients(
+  provided?: string | string[],
+  fallbackReportType?: ReportType
+): Promise<string[]> {
+  const normalized = normalizeRecipients(provided);
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  if (fallbackReportType) {
+    const config = await EmailReportConfig.findOne({ reportType: fallbackReportType });
+    const fromConfig = normalizeRecipients(config?.recipients);
+    if (fromConfig.length > 0) {
+      return fromConfig;
+    }
+  }
+
+  // Fallback to configured Gmail user or Alert Email
+  const adminEmail = process.env.GMAIL_USER || ENV.ALERT_EMAIL || ENV.SMTP_USER;
+  if (adminEmail && adminEmail.includes('@')) {
+    return [adminEmail.trim().toLowerCase()];
+  }
+
+  return [];
 }
 
 export async function sendNotificationEmail(params: SendEmailParams) {
@@ -104,18 +150,21 @@ export async function sendNotificationEmail(params: SendEmailParams) {
   let errorDetails: string | undefined;
   let providerReference: string | undefined;
 
-  const validRecipients = params.recipients.filter((r) => r && typeof r === 'string' && r.trim().includes('@'));
+  const validRecipients = normalizeRecipients(params.recipients);
 
   if (validRecipients.length === 0) {
     console.warn(`[EMAIL_WARN] No valid recipients provided for "${params.subject}". Skipping email dispatch.`);
     return null;
   }
 
+  const org = await getOrgInfo();
   const transporter = getEmailTransporter();
-  const senderFrom = ENV.EMAIL_FROM || 'sales@stereobliss.com';
+  const gmailUser = (process.env.GMAIL_USER || ENV.SMTP_USER || '').trim();
+  const rawSender = gmailUser || ENV.EMAIL_FROM || 'sales@stereobliss.com';
+  const senderFrom = rawSender.includes('<') ? rawSender : `"${org.companyName}" <${rawSender}>`;
 
   if (transporter) {
-    // Delivery via configured SMTP or Gmail
+    // Delivery via configured Gmail SSL or SMTP
     try {
       const mailOptions: any = {
         from: senderFrom,
@@ -183,11 +232,11 @@ export async function sendNotificationEmail(params: SendEmailParams) {
       console.error(`[EMAIL_ERROR] Resend API request failed:`, err);
     }
   } else {
-    // Safe simulated mode with full database audit logging
+    // Simulated mode with full audit logging
     status = 'SIMULATED';
     providerReference = `sim-${Date.now()}`;
     console.log(
-      `[EMAIL_SIMULATED] Subject: "${params.subject}" to [${validRecipients.join(', ')}] (Add SMTP or Resend credentials to .env to send real emails)`
+      `[EMAIL_SIMULATED] Subject: "${params.subject}" to [${validRecipients.join(', ')}] (Add Gmail app password or SMTP in .env for real delivery)`
     );
   }
 
@@ -225,7 +274,6 @@ export async function sendInvoicePdfEmail(params: SendInvoiceEmailParams) {
     throw new Error('Please provide a valid recipient email address.');
   }
 
-  // Generate high-resolution PDF matching the Indian GST format
   console.log(`[INVOICE_PDF] Generating Tax Invoice PDF for ${sale.invoiceNumber}...`);
   const pdfBuffer = await generateTaxInvoicePdf(sale);
   const pdfFilename = `Tax-Invoice-${sale.invoiceNumber}.pdf`;
@@ -336,19 +384,15 @@ export async function sendInvoicePdfEmail(params: SendInvoiceEmailParams) {
 }
 
 // -------------------------------------------------------------
-// Scheduled Cron Report Dispatches (Clean: Zero Hardcoded Default Emails)
+// Interactive & On-Demand Email Report Generators
 // -------------------------------------------------------------
 
-export async function sendDailyStockSummary(recipients?: string[]) {
+export async function sendDailyStockSummary(recipients?: string | string[], notes?: string) {
   const org = await getOrgInfo();
-  const config = await EmailReportConfig.findOne({ reportType: REPORT_TYPES.DAILY_STOCK_SUMMARY });
-
-  const targetRecipients = (recipients && recipients.length > 0) ? recipients : (config?.recipients || []);
-  const validRecipients = targetRecipients.filter((r) => r && typeof r === 'string' && r.trim().includes('@'));
+  const validRecipients = await resolveRecipients(recipients, REPORT_TYPES.DAILY_STOCK_SUMMARY);
 
   if (validRecipients.length === 0) {
-    console.log('[CRON] Daily Stock Summary has no configured recipients. Skipping dispatch until user adds email addresses.');
-    return null;
+    throw new Error('Please specify at least one recipient email address to send this report.');
   }
 
   const products = await Product.find({ isActive: true }).lean();
@@ -364,7 +408,7 @@ export async function sendDailyStockSummary(recipients?: string[]) {
     totalAvailable += avail;
     totalValuation += (sq.onHand || 0) * (p.purchaseCost || 0);
     if (avail <= (p.minStockThreshold || 5)) {
-      lowStockItems.push({ name: p.name, sku: p.sku, available: avail, threshold: p.minStockThreshold });
+      lowStockItems.push({ name: p.name, sku: p.sku, available: avail, threshold: p.minStockThreshold || 5 });
     }
   }
 
@@ -375,7 +419,14 @@ export async function sendDailyStockSummary(recipients?: string[]) {
         <h2 style="color: #0f172a; margin: 0; font-size: 20px;">${org.companyName}</h2>
         <div style="color: #64748b; font-size: 13px; margin-top: 4px;">${org.storeName} — Daily Stock &amp; Inventory Summary</div>
       </div>
-      <p style="color: #64748b; font-size: 13px;">Date: <strong>${dateStr}</strong></p>
+      <p style="color: #64748b; font-size: 13px;">Report Generated: <strong>${dateStr}</strong></p>
+      ${
+        notes
+          ? `<div style="margin: 12px 0; padding: 10px 14px; background: #fffbeb; border-left: 4px solid #f59e0b; border-radius: 4px; font-size: 12px; color: #92400e;">
+               <strong>Admin Note:</strong> ${notes}
+             </div>`
+          : ''
+      }
       
       <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin: 20px 0;">
         <div style="background: #f8fafc; padding: 14px; border-radius: 8px; border-left: 4px solid #f59e0b;">
@@ -395,7 +446,7 @@ export async function sendDailyStockSummary(recipients?: string[]) {
       <h3 style="color: #0f172a; font-size: 15px; margin-top: 24px;">Low Stock Items Alert (${lowStockItems.length})</h3>
       ${
         lowStockItems.length === 0
-          ? '<p style="color: #10b981; font-size: 13px;">✅ All products are currently stocked above their minimum reorder thresholds.</p>'
+          ? '<p style="color: #10b981; font-size: 13px; font-weight: 600;">✅ All products are currently stocked above their minimum reorder thresholds.</p>'
           : `<table style="width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px;">
               <thead>
                 <tr style="background: #f1f5f9; text-align: left; color: #475569;">
@@ -421,7 +472,7 @@ export async function sendDailyStockSummary(recipients?: string[]) {
             </table>`
       }
       <div style="margin-top: 28px; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center;">
-        Automated report dispatched by ${org.companyName} Inventory Control System.
+        Dispatched on demand to <strong>${validRecipients.join(', ')}</strong> &bull; ${org.companyName} Retail Management
       </div>
     </div>
   `;
@@ -434,16 +485,12 @@ export async function sendDailyStockSummary(recipients?: string[]) {
   });
 }
 
-export async function sendOverdueUsageReminders(recipients?: string[]) {
+export async function sendOverdueUsageReminders(recipients?: string | string[], notes?: string) {
   const org = await getOrgInfo();
-  const config = await EmailReportConfig.findOne({ reportType: REPORT_TYPES.OVERDUE_USAGE_REMINDER });
-
-  const targetRecipients = (recipients && recipients.length > 0) ? recipients : (config?.recipients || []);
-  const validRecipients = targetRecipients.filter((r) => r && typeof r === 'string' && r.trim().includes('@'));
+  const validRecipients = await resolveRecipients(recipients, REPORT_TYPES.OVERDUE_USAGE_REMINDER);
 
   if (validRecipients.length === 0) {
-    console.log('[CRON] Overdue Usage Reminders has no configured recipients. Skipping dispatch until user adds email addresses.');
-    return null;
+    throw new Error('Please specify at least one recipient email address to send this report.');
   }
 
   const now = new Date();
@@ -454,43 +501,58 @@ export async function sendOverdueUsageReminders(recipients?: string[]) {
     .populate('items.product', 'name sku')
     .lean();
 
-  if (overdueRecords.length === 0) {
-    return null;
-  }
-
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 650px; margin: auto; padding: 24px; border: 1px solid #fed7aa; border-radius: 12px; background: #ffffff;">
       <div style="border-bottom: 2px solid #ea580c; padding-bottom: 12px; margin-bottom: 16px;">
-        <h2 style="color: #c2410c; margin: 0; font-size: 20px;">⚠️ Overdue Instrument Returns Alert</h2>
+        <h2 style="color: #c2410c; margin: 0; font-size: 20px;">⚠️ Instrument Loans &amp; Rental Status Alert</h2>
         <div style="color: #64748b; font-size: 13px; margin-top: 4px;">${org.companyName} — ${org.storeName}</div>
       </div>
-      <p style="color: #475569; font-size: 14px;">There are currently <strong>${overdueRecords.length}</strong> equipment issues / student loans that have passed their scheduled return date:</p>
+      ${
+        notes
+          ? `<div style="margin: 12px 0; padding: 10px 14px; background: #fff7ed; border-left: 4px solid #ea580c; border-radius: 4px; font-size: 12px; color: #9a3412;">
+               <strong>Note:</strong> ${notes}
+             </div>`
+          : ''
+      }
       
-      <table style="width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 16px;">
-        <thead>
-          <tr style="background: #ffedd5; text-align: left; color: #9a3412;">
-            <th style="padding: 10px; border: 1px solid #fdba74;">Issue Ref</th>
-            <th style="padding: 10px; border: 1px solid #fdba74;">Responsible Person</th>
-            <th style="padding: 10px; border: 1px solid #fdba74;">Purpose</th>
-            <th style="padding: 10px; border: 1px solid #fdba74;">Expected Date</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${overdueRecords
-            .map(
-              (r) => `
-            <tr>
-              <td style="padding: 10px; border: 1px solid #fed7aa; font-weight: 700; color: #c2410c;">${r.issueReference}</td>
-              <td style="padding: 10px; border: 1px solid #fed7aa;">${r.assignedPerson} ${r.assignedPersonContact ? `<br/><span style="font-size: 11px; color: #64748b;">${r.assignedPersonContact}</span>` : ''}</td>
-              <td style="padding: 10px; border: 1px solid #fed7aa;">${r.purpose}</td>
-              <td style="padding: 10px; border: 1px solid #fed7aa; color: #dc2626; font-weight: 700;">${new Date(r.expectedReturnDate).toLocaleDateString('en-IN', { dateStyle: 'medium' })}</td>
-            </tr>`
-            )
-            .join('')}
-        </tbody>
-      </table>
+      ${
+        overdueRecords.length === 0
+          ? `
+          <div style="padding: 20px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; text-align: center; margin: 16px 0;">
+            <div style="font-size: 24px; margin-bottom: 6px;">🎉</div>
+            <div style="font-size: 15px; font-weight: 700; color: #166534;">Zero Overdue Instrument Loans!</div>
+            <div style="font-size: 13px; color: #15803d; margin-top: 4px;">All rented and student loan instruments are currently returned or active within schedule.</div>
+          </div>
+          `
+          : `
+          <p style="color: #475569; font-size: 14px;">There are currently <strong>${overdueRecords.length}</strong> equipment issues / student loans that have passed their scheduled return date:</p>
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 16px;">
+            <thead>
+              <tr style="background: #ffedd5; text-align: left; color: #9a3412;">
+                <th style="padding: 10px; border: 1px solid #fdba74;">Issue Ref</th>
+                <th style="padding: 10px; border: 1px solid #fdba74;">Responsible Person</th>
+                <th style="padding: 10px; border: 1px solid #fdba74;">Purpose</th>
+                <th style="padding: 10px; border: 1px solid #fdba74;">Expected Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${overdueRecords
+                .map(
+                  (r) => `
+                <tr>
+                  <td style="padding: 10px; border: 1px solid #fed7aa; font-weight: 700; color: #c2410c;">${r.issueReference}</td>
+                  <td style="padding: 10px; border: 1px solid #fed7aa;">${r.assignedPerson} ${r.assignedPersonContact ? `<br/><span style="font-size: 11px; color: #64748b;">${r.assignedPersonContact}</span>` : ''}</td>
+                  <td style="padding: 10px; border: 1px solid #fed7aa;">${r.purpose}</td>
+                  <td style="padding: 10px; border: 1px solid #fed7aa; color: #dc2626; font-weight: 700;">${new Date(r.expectedReturnDate).toLocaleDateString('en-IN', { dateStyle: 'medium' })}</td>
+                </tr>`
+                )
+                .join('')}
+            </tbody>
+          </table>
+          `
+      }
       <div style="margin-top: 24px; padding-top: 12px; border-top: 1px solid #fed7aa; font-size: 11px; color: #94a3b8; text-align: center;">
-        Automated alert from ${org.companyName} Inventory Management.
+        Dispatched to <strong>${validRecipients.join(', ')}</strong> &bull; ${org.companyName} Inventory Control
       </div>
     </div>
   `;
@@ -498,21 +560,19 @@ export async function sendOverdueUsageReminders(recipients?: string[]) {
   return sendNotificationEmail({
     reportType: REPORT_TYPES.OVERDUE_USAGE_REMINDER,
     recipients: validRecipients,
-    subject: `⚠️ Alert: ${overdueRecords.length} Overdue Instrument Loans — ${org.companyName}`,
+    subject: overdueRecords.length > 0
+      ? `⚠️ Alert: ${overdueRecords.length} Overdue Instrument Loans — ${org.companyName}`
+      : `✅ Good News: 0 Overdue Instrument Loans — ${org.companyName}`,
     htmlContent: html,
   });
 }
 
-export async function sendWeeklySalesSummary(recipients?: string[]) {
+export async function sendWeeklySalesSummary(recipients?: string | string[], notes?: string) {
   const org = await getOrgInfo();
-  const config = await EmailReportConfig.findOne({ reportType: REPORT_TYPES.WEEKLY_SALES_SUMMARY });
-
-  const targetRecipients = (recipients && recipients.length > 0) ? recipients : (config?.recipients || []);
-  const validRecipients = targetRecipients.filter((r) => r && typeof r === 'string' && r.trim().includes('@'));
+  const validRecipients = await resolveRecipients(recipients, REPORT_TYPES.WEEKLY_SALES_SUMMARY);
 
   if (validRecipients.length === 0) {
-    console.log('[CRON] Weekly Sales Summary has no configured recipients. Skipping dispatch until user adds email addresses.');
-    return null;
+    throw new Error('Please specify at least one recipient email address to send this report.');
   }
 
   const sevenDaysAgo = new Date();
@@ -520,7 +580,7 @@ export async function sendWeeklySalesSummary(recipients?: string[]) {
   sevenDaysAgo.setHours(0, 0, 0, 0);
 
   const sales = await Sale.find({
-    status: { $ne: 'CANCELLED' },
+    saleStatus: { $ne: 'CANCELLED' },
     createdAt: { $gte: sevenDaysAgo },
   }).lean();
 
@@ -531,9 +591,16 @@ export async function sendWeeklySalesSummary(recipients?: string[]) {
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 650px; margin: auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
       <div style="border-bottom: 2px solid #10b981; padding-bottom: 12px; margin-bottom: 16px;">
-        <h2 style="color: #065f46; margin: 0; font-size: 20px;">Weekly Sales Performance</h2>
+        <h2 style="color: #065f46; margin: 0; font-size: 20px;">Weekly Sales Performance Report</h2>
         <div style="color: #64748b; font-size: 13px; margin-top: 4px;">${org.companyName} — Last 7 Days Performance</div>
       </div>
+      ${
+        notes
+          ? `<div style="margin: 12px 0; padding: 10px 14px; background: #f0fdf4; border-left: 4px solid #10b981; border-radius: 4px; font-size: 12px; color: #166534;">
+               <strong>Management Note:</strong> ${notes}
+             </div>`
+          : ''
+      }
 
       <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin: 20px 0;">
         <div style="background: #f0fdf4; padding: 14px; border-radius: 8px; border-left: 4px solid #10b981;">
@@ -551,7 +618,7 @@ export async function sendWeeklySalesSummary(recipients?: string[]) {
       </div>
 
       <div style="margin-top: 24px; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center;">
-        Weekly automated revenue report for ${org.companyName}.
+        Dispatched to <strong>${validRecipients.join(', ')}</strong> &bull; ${org.companyName} Revenue Reporting
       </div>
     </div>
   `;
@@ -559,21 +626,17 @@ export async function sendWeeklySalesSummary(recipients?: string[]) {
   return sendNotificationEmail({
     reportType: REPORT_TYPES.WEEKLY_SALES_SUMMARY,
     recipients: validRecipients,
-    subject: `Weekly Sales Summary: ${org.currencySymbol}${totalRevenue.toLocaleString('en-IN')} — ${org.companyName}`,
+    subject: `Weekly Sales Summary: ${org.currencySymbol}${totalRevenue.toLocaleString('en-IN')} (${totalSalesCount} orders) — ${org.companyName}`,
     htmlContent: html,
   });
 }
 
-export async function sendLowStockAlert(recipients?: string[]) {
+export async function sendLowStockAlert(recipients?: string | string[], notes?: string) {
   const org = await getOrgInfo();
-  const config = await EmailReportConfig.findOne({ reportType: REPORT_TYPES.LOW_STOCK_ALERT });
-
-  const targetRecipients = (recipients && recipients.length > 0) ? recipients : (config?.recipients || []);
-  const validRecipients = targetRecipients.filter((r) => r && typeof r === 'string' && r.trim().includes('@'));
+  const validRecipients = await resolveRecipients(recipients, REPORT_TYPES.LOW_STOCK_ALERT);
 
   if (validRecipients.length === 0) {
-    console.log('[CRON] Low Stock Alert has no configured recipients. Skipping dispatch until user adds email addresses.');
-    return null;
+    throw new Error('Please specify at least one recipient email address to send this report.');
   }
 
   const products = await Product.find({ isActive: true }).lean();
@@ -593,42 +656,58 @@ export async function sendLowStockAlert(recipients?: string[]) {
     }
   }
 
-  if (lowStockItems.length === 0) {
-    return null;
-  }
-
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 650px; margin: auto; padding: 24px; border: 1px solid #fecaca; border-radius: 12px; background: #ffffff;">
       <div style="border-bottom: 2px solid #ef4444; padding-bottom: 12px; margin-bottom: 16px;">
-        <h2 style="color: #b91c1c; margin: 0; font-size: 20px;">🚨 Urgent: Low Stock Reorder Alert</h2>
-        <div style="color: #64748b; font-size: 13px; margin-top: 4px;">${org.companyName} — ${lowStockItems.length} product(s) reached safety threshold</div>
+        <h2 style="color: #b91c1c; margin: 0; font-size: 20px;">🚨 Low Stock &amp; Reorder Level Report</h2>
+        <div style="color: #64748b; font-size: 13px; margin-top: 4px;">${org.companyName} — Inventory Safety Thresholds</div>
       </div>
+      ${
+        notes
+          ? `<div style="margin: 12px 0; padding: 10px 14px; background: #fef2f2; border-left: 4px solid #ef4444; border-radius: 4px; font-size: 12px; color: #991b1b;">
+               <strong>Procurement Note:</strong> ${notes}
+             </div>`
+          : ''
+      }
       
-      <table style="width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 16px;">
-        <thead>
-          <tr style="background: #fef2f2; text-align: left; color: #991b1b;">
-            <th style="padding: 10px; border: 1px solid #fca5a5;">Product Name</th>
-            <th style="padding: 10px; border: 1px solid #fca5a5;">SKU</th>
-            <th style="padding: 10px; border: 1px solid #fca5a5; text-align: center;">Stock Available</th>
-            <th style="padding: 10px; border: 1px solid #fca5a5; text-align: center;">Min Threshold</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${lowStockItems
-            .map(
-              (i) => `
-            <tr>
-              <td style="padding: 10px; border: 1px solid #fecaca; font-weight: 600;">${i.name} (${i.brand})</td>
-              <td style="padding: 10px; border: 1px solid #fecaca; font-family: monospace; color: #b91c1c;">${i.sku}</td>
-              <td style="padding: 10px; border: 1px solid #fecaca; text-align: center; color: #dc2626; font-weight: 800;">${i.available}</td>
-              <td style="padding: 10px; border: 1px solid #fecaca; text-align: center;">${i.threshold}</td>
-            </tr>`
-            )
-            .join('')}
-        </tbody>
-      </table>
+      ${
+        lowStockItems.length === 0
+          ? `
+          <div style="padding: 20px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; text-align: center; margin: 16px 0;">
+            <div style="font-size: 24px; margin-bottom: 6px;">✅</div>
+            <div style="font-size: 15px; font-weight: 700; color: #166534;">Healthy Stock Levels!</div>
+            <div style="font-size: 13px; color: #15803d; margin-top: 4px;">All catalog products are currently stocked above their minimum reorder thresholds.</div>
+          </div>
+          `
+          : `
+          <p style="color: #475569; font-size: 13px;">The following <strong>${lowStockItems.length}</strong> item(s) have reached or dipped below safety buffer levels:</p>
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 16px;">
+            <thead>
+              <tr style="background: #fef2f2; text-align: left; color: #991b1b;">
+                <th style="padding: 10px; border: 1px solid #fca5a5;">Product Name</th>
+                <th style="padding: 10px; border: 1px solid #fca5a5;">SKU</th>
+                <th style="padding: 10px; border: 1px solid #fca5a5; text-align: center;">Stock Available</th>
+                <th style="padding: 10px; border: 1px solid #fca5a5; text-align: center;">Min Threshold</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${lowStockItems
+                .map(
+                  (i) => `
+                <tr>
+                  <td style="padding: 10px; border: 1px solid #fecaca; font-weight: 600;">${i.name} (${i.brand})</td>
+                  <td style="padding: 10px; border: 1px solid #fecaca; font-family: monospace; color: #b91c1c;">${i.sku}</td>
+                  <td style="padding: 10px; border: 1px solid #fecaca; text-align: center; color: #dc2626; font-weight: 800;">${i.available}</td>
+                  <td style="padding: 10px; border: 1px solid #fecaca; text-align: center;">${i.threshold}</td>
+                </tr>`
+                )
+                .join('')}
+            </tbody>
+          </table>
+          `
+      }
       <div style="margin-top: 24px; padding-top: 12px; border-top: 1px solid #fecaca; font-size: 11px; color: #94a3b8; text-align: center;">
-        Please place purchase orders with suppliers to replenish depleted inventory.
+        Dispatched to <strong>${validRecipients.join(', ')}</strong> &bull; ${org.companyName} Stock Management
       </div>
     </div>
   `;
@@ -636,8 +715,198 @@ export async function sendLowStockAlert(recipients?: string[]) {
   return sendNotificationEmail({
     reportType: REPORT_TYPES.LOW_STOCK_ALERT,
     recipients: validRecipients,
-    subject: `🚨 Urgent: ${lowStockItems.length} Items Below Low Stock Threshold — ${org.companyName}`,
+    subject: lowStockItems.length > 0
+      ? `🚨 Low Stock Alert: ${lowStockItems.length} Products Need Replenishment — ${org.companyName}`
+      : `✅ Inventory Buffer Healthy: 0 Low Stock Items — ${org.companyName}`,
     htmlContent: html,
   });
 }
 
+export async function sendValuationReportEmail(recipients?: string | string[], notes?: string) {
+  const org = await getOrgInfo();
+  const validRecipients = await resolveRecipients(recipients);
+
+  if (validRecipients.length === 0) {
+    throw new Error('Please specify at least one recipient email address to send this report.');
+  }
+
+  const products = await Product.find({ isActive: true }).populate('category', 'name').lean();
+  let totalUnitsOnHand = 0;
+  let totalCostValuation = 0;
+  let totalRetailValuation = 0;
+
+  const categoryMap = new Map<string, { count: number; costVal: number; retailVal: number }>();
+
+  for (const p of products) {
+    const qty = p.stockQuantity?.onHand || 0;
+    const cost = p.purchaseCost || 0;
+    const price = p.defaultSellingPrice || cost;
+
+    totalUnitsOnHand += qty;
+    totalCostValuation += qty * cost;
+    totalRetailValuation += qty * price;
+
+    const catName = (p.category as any)?.name || 'Musical Instruments';
+    const current = categoryMap.get(catName) || { count: 0, costVal: 0, retailVal: 0 };
+    current.count += qty;
+    current.costVal += qty * cost;
+    current.retailVal += qty * price;
+    categoryMap.set(catName, current);
+  }
+
+  const potentialGrossMargin = totalRetailValuation - totalCostValuation;
+  const potentialMarginPct = totalRetailValuation > 0 ? Math.round((potentialGrossMargin / totalRetailValuation) * 100) : 0;
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 650px; margin: auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+      <div style="border-bottom: 2px solid #6366f1; padding-bottom: 12px; margin-bottom: 16px;">
+        <h2 style="color: #312e81; margin: 0; font-size: 20px;">💎 Inventory Asset Valuation Report</h2>
+        <div style="color: #64748b; font-size: 13px; margin-top: 4px;">${org.companyName} — Financial Catalog Asset Worth</div>
+      </div>
+      ${
+        notes
+          ? `<div style="margin: 12px 0; padding: 10px 14px; background: #eef2ff; border-left: 4px solid #6366f1; border-radius: 4px; font-size: 12px; color: #3730a3;">
+               <strong>Valuation Notes:</strong> ${notes}
+             </div>`
+          : ''
+      }
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 20px 0;">
+        <div style="background: #eef2ff; padding: 14px; border-radius: 8px; border-left: 4px solid #6366f1;">
+          <div style="font-size: 11px; font-weight: 700; color: #4338ca; text-transform: uppercase;">Total Valuation (At Cost)</div>
+          <div style="font-size: 22px; font-weight: 800; color: #312e81; margin-top: 4px;">${org.currencySymbol}${totalCostValuation.toLocaleString('en-IN')}</div>
+        </div>
+        <div style="background: #f0fdf4; padding: 14px; border-radius: 8px; border-left: 4px solid #10b981;">
+          <div style="font-size: 11px; font-weight: 700; color: #166534; text-transform: uppercase;">Expected Retail Value</div>
+          <div style="font-size: 22px; font-weight: 800; color: #065f46; margin-top: 4px;">${org.currencySymbol}${totalRetailValuation.toLocaleString('en-IN')}</div>
+        </div>
+      </div>
+
+      <div style="background: #f8fafc; padding: 12px 16px; border-radius: 8px; border: 1px solid #e2e8f0; font-size: 13px; margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+          <span style="color: #64748b;">Active Catalog SKUs:</span>
+          <strong>${products.length} Products (${totalUnitsOnHand} Physical Units)</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: #64748b;">Potential Gross Margin:</span>
+          <strong style="color: #10b981;">${org.currencySymbol}${potentialGrossMargin.toLocaleString('en-IN')} (${potentialMarginPct}%)</strong>
+        </div>
+      </div>
+
+      <h3 style="color: #0f172a; font-size: 14px; text-transform: uppercase;">Valuation Breakdown By Category</h3>
+      <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px;">
+        <thead>
+          <tr style="background: #f1f5f9; text-align: left; color: #475569;">
+            <th style="padding: 8px 10px;">Category</th>
+            <th style="padding: 8px 10px; text-align: center;">Stock Qty</th>
+            <th style="padding: 8px 10px; text-align: right;">Cost Value</th>
+            <th style="padding: 8px 10px; text-align: right;">Retail Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${Array.from(categoryMap.entries())
+            .map(
+              ([cat, data]) => `
+            <tr>
+              <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; font-weight: 600;">${cat}</td>
+              <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: center;">${data.count}</td>
+              <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: right;">${org.currencySymbol}${data.costVal.toLocaleString('en-IN')}</td>
+              <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: right; font-weight: 700; color: #065f46;">${org.currencySymbol}${data.retailVal.toLocaleString('en-IN')}</td>
+            </tr>`
+            )
+            .join('')}
+        </tbody>
+      </table>
+
+      <div style="margin-top: 24px; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center;">
+        Dispatched on demand to <strong>${validRecipients.join(', ')}</strong> &bull; ${org.companyName} Asset Intelligence
+      </div>
+    </div>
+  `;
+
+  return sendNotificationEmail({
+    reportType: REPORT_TYPES.VALUATION_REPORT,
+    recipients: validRecipients,
+    subject: `Inventory Valuation Report: ${org.currencySymbol}${totalCostValuation.toLocaleString('en-IN')} (Cost) — ${org.companyName}`,
+    htmlContent: html,
+  });
+}
+
+export async function sendTestEmail(recipient?: string | string[], triggeredBy?: string) {
+  const org = await getOrgInfo();
+  const validRecipients = await resolveRecipients(recipient);
+
+  if (validRecipients.length === 0) {
+    throw new Error('Please enter a recipient email address to send the test email.');
+  }
+
+  const nowStr = new Date().toLocaleString('en-IN', { dateStyle: 'full', timeStyle: 'medium' });
+  const gmailUser = process.env.GMAIL_USER || ENV.SMTP_USER;
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: auto; padding: 24px; border: 1px solid #10b981; border-radius: 12px; background: #ffffff;">
+      <div style="border-bottom: 2px solid #10b981; padding-bottom: 12px; margin-bottom: 16px;">
+        <h2 style="color: #065f46; margin: 0; font-size: 20px;">✅ Gmail SMTP Operational Test</h2>
+        <div style="color: #64748b; font-size: 13px; margin-top: 4px;">${org.companyName} — ${org.storeName}</div>
+      </div>
+      <p style="color: #334155; font-size: 14px; line-height: 1.6;">
+        This email confirms that your <strong>Google App Password and Gmail SMTP delivery service</strong> are functioning properly.
+      </p>
+      <div style="background: #f0fdf4; border-left: 4px solid #10b981; padding: 14px; border-radius: 6px; margin: 16px 0;">
+        <div style="font-size: 12px; color: #166534; font-weight: 700; text-transform: uppercase;">Delivery Status: VERIFIED ACTIVE</div>
+        <div style="font-size: 13px; color: #065f46; margin-top: 6px;">Sender Account: <strong>${gmailUser}</strong></div>
+        <div style="font-size: 13px; color: #065f46; margin-top: 2px;">Recipient: <strong>${validRecipients.join(', ')}</strong></div>
+        <div style="font-size: 13px; color: #065f46; margin-top: 2px;">Dispatched By: <strong>${triggeredBy || 'Administrator'}</strong></div>
+        <div style="font-size: 12px; color: #64748b; margin-top: 6px;">Timestamp: ${nowStr}</div>
+      </div>
+      <div style="margin-top: 24px; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center;">
+        Stereobliss Retail Inventory System &bull; Secure Transactional Dispatch
+      </div>
+    </div>
+  `;
+
+  return sendNotificationEmail({
+    reportType: REPORT_TYPES.TEST_EMAIL,
+    recipients: validRecipients,
+    subject: `✅ Gmail SMTP Test Succeeded — ${org.companyName} (${new Date().toLocaleTimeString('en-IN')})`,
+    htmlContent: html,
+  });
+}
+
+/**
+ * High-level router to dispatch any report type by recipient email
+ */
+export async function dispatchReportEmail(
+  reportType: string,
+  recipients: string | string[],
+  options?: { notes?: string; triggeredBy?: string; customSubject?: string }
+) {
+  switch (reportType) {
+    case REPORT_TYPES.DAILY_STOCK_SUMMARY:
+    case 'summary':
+      return await sendDailyStockSummary(recipients, options?.notes);
+
+    case REPORT_TYPES.WEEKLY_SALES_SUMMARY:
+    case 'sales':
+      return await sendWeeklySalesSummary(recipients, options?.notes);
+
+    case REPORT_TYPES.OVERDUE_USAGE_REMINDER:
+    case 'overdue':
+      return await sendOverdueUsageReminders(recipients, options?.notes);
+
+    case REPORT_TYPES.LOW_STOCK_ALERT:
+    case 'low_stock':
+      return await sendLowStockAlert(recipients, options?.notes);
+
+    case REPORT_TYPES.VALUATION_REPORT:
+    case 'valuation':
+      return await sendValuationReportEmail(recipients, options?.notes);
+
+    case REPORT_TYPES.TEST_EMAIL:
+    case 'test':
+      return await sendTestEmail(recipients, options?.triggeredBy);
+
+    default:
+      return await sendDailyStockSummary(recipients, options?.notes);
+  }
+}

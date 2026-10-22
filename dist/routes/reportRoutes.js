@@ -1,14 +1,14 @@
 import { Router } from 'express';
 import { getDashboardMetrics, getInventoryValuationReport, getPeriodicSummary, generateCsv, } from '../services/reportService.js';
 import { runInventoryReconciliation } from '../services/reconciliationService.js';
-import { sendDailyStockSummary, sendOverdueUsageReminders, sendNotificationEmail, } from '../services/emailService.js';
+import { sendDailyStockSummary, sendOverdueUsageReminders, sendTestEmail, dispatchReportEmail, } from '../services/emailService.js';
 import { EmailDeliveryLog } from '../models/EmailDeliveryLog.js';
 import { Product } from '../models/Product.js';
 import { Sale } from '../models/Sale.js';
 import { StockMovement } from '../models/StockMovement.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
-import { ROLES, REPORT_TYPES } from '../config/constants.js';
+import { ROLES } from '../config/constants.js';
 const router = Router();
 // Dashboard summary KPIs & charts
 router.get('/dashboard', requireAuth, async (req, res, next) => {
@@ -59,48 +59,113 @@ router.get('/reconciliation', requireAuth, async (_req, res, next) => {
         next(err);
     }
 });
-// Trigger test email
-router.post('/email-test', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (req, res, next) => {
+// Comprehensive On-Demand Email Report Dispatch (Supports any report type and custom recipient email)
+router.post('/send-email-report', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
     try {
-        const { email } = req.body;
-        const targetEmail = email || req.user.email;
-        const log = await sendNotificationEmail({
-            reportType: REPORT_TYPES.TEST_EMAIL,
-            recipients: [targetEmail],
-            subject: `Stereobliss — Retail Inventory Automated Email Configuration Test (${new Date().toLocaleTimeString()})`,
-            htmlContent: `
-          <div style="font-family: sans-serif; padding: 20px; border: 1px solid #d97706; border-radius: 8px;">
-            <h2 style="color: #b45309; margin-top: 0;">Stereobliss — Retail Inventory</h2>
-            <p>This is a test notification confirming that transactional email reporting is properly configured.</p>
-            <p><strong>Triggered By:</strong> ${req.user.name} (${req.user.email})</p>
-            <p><strong>Timestamp:</strong> ${new Date().toISOString()}</p>
-          </div>
-        `,
+        const { reportType = 'DAILY_STOCK_SUMMARY', recipientEmail, recipients, notes, customSubject } = req.body;
+        const targetRecipient = (recipientEmail || recipients || req.user?.email || '').trim();
+        if (!targetRecipient || !targetRecipient.includes('@')) {
+            return res.status(400).json({
+                success: false,
+                error: { message: 'Please enter a valid recipient email address.' },
+            });
+        }
+        console.log(`[REPORT_DISPATCH] Dispatching "${reportType}" to ${targetRecipient}...`);
+        const log = await dispatchReportEmail(reportType, targetRecipient, {
+            notes,
+            customSubject,
+            triggeredBy: `${req.user?.name} (${req.user?.role})`,
         });
-        res.json({ success: true, data: { log } });
+        if (!log) {
+            return res.status(500).json({
+                success: false,
+                error: { message: 'Failed to process report email dispatch.' },
+            });
+        }
+        if (log.status === 'FAILED') {
+            return res.status(500).json({
+                success: false,
+                error: {
+                    message: log.errorDetails || 'Email sending failed via SMTP. Please verify Gmail credentials.',
+                },
+                data: { log },
+            });
+        }
+        res.json({
+            success: true,
+            message: `Email report (${reportType}) successfully dispatched to ${log.recipients.join(', ')}`,
+            data: {
+                log,
+                recipients: log.recipients,
+                messageId: log.providerReference,
+                status: log.status,
+            },
+        });
     }
     catch (err) {
-        next(err);
+        console.error('[REPORT_DISPATCH_ERROR]', err);
+        res.status(500).json({
+            success: false,
+            error: { message: err.message || 'Failed to dispatch report email.' },
+        });
     }
 });
-// Trigger manual daily summary dispatch (Superadmin only)
-router.post('/send-summary', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (req, res, next) => {
+// Trigger test email
+router.post('/email-test', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
     try {
-        const log = await sendDailyStockSummary(req.body.recipients);
-        res.json({ success: true, data: { log } });
+        const targetRecipient = (req.body.recipientEmail || req.body.email || req.user.email || '').trim();
+        const log = await sendTestEmail(targetRecipient, `${req.user.name} (${req.user.role})`);
+        if (log && log.status === 'FAILED') {
+            return res.status(500).json({
+                success: false,
+                error: { message: log.errorDetails || 'Failed to send test email.' },
+                data: { log },
+            });
+        }
+        res.json({
+            success: true,
+            message: `Test email successfully dispatched to ${targetRecipient}`,
+            data: { log },
+        });
     }
     catch (err) {
-        next(err);
+        res.status(500).json({ success: false, error: { message: err.message || 'Failed to send test email.' } });
     }
 });
-// Trigger overdue usage reminder dispatch (Superadmin only)
-router.post('/send-overdue-reminders', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (req, res, next) => {
+// Trigger manual daily summary dispatch
+router.post('/send-summary', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
     try {
-        const log = await sendOverdueUsageReminders(req.body.recipients);
-        res.json({ success: true, data: { log } });
+        const targetRecipient = req.body.recipientEmail || req.body.recipients || req.user?.email;
+        const log = await sendDailyStockSummary(targetRecipient, req.body.notes);
+        if (log && log.status === 'FAILED') {
+            return res.status(500).json({
+                success: false,
+                error: { message: log.errorDetails || 'Failed to send stock summary email.' },
+                data: { log },
+            });
+        }
+        res.json({ success: true, message: 'Stock summary email sent successfully', data: { log } });
     }
     catch (err) {
-        next(err);
+        res.status(500).json({ success: false, error: { message: err.message || 'Failed to send stock summary.' } });
+    }
+});
+// Trigger overdue usage reminder dispatch
+router.post('/send-overdue-reminders', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
+    try {
+        const targetRecipient = req.body.recipientEmail || req.body.recipients || req.user?.email;
+        const log = await sendOverdueUsageReminders(targetRecipient, req.body.notes);
+        if (log && log.status === 'FAILED') {
+            return res.status(500).json({
+                success: false,
+                error: { message: log.errorDetails || 'Failed to send overdue reminders email.' },
+                data: { log },
+            });
+        }
+        res.json({ success: true, message: 'Overdue reminders email sent successfully', data: { log } });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: { message: err.message || 'Failed to send overdue reminders.' } });
     }
 });
 // List email delivery logs

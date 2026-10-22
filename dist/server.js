@@ -1,7 +1,6 @@
 import { createApp } from './app.js';
 import { connectDB } from './config/db.js';
 import { ENV } from './config/env.js';
-import { initializeScheduledJobs } from './jobs/cronJobs.js';
 import { ensureDatabaseSeeded } from './scripts/seed.js';
 async function bootstrap() {
     try {
@@ -9,8 +8,8 @@ async function bootstrap() {
         await connectDB();
         // Auto-seed if database is empty
         await ensureDatabaseSeeded();
-        // Start background cron jobs
-        initializeScheduledJobs();
+        // Background cron jobs removed per requirement (manual report emailing enabled)
+        // initializeScheduledJobs();
         const app = createApp();
         const port = ENV.PORT;
         app.listen(port, () => {

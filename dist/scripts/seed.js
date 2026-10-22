@@ -112,7 +112,7 @@ export async function seedDatabase() {
     if (reportConfigCount === 0) {
         await EmailReportConfig.create({
             reportType: REPORT_TYPES.DAILY_STOCK_SUMMARY,
-            recipients: ['inventory@stereobliss.com'],
+            recipients: [],
             scheduleCron: '0 20 * * *',
             timeZone: 'Asia/Kolkata',
             isEnabled: true,

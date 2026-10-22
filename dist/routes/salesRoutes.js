@@ -61,6 +61,64 @@ router.get('/:id', requireAuth, async (req, res, next) => {
         next(err);
     }
 });
+// Download / View Tax Invoice PDF
+router.get('/:id/pdf', requireAuth, async (req, res, next) => {
+    try {
+        const sale = await Sale.findById(req.params.id)
+            .populate('location', 'name code address')
+            .populate('soldBy', 'name email')
+            .populate('lineItems.product', 'name sku brand modelName defaultSellingPrice color')
+            .populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition')
+            .lean();
+        if (!sale) {
+            return res.status(404).json({ success: false, message: 'Sale invoice not found.' });
+        }
+        const { generateTaxInvoicePdf } = await import('../services/pdfService.js');
+        const pdfBuffer = await generateTaxInvoicePdf(sale);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename=TaxInvoice-${sale.invoiceNumber}.pdf`);
+        res.setHeader('Content-Length', pdfBuffer.length);
+        res.send(pdfBuffer);
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Send Tax Invoice PDF via Email to Dealer or User
+router.post('/:id/send-email', requireAuth, async (req, res, next) => {
+    try {
+        const sale = await Sale.findById(req.params.id)
+            .populate('location', 'name code address')
+            .populate('soldBy', 'name email')
+            .populate('lineItems.product', 'name sku brand modelName defaultSellingPrice color')
+            .populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition')
+            .lean();
+        if (!sale) {
+            return res.status(404).json({ success: false, message: 'Sale invoice not found.' });
+        }
+        const targetRecipient = (req.body.recipientEmail || sale.customerEmail || '').trim();
+        if (!targetRecipient || !targetRecipient.includes('@')) {
+            return res.status(400).json({
+                success: false,
+                message: 'Please provide a valid recipient email address for this dealer / customer.',
+            });
+        }
+        const { sendInvoicePdfEmail } = await import('../services/emailService.js');
+        const log = await sendInvoicePdfEmail({
+            sale,
+            recipientEmail: targetRecipient,
+            customNotes: req.body.customNotes,
+        });
+        res.json({
+            success: true,
+            message: `Tax Invoice PDF dispatched to ${targetRecipient}`,
+            data: { log, recipient: targetRecipient },
+        });
+    }
+    catch (err) {
+        next(err);
+    }
+});
 // Create and confirm sale
 router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(createSaleSchema), async (req, res, next) => {
     try {
