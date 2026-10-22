@@ -1,5 +1,4 @@
 import PDFDocument from 'pdfkit';
-import QRCode from 'qrcode';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
 import { ISale } from '../models/Sale.js';
@@ -95,12 +94,10 @@ export async function generateTaxInvoicePdf(sale: any): Promise<Buffer> {
   }
 
   const companyName = setting?.companyName || 'Stereobliss';
-  const supplierAddress =
-    setting?.address ||
-    '2nd Floor Radhika Avenue, Wakad Nasik Road Circle, Near Jagtap Factory Beside Savitribai Phule Park, Pimple Saudagar, Pune MH 411027';
-  const supplierPhone = setting?.contactPhone || '7769987599';
-  const supplierEmail = setting?.contactEmail || 'sales@stereobliss.com';
-  const supplierGstin = setting?.gstin || '27ADDFS8650Q1Z6';
+  const supplierAddress = setting?.address || '';
+  const supplierPhone = setting?.contactPhone || '';
+  const supplierEmail = setting?.contactEmail || '';
+  const supplierGstin = setting?.gstin || '';
   const supplierState = setting?.stateName || 'Maharashtra';
   const supplierStateCode = setting?.stateCode || '27';
 
@@ -115,10 +112,8 @@ export async function generateTaxInvoicePdf(sale: any): Promise<Buffer> {
   const buyerName = sale.customerName || 'Valued Customer';
   const buyerPhone = sale.customerPhone || '';
   const buyerEmail = sale.customerEmail || '';
-  const buyerAddress =
-    sale.customerAddress ||
-    'Pimple Saudagar, Pune, Maharashtra 411027';
-  const buyerGstin = sale.customerGstin || supplierGstin;
+  const buyerAddress = sale.customerAddress || '-';
+  const buyerGstin = sale.customerGstin || (supplierGstin ? 'Unregistered / B2C' : 'N/A');
   const buyerState = 'Maharashtra';
   const buyerStateCode = '27';
 
@@ -134,14 +129,6 @@ export async function generateTaxInvoicePdf(sale: any): Promise<Buffer> {
     crypto.createHash('sha256').update(irnSeed).digest('hex').substring(0, 64);
   const ackNo = sale.ackNo || `1226${Math.floor(10000000000 + Math.random() * 90000000000)}`;
   const ackDate = dateFormatted;
-
-  // Generate real QR code buffer containing Indian GST e-Invoice data payload
-  const qrPayload = `Seller:${supplierGstin}|Buyer:${buyerGstin}|DocNo:${invoiceNo}|DocDt:${dateFormatted}|TotVal:${sale.grandTotal}|ItemCnt:${sale.lineItems?.length || 1}|IRN:${irn}`;
-  const qrBuffer = await QRCode.toBuffer(qrPayload, {
-    errorCorrectionLevel: 'M',
-    margin: 1,
-    width: 140,
-  });
 
   return new Promise<Buffer>((resolve, reject) => {
     try {
@@ -179,32 +166,20 @@ export async function generateTaxInvoicePdf(sale: any): Promise<Buffer> {
         width: pageWidth,
       });
 
-      // e-Invoice label on top right
-      doc.font('Helvetica').fontSize(7).text('e-Invoice', leftMargin + pageWidth - 80, topMargin + 8, {
-        align: 'center',
-        width: 70,
-      });
-
-      // QR Code on top right
-      const qrSize = 65;
-      const qrX = leftMargin + pageWidth - 75;
-      const qrY = topMargin + 20;
-      doc.image(qrBuffer, qrX, qrY, { width: qrSize, height: qrSize });
-
-      // IRN, Ack No, Ack Date (Left/top under header)
+      // IRN, Ack No, Ack Date (Left/top under header without QR code)
       let metaY = topMargin + 32;
       doc.font('Helvetica').fontSize(6.5);
       doc.text(`IRN:`, leftMargin + 8, metaY);
-      doc.font('Helvetica-Bold').fontSize(6.5).text(irn, leftMargin + 50, metaY, { width: 340 });
-      metaY += 10;
-      doc.font('Helvetica').fontSize(6.5).text(`Ack No:`, leftMargin + 8, metaY);
-      doc.font('Helvetica-Bold').fontSize(6.5).text(ackNo, leftMargin + 50, metaY);
-      metaY += 10;
-      doc.font('Helvetica').fontSize(6.5).text(`Ack Date:`, leftMargin + 8, metaY);
-      doc.font('Helvetica-Bold').fontSize(6.5).text(ackDate, leftMargin + 50, metaY);
+      doc.font('Helvetica-Bold').fontSize(6.5).text(irn, leftMargin + 50, metaY, { width: pageWidth - 60 });
+      metaY += 11;
+      doc.font('Helvetica').fontSize(6.5);
+      doc.text(`Ack No:`, leftMargin + 8, metaY);
+      doc.font('Helvetica-Bold').fontSize(6.5).text(ackNo, leftMargin + 50, metaY, { continued: true });
+      doc.font('Helvetica').text(`       Ack Date: `, { continued: true });
+      doc.font('Helvetica-Bold').text(ackDate);
 
       // Horizontal separator line below header
-      const headerBottomY = topMargin + 88;
+      const headerBottomY = topMargin + 65;
       doc.moveTo(leftMargin, headerBottomY).lineTo(leftMargin + pageWidth, headerBottomY).lineWidth(0.5).stroke('#000000');
 
       // 2. Middle Section: Two Columns (Supplier/Consignee/Buyer on Left, Invoice Details on Right)

@@ -241,6 +241,9 @@ router.patch(
         contactEmail,
         contactPhone,
         address,
+        gstin,
+        stateName,
+        stateCode,
         currency,
         currencySymbol,
         managerApprovalThresholdValue,
@@ -261,6 +264,9 @@ router.patch(
       if (contactEmail !== undefined) setting.contactEmail = contactEmail.trim().toLowerCase();
       if (contactPhone !== undefined) setting.contactPhone = contactPhone.trim();
       if (address !== undefined) setting.address = address.trim();
+      if (gstin !== undefined) setting.gstin = gstin.trim().toUpperCase();
+      if (stateName !== undefined) setting.stateName = stateName.trim();
+      if (stateCode !== undefined) setting.stateCode = stateCode.trim();
       if (currency !== undefined) setting.currency = currency.trim().toUpperCase();
       if (currencySymbol !== undefined) setting.currencySymbol = currencySymbol.trim();
       if (managerApprovalThresholdValue !== undefined) {

@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import { connectDB, disconnectDB } from '../config/db.js';
 import { Product } from '../models/Product.js';
@@ -19,7 +20,7 @@ import { AppSetting } from '../models/AppSetting.js';
 import { ROLES } from '../config/constants.js';
 export async function clearAllLocalData() {
     console.log('[CLEAN] Wiping all dummy catalog, inventory, and transaction data...');
-    // Wipe inventory, transactions, and suppliers
+    // Wipe inventory, transactions, suppliers, logs, and legacy test accounts
     await Promise.all([
         Product.deleteMany({}),
         SerializedItem.deleteMany({}),
@@ -33,6 +34,9 @@ export async function clearAllLocalData() {
         InventoryAdjustment.deleteMany({}),
         AuditLog.deleteMany({}),
         Supplier.deleteMany({}),
+        mongoose.connection.db?.collection('emaildeliverylogs').deleteMany({}) || Promise.resolve(),
+        User.deleteMany({ email: /muziclub/i }),
+        mongoose.connection.db?.collection('emailreportconfigs').updateMany({}, { $set: { recipients: [] } }) || Promise.resolve(),
     ]);
     console.log('[CLEAN] Cleared products, serialized items, movements, transactions, and suppliers.');
     // Ensure standard categories exist (clean initial hierarchy)
@@ -67,15 +71,28 @@ export async function clearAllLocalData() {
             companyName: 'Stereobliss Retail',
             storeName: 'Stereobliss Central Store',
             storeCode: 'CENTRAL',
-            contactEmail: 'contact@stereobliss.com',
-            contactPhone: '+91 98765 43210',
-            address: 'Stereobliss Central Store, Pune, Maharashtra, India',
+            contactEmail: '',
+            contactPhone: '',
+            address: '',
+            gstin: '',
+            stateName: 'Maharashtra',
+            stateCode: '27',
             currencySymbol: '₹',
             defaultLocation: defaultLoc._id,
             managerApprovalThresholdValue: 3,
             timeZone: 'Asia/Kolkata',
         });
         console.log('[CLEAN] Created base AppSettings.');
+    }
+    else {
+        setting.contactEmail = '';
+        setting.contactPhone = '';
+        setting.address = '';
+        setting.gstin = '';
+        setting.stateName = 'Maharashtra';
+        setting.stateCode = '27';
+        await setting.save();
+        console.log('[CLEAN] Reset existing AppSettings fields to clean state.');
     }
     // Ensure essential users exist for login (Two profile roles)
     const userCount = await User.countDocuments();

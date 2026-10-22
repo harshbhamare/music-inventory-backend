@@ -181,7 +181,7 @@ router.get('/settings', requireAuth, async (_req, res, next) => {
 });
 router.patch('/settings', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
     try {
-        const { companyName, storeName, storeCode, contactEmail, contactPhone, address, currency, currencySymbol, managerApprovalThresholdValue, lowStockAlertThresholdDefault, timeZone, defaultLocationId, } = req.body;
+        const { companyName, storeName, storeCode, contactEmail, contactPhone, address, gstin, stateName, stateCode, currency, currencySymbol, managerApprovalThresholdValue, lowStockAlertThresholdDefault, timeZone, defaultLocationId, } = req.body;
         let setting = await AppSetting.findOne();
         if (!setting) {
             setting = new AppSetting();
@@ -199,6 +199,12 @@ router.patch('/settings', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANA
             setting.contactPhone = contactPhone.trim();
         if (address !== undefined)
             setting.address = address.trim();
+        if (gstin !== undefined)
+            setting.gstin = gstin.trim().toUpperCase();
+        if (stateName !== undefined)
+            setting.stateName = stateName.trim();
+        if (stateCode !== undefined)
+            setting.stateCode = stateCode.trim();
         if (currency !== undefined)
             setting.currency = currency.trim().toUpperCase();
         if (currencySymbol !== undefined)
