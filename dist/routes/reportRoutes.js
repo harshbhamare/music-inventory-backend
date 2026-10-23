@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getDashboardMetrics, getInventoryValuationReport, getPeriodicSummary, generateCsv, } from '../services/reportService.js';
+import { getDashboardMetrics, getInventoryValuationReport, getPeriodicSummary, getRentalProfitabilityReport, generateCsv, } from '../services/reportService.js';
 import { runInventoryReconciliation } from '../services/reconciliationService.js';
 import { sendDailyStockSummary, sendOverdueUsageReminders, sendTestEmail, dispatchReportEmail, } from '../services/emailService.js';
 import { EmailDeliveryLog } from '../models/EmailDeliveryLog.js';
@@ -53,6 +53,16 @@ router.get('/valuation', requireAuth, async (_req, res, next) => {
 router.get('/reconciliation', requireAuth, async (_req, res, next) => {
     try {
         const data = await runInventoryReconciliation();
+        res.json({ success: true, data });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Rental instrument profitability & fleet performance tracking
+router.get('/rentals-profitability', requireAuth, async (_req, res, next) => {
+    try {
+        const data = await getRentalProfitabilityReport();
         res.json({ success: true, data });
     }
     catch (err) {
@@ -269,6 +279,56 @@ router.get('/export/:type', requireAuth, async (req, res, next) => {
             const csv = generateCsv(headers, rows);
             res.setHeader('Content-Type', 'text/csv');
             res.setHeader('Content-Disposition', `attachment; filename=stereobliss-${period}ly-summary-${Date.now()}.csv`);
+            res.send(csv);
+            return;
+        }
+        if (type === 'rentals') {
+            const rentalReport = await getRentalProfitabilityReport();
+            const headers = [
+                'Agreement Ref',
+                'Instrument Name',
+                'SKU',
+                'Serial / Asset ID',
+                'Category',
+                'Customer Name',
+                'Phone',
+                'Status',
+                'Issue Date',
+                'Expected Return',
+                'Monthly Rent (INR)',
+                'Deposit (INR)',
+                'Total Rent Paid (INR)',
+                'Rent Balance Due (INR)',
+                'Asset Capex Cost (INR)',
+                'Maintenance Cost (INR)',
+                'Net Profit (INR)',
+                'ROI (%)',
+                'Capex Recovered',
+            ];
+            const rows = rentalReport.items.map((item) => [
+                item.issueReference,
+                item.productName,
+                item.sku,
+                item.assetId || item.serialNumber || 'N/A',
+                item.category,
+                item.customerName,
+                item.customerContact || 'N/A',
+                item.status,
+                item.issueDate.slice(0, 10),
+                item.expectedReturnDate.slice(0, 10),
+                item.monthlyRent,
+                item.securityDeposit,
+                item.totalRentPaid,
+                item.totalRentDue,
+                item.purchaseCost,
+                item.maintenanceCost,
+                item.netProfit,
+                `${item.roiPercent}%`,
+                item.isCapexRecovered ? 'YES' : 'NO',
+            ]);
+            const csv = generateCsv(headers, rows);
+            res.setHeader('Content-Type', 'text/csv');
+            res.setHeader('Content-Disposition', `attachment; filename=stereobliss-rental-profitability-${Date.now()}.csv`);
             res.send(csv);
             return;
         }

@@ -652,11 +652,11 @@ export async function getRentalProfitabilityReport(): Promise<RentalProfitabilit
   let capitalRecoveredCount = 0;
 
   for (const u of usages) {
-    const isAct = u.status === USAGE_STATUSES.ACTIVE || u.status === 'ACTIVE';
+    const isAct = u.status === USAGE_STATUSES.ACTIVE;
     const isOverdue =
       u.status === USAGE_STATUSES.OVERDUE ||
       (isAct && u.expectedReturnDate && new Date(u.expectedReturnDate) < now);
-    const isRet = u.status === USAGE_STATUSES.RETURNED || u.status === 'RETURNED';
+    const isRet = u.status === USAGE_STATUSES.RETURNED;
 
     if (isOverdue) overdueRentals++;
     else if (isAct) activeRentals++;
