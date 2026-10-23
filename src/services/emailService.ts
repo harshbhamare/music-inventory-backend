@@ -12,6 +12,7 @@ import {
 } from '../config/constants.js';
 import { ENV } from '../config/env.js';
 import { generateTaxInvoicePdf, formatIndianCurrency } from './pdfService.js';
+import { getRentalProfitabilityReport } from './reportService.js';
 
 export interface EmailAttachment {
   filename: string;
@@ -832,6 +833,102 @@ export async function sendValuationReportEmail(recipients?: string | string[], n
   });
 }
 
+export async function sendRentalProfitabilityReportEmail(recipient?: string | string[], notes?: string) {
+  const org = await getOrgInfo();
+  const validRecipients = await resolveRecipients(recipient);
+
+  if (validRecipients.length === 0) {
+    throw new Error('Please enter a recipient email address for the rental profitability report.');
+  }
+
+  const report = await getRentalProfitabilityReport();
+  const kpis = report.kpis;
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 680px; margin: auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+      <div style="border-bottom: 2px solid #8b5cf6; padding-bottom: 12px; margin-bottom: 16px;">
+        <h2 style="color: #4c1d95; margin: 0; font-size: 20px;">🎸 Rental Instrument Profitability & Fleet Yield Report</h2>
+        <div style="color: #64748b; font-size: 13px; margin-top: 4px;">${org.companyName} — Rental Revenue, Maintenance & Capex Recovery</div>
+      </div>
+      ${
+        notes
+          ? `<div style="margin: 12px 0; padding: 10px 14px; background: #f5f3ff; border-left: 4px solid #8b5cf6; border-radius: 4px; font-size: 12px; color: #5b21b6;">
+               <strong>Rental Audit Notes:</strong> ${notes}
+             </div>`
+          : ''
+      }
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 20px 0;">
+        <div style="background: #f0fdf4; padding: 14px; border-radius: 8px; border-left: 4px solid #10b981;">
+          <div style="font-size: 11px; font-weight: 700; color: #166534; text-transform: uppercase;">Total Rental Revenue Collected</div>
+          <div style="font-size: 22px; font-weight: 800; color: #065f46; margin-top: 4px;">${org.currencySymbol}${kpis.totalRentalRevenueCollected.toLocaleString('en-IN')}</div>
+          <div style="font-size: 11px; color: #047857; margin-top: 2px;">Outstanding Balance: ${org.currencySymbol}${kpis.totalRentalDue.toLocaleString('en-IN')}</div>
+        </div>
+        <div style="background: #faf5ff; padding: 14px; border-radius: 8px; border-left: 4px solid #8b5cf6;">
+          <div style="font-size: 11px; font-weight: 700; color: #6b21a8; text-transform: uppercase;">Net Rental Profit</div>
+          <div style="font-size: 22px; font-weight: 800; color: #581c87; margin-top: 4px;">${org.currencySymbol}${kpis.netRentalProfit.toLocaleString('en-IN')}</div>
+          <div style="font-size: 11px; color: #7e22ce; margin-top: 2px;">Portfolio Capex Recovery: <strong>${kpis.portfolioRoiPercent}%</strong></div>
+        </div>
+      </div>
+
+      <div style="background: #f8fafc; padding: 12px 16px; border-radius: 8px; border: 1px solid #e2e8f0; font-size: 13px; margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+          <span style="color: #64748b;">Active Rental Fleet:</span>
+          <strong>${kpis.activeRentals} Active (${kpis.overdueRentals} Overdue, ${kpis.returnedRentals} Returned)</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+          <span style="color: #64748b;">Monthly Recurring Revenue (MRR):</span>
+          <strong style="color: #059669;">${org.currencySymbol}${kpis.activeMRR.toLocaleString('en-IN')}/mo (ARR: ${org.currencySymbol}${kpis.projectedARR.toLocaleString('en-IN')})</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: #64748b;">Security Deposits Held:</span>
+          <strong>${org.currencySymbol}${kpis.totalSecurityDepositsHeld.toLocaleString('en-IN')}</strong>
+        </div>
+      </div>
+
+      <h3 style="color: #0f172a; font-size: 14px; text-transform: uppercase;">Category Rental Performance</h3>
+      <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px;">
+        <thead>
+          <tr style="background: #f1f5f9; text-align: left; color: #475569;">
+            <th style="padding: 8px 10px;">Category</th>
+            <th style="padding: 8px 10px; text-align: center;">Agreements</th>
+            <th style="padding: 8px 10px; text-align: right;">Rent Collected</th>
+            <th style="padding: 8px 10px; text-align: right;">Capex Cost</th>
+            <th style="padding: 8px 10px; text-align: right;">Net Profit</th>
+            <th style="padding: 8px 10px; text-align: right;">ROI %</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${report.categoryPerformance
+            .map(
+              (cp) => `
+            <tr>
+              <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; font-weight: 600;">${cp.category}</td>
+              <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: center;">${cp.rentalsCount}</td>
+              <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: right; color: #047857; font-weight: 700;">${org.currencySymbol}${cp.totalCollected.toLocaleString('en-IN')}</td>
+              <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: right;">${org.currencySymbol}${cp.totalCapex.toLocaleString('en-IN')}</td>
+              <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: right; font-weight: 700; color: #6b21a8;">${org.currencySymbol}${cp.netProfit.toLocaleString('en-IN')}</td>
+              <td style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: right; font-weight: 700;">${cp.roiPercent}%</td>
+            </tr>`
+            )
+            .join('')}
+        </tbody>
+      </table>
+
+      <div style="margin-top: 24px; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center;">
+        Dispatched on demand to <strong>${validRecipients.join(', ')}</strong> &bull; ${org.companyName} Rental Asset Management
+      </div>
+    </div>
+  `;
+
+  return sendNotificationEmail({
+    reportType: REPORT_TYPES.RENTAL_PROFITABILITY_REPORT,
+    recipients: validRecipients,
+    subject: `Rental Profitability Report: ${org.currencySymbol}${kpis.totalRentalRevenueCollected.toLocaleString('en-IN')} Collected (${kpis.portfolioRoiPercent}% ROI) — ${org.companyName}`,
+    htmlContent: html,
+  });
+}
+
 export async function sendTestEmail(recipient?: string | string[], triggeredBy?: string) {
   const org = await getOrgInfo();
   const validRecipients = await resolveRecipients(recipient);
@@ -902,6 +999,11 @@ export async function dispatchReportEmail(
     case 'valuation':
       return await sendValuationReportEmail(recipients, options?.notes);
 
+    case REPORT_TYPES.RENTAL_PROFITABILITY_REPORT:
+    case 'rentals':
+    case 'rental_profitability':
+      return await sendRentalProfitabilityReportEmail(recipients, options?.notes);
+
     case REPORT_TYPES.TEST_EMAIL:
     case 'test':
       return await sendTestEmail(recipients, options?.triggeredBy);
@@ -910,3 +1012,4 @@ export async function dispatchReportEmail(
       return await sendDailyStockSummary(recipients, options?.notes);
   }
 }
+

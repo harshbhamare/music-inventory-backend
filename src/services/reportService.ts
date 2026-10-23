@@ -7,6 +7,7 @@ import { InternalUsage } from '../models/InternalUsage.js';
 import { MaintenanceRecord } from '../models/MaintenanceRecord.js';
 import { InventoryAdjustment } from '../models/InventoryAdjustment.js';
 import { StockMovement } from '../models/StockMovement.js';
+import { Category } from '../models/Category.js';
 import '../models/User.js';
 import '../models/StockLocation.js';
 import {
@@ -15,6 +16,7 @@ import {
   MAINTENANCE_STATUSES,
   ADJUSTMENT_STATUSES,
   TRACKING_MODES,
+  SALE_STATUSES,
 } from '../config/constants.js';
 
 export async function getDashboardMetrics(startDate?: Date, endDate?: Date) {
@@ -264,6 +266,9 @@ export interface PeriodicSummaryItem {
   salesRevenue: number;
   salesCount: number;
   itemsSold: number;
+  cogs: number;
+  grossProfit: number;
+  grossMarginPercent: number;
   receiptsCount: number;
   receiptsValue: number;
   adjustmentsCount: number;
@@ -276,8 +281,12 @@ export interface PeriodicSummaryResult {
     totalSalesCount: number;
     totalUnitsSold: number;
     averageOrderValue: number;
+    totalCogs: number;
+    totalGrossProfit: number;
+    grossMarginPercent: number;
     totalInwardPurchases: number;
     totalReceiptsCount: number;
+    netCashFlow: number;
   };
   periods: PeriodicSummaryItem[];
   topProducts: Array<{
@@ -285,6 +294,7 @@ export interface PeriodicSummaryResult {
     sku: string;
     quantity: number;
     revenue: number;
+    profit: number;
   }>;
 }
 
@@ -296,10 +306,9 @@ export async function getPeriodicSummary(period: 'week' | 'month' = 'week'): Pro
     // Last 8 weeks
     for (let i = 7; i >= 0; i--) {
       const d = new Date(now);
-      // Find current day of week (0=Sun, 1=Mon... 6=Sat)
       const day = d.getDay();
       const diffToMonday = (day + 6) % 7;
-      
+
       const startOfWeek = new Date(d);
       startOfWeek.setDate(d.getDate() - diffToMonday - (i * 7));
       startOfWeek.setHours(0, 0, 0, 0);
@@ -319,6 +328,9 @@ export async function getPeriodicSummary(period: 'week' | 'month' = 'week'): Pro
         salesRevenue: 0,
         salesCount: 0,
         itemsSold: 0,
+        cogs: 0,
+        grossProfit: 0,
+        grossMarginPercent: 0,
         receiptsCount: 0,
         receiptsValue: 0,
         adjustmentsCount: 0,
@@ -339,6 +351,9 @@ export async function getPeriodicSummary(period: 'week' | 'month' = 'week'): Pro
         salesRevenue: 0,
         salesCount: 0,
         itemsSold: 0,
+        cogs: 0,
+        grossProfit: 0,
+        grossMarginPercent: 0,
         receiptsCount: 0,
         receiptsValue: 0,
         adjustmentsCount: 0,
@@ -350,12 +365,22 @@ export async function getPeriodicSummary(period: 'week' | 'month' = 'week'): Pro
   const overallEnd = new Date(periods[periods.length - 1].endDate);
 
   const [sales, receipts, adjustments] = await Promise.all([
-    Sale.find({ createdAt: { $gte: overallStart, $lte: overallEnd } }).populate('lineItems.product', 'name sku').lean(),
+    Sale.find({
+      $and: [
+        { createdAt: { $gte: overallStart, $lte: overallEnd } },
+        { saleStatus: { $ne: SALE_STATUSES.CANCELLED } },
+      ],
+    })
+      .populate('lineItems.product', 'name sku purchaseCost')
+      .lean(),
     PurchaseReceipt.find({ receivedDate: { $gte: overallStart, $lte: overallEnd } }).lean(),
     InventoryAdjustment.find({ createdAt: { $gte: overallStart, $lte: overallEnd } }).lean(),
   ]);
 
-  const productSalesMap = new Map<string, { name: string; sku: string; quantity: number; revenue: number }>();
+  const productSalesMap = new Map<
+    string,
+    { name: string; sku: string; quantity: number; revenue: number; cogs: number; profit: number }
+  >();
 
   // Map into respective period buckets
   for (const s of sales) {
@@ -366,16 +391,18 @@ export async function getPeriodicSummary(period: 'week' | 'month' = 'week'): Pro
       return saleDate >= st && saleDate <= et;
     });
 
-    const itemsQty = (s.lineItems || []).reduce((sum: number, li: any) => sum + (li.quantity || 0), 0);
+    const lineItems = (s.lineItems && s.lineItems.length > 0) ? s.lineItems : ((s as any).items || []);
+    let saleCogs = 0;
+    let saleQty = 0;
 
-    if (bucket) {
-      bucket.salesCount++;
-      bucket.salesRevenue += s.grandTotal || 0;
-      bucket.itemsSold += itemsQty;
-    }
-
-    for (const li of (s.lineItems || [])) {
+    for (const li of lineItems) {
       const prod = li.product as any;
+      const qty = li.quantity || 1;
+      const unitCost = prod?.purchaseCost || 0;
+      const itemCost = qty * unitCost;
+      saleCogs += itemCost;
+      saleQty += qty;
+
       if (prod && prod._id) {
         const id = prod._id.toString();
         const existing = productSalesMap.get(id) || {
@@ -383,11 +410,26 @@ export async function getPeriodicSummary(period: 'week' | 'month' = 'week'): Pro
           sku: prod.sku || '',
           quantity: 0,
           revenue: 0,
+          cogs: 0,
+          profit: 0,
         };
-        existing.quantity += li.quantity || 0;
-        existing.revenue += li.total || 0;
+        existing.quantity += qty;
+        existing.revenue += (li.total ?? (li.subtotal ?? (li.unitPrice * qty)));
+        existing.cogs += itemCost;
+        existing.profit = existing.revenue - existing.cogs;
         productSalesMap.set(id, existing);
       }
+    }
+
+    const saleRevenue = s.grandTotal || 0;
+    const saleProfit = saleRevenue - saleCogs;
+
+    if (bucket) {
+      bucket.salesCount++;
+      bucket.salesRevenue += saleRevenue;
+      bucket.itemsSold += saleQty;
+      bucket.cogs += saleCogs;
+      bucket.grossProfit += saleProfit;
     }
   }
 
@@ -423,18 +465,25 @@ export async function getPeriodicSummary(period: 'week' | 'month' = 'week'): Pro
   let totalRevenue = 0;
   let totalSalesCount = 0;
   let totalUnitsSold = 0;
+  let totalCogs = 0;
+  let totalGrossProfit = 0;
   let totalInwardPurchases = 0;
   let totalReceiptsCount = 0;
 
   for (const p of periods) {
+    p.grossMarginPercent = p.salesRevenue > 0 ? Number(((p.grossProfit / p.salesRevenue) * 100).toFixed(1)) : 0;
     totalRevenue += p.salesRevenue;
     totalSalesCount += p.salesCount;
     totalUnitsSold += p.itemsSold;
+    totalCogs += p.cogs;
+    totalGrossProfit += p.grossProfit;
     totalInwardPurchases += p.receiptsValue;
     totalReceiptsCount += p.receiptsCount;
   }
 
   const averageOrderValue = totalSalesCount > 0 ? Math.round(totalRevenue / totalSalesCount) : 0;
+  const grossMarginPercent = totalRevenue > 0 ? Number(((totalGrossProfit / totalRevenue) * 100).toFixed(1)) : 0;
+  const netCashFlow = totalRevenue - totalInwardPurchases;
 
   const topProducts = Array.from(productSalesMap.values())
     .sort((a, b) => b.revenue - a.revenue)
@@ -447,10 +496,397 @@ export async function getPeriodicSummary(period: 'week' | 'month' = 'week'): Pro
       totalSalesCount,
       totalUnitsSold,
       averageOrderValue,
+      totalCogs,
+      totalGrossProfit,
+      grossMarginPercent,
       totalInwardPurchases,
       totalReceiptsCount,
+      netCashFlow,
     },
     periods,
     topProducts,
   };
 }
+
+export interface RentalProfitabilityItem {
+  id: string;
+  issueReference: string;
+  customerName: string;
+  customerContact?: string;
+  customerEmail?: string;
+  productName: string;
+  sku: string;
+  brand?: string;
+  category: string;
+  serializedItemId?: string;
+  assetId?: string;
+  serialNumber?: string;
+  locationName: string;
+  issueDate: string;
+  expectedReturnDate: string;
+  actualReturnDate?: string;
+  status: string;
+  isRental: boolean;
+  lockInPeriodMonths: number;
+  monthlyRent: number;
+  securityDeposit: number;
+  totalRentPaid: number;
+  totalRentDue: number;
+  totalScheduledRent: number;
+  purchaseCost: number;
+  maintenanceCost: number;
+  netProfit: number;
+  roiPercent: number;
+  isCapexRecovered: boolean;
+  recoveryPercent: number;
+  accessories: string[];
+  paymentsCount: number;
+  paidMonthsCount: number;
+  overdueMonthsCount: number;
+  nextPaymentDue?: {
+    billingMonth: string;
+    dueDate: string;
+    amountDue: number;
+  };
+  monthlyPayments: Array<{
+    monthIndex: number;
+    billingMonth: string;
+    dueDate: string;
+    amountDue: number;
+    amountPaid: number;
+    paidAt?: string;
+    paymentMethod?: string;
+    transactionRef?: string;
+    status: 'PAID' | 'DUE' | 'OVERDUE';
+    notes?: string;
+  }>;
+}
+
+export interface RentalProfitabilityResult {
+  kpis: {
+    totalRentals: number;
+    activeRentals: number;
+    overdueRentals: number;
+    returnedRentals: number;
+    totalRentalRevenueCollected: number;
+    totalRentalDue: number;
+    totalScheduledRent: number;
+    collectionRatePercent: number;
+    totalSecurityDepositsHeld: number;
+    activeMRR: number;
+    projectedARR: number;
+    totalAssetInvestmentCost: number;
+    totalMaintenanceExpense: number;
+    netRentalProfit: number;
+    portfolioRoiPercent: number;
+    capitalRecoveredCount: number;
+  };
+  monthlyCashflow: Array<{
+    monthKey: string;
+    label: string;
+    collected: number;
+    due: number;
+    maintenance: number;
+    netProfit: number;
+  }>;
+  categoryPerformance: Array<{
+    category: string;
+    rentalsCount: number;
+    totalCollected: number;
+    totalCapex: number;
+    maintenanceCost: number;
+    netProfit: number;
+    roiPercent: number;
+  }>;
+  items: RentalProfitabilityItem[];
+}
+
+export async function getRentalProfitabilityReport(): Promise<RentalProfitabilityResult> {
+  const [usages, categories, maintenanceRecords] = await Promise.all([
+    InternalUsage.find({
+      $or: [{ isRental: true }, { monthlyRent: { $gt: 0 } }, { lockInPeriodMonths: { $gt: 0 } }],
+    })
+      .populate('items.product', 'name sku brand category purchaseCost defaultSellingPrice trackingMode')
+      .populate('items.serializedItemId', 'assetId serialNumber manufacturerSerial unitCost condition')
+      .populate('location', 'name code')
+      .sort({ createdAt: -1 })
+      .lean(),
+    Category.find().lean(),
+    MaintenanceRecord.find().lean(),
+  ]);
+
+  const catMap = new Map<string, string>();
+  for (const c of categories) {
+    catMap.set(c._id.toString(), c.name);
+  }
+
+  // Map maintenance cost by serializedItem ID and product ID
+  const maintBySerial = new Map<string, number>();
+  const maintByProduct = new Map<string, number>();
+  for (const m of maintenanceRecords) {
+    const cost = m.cost || 0;
+    if (m.serializedItem) {
+      const sId = m.serializedItem.toString();
+      maintBySerial.set(sId, (maintBySerial.get(sId) || 0) + cost);
+    }
+    if (m.product) {
+      const pId = m.product.toString();
+      maintByProduct.set(pId, (maintByProduct.get(pId) || 0) + cost);
+    }
+  }
+
+  const now = new Date();
+  const items: RentalProfitabilityItem[] = [];
+  const monthlyMap = new Map<string, { label: string; collected: number; due: number; maintenance: number; sortKey: number }>();
+
+  let totalRentalRevenueCollected = 0;
+  let totalRentalDue = 0;
+  let totalScheduledRent = 0;
+  let totalSecurityDepositsHeld = 0;
+  let activeMRR = 0;
+  let totalAssetInvestmentCost = 0;
+  let totalMaintenanceExpense = 0;
+  let activeRentals = 0;
+  let overdueRentals = 0;
+  let returnedRentals = 0;
+  let capitalRecoveredCount = 0;
+
+  for (const u of usages) {
+    const isAct = u.status === USAGE_STATUSES.ACTIVE || u.status === 'ACTIVE';
+    const isOverdue =
+      u.status === USAGE_STATUSES.OVERDUE ||
+      (isAct && u.expectedReturnDate && new Date(u.expectedReturnDate) < now);
+    const isRet = u.status === USAGE_STATUSES.RETURNED || u.status === 'RETURNED';
+
+    if (isOverdue) overdueRentals++;
+    else if (isAct) activeRentals++;
+    else if (isRet) returnedRentals++;
+
+    const monthlyRent = u.monthlyRent || 0;
+    if (isAct) {
+      activeMRR += monthlyRent;
+      totalSecurityDepositsHeld += u.securityDeposit || 0;
+    }
+
+    // Identify primary item
+    const primaryItem = (u.items && u.items.length > 0) ? u.items[0] : null;
+    const prod = primaryItem?.product as any;
+    const serialUnit = primaryItem?.serializedItemId as any;
+
+    const productName = prod?.name || 'Instrument Rental';
+    const sku = prod?.sku || 'N/A';
+    const brand = prod?.brand || 'N/A';
+    const categoryName = prod?.category ? (catMap.get(prod.category.toString()) || 'General Instruments') : 'General Instruments';
+    const assetId = serialUnit?.assetId || serialUnit?.serialNumber || serialUnit?.manufacturerSerial;
+    const serialNumber = serialUnit?.serialNumber || serialUnit?.manufacturerSerial;
+    const locationName = (u.location as any)?.name || 'Central Store';
+
+    // Purchase cost of asset
+    const purchaseCost = serialUnit?.unitCost || prod?.purchaseCost || 0;
+    totalAssetInvestmentCost += purchaseCost;
+
+    // Maintenance costs
+    let itemMaintCost = 0;
+    if (serialUnit?._id) {
+      itemMaintCost += (maintBySerial.get(serialUnit._id.toString()) || 0);
+    } else if (prod?._id) {
+      itemMaintCost += (maintByProduct.get(prod._id.toString()) || 0);
+    }
+    totalMaintenanceExpense += itemMaintCost;
+
+    // Payments calculations
+    const payments = u.monthlyPayments || [];
+    let paidAmount = 0;
+    let dueAmount = 0;
+    let paidMonthsCount = 0;
+    let overdueMonthsCount = 0;
+    let nextPaymentDue: { billingMonth: string; dueDate: string; amountDue: number } | undefined;
+
+    for (const p of payments) {
+      paidAmount += (p.amountPaid || 0);
+      const remainingForMonth = Math.max(0, (p.amountDue || 0) - (p.amountPaid || 0));
+      dueAmount += remainingForMonth;
+
+      const pDueDate = p.dueDate ? new Date(p.dueDate) : now;
+      const isPastDue = pDueDate < now && remainingForMonth > 0;
+
+      if (p.status === 'PAID' || (p.amountPaid && p.amountPaid >= p.amountDue)) {
+        paidMonthsCount++;
+      } else if (isPastDue || p.status === 'OVERDUE') {
+        overdueMonthsCount++;
+      }
+
+      if (!nextPaymentDue && remainingForMonth > 0) {
+        nextPaymentDue = {
+          billingMonth: p.billingMonth,
+          dueDate: pDueDate.toISOString(),
+          amountDue: remainingForMonth,
+        };
+      }
+
+      // Group payments into monthly timeline
+      const d = p.paidAt ? new Date(p.paidAt) : pDueDate;
+      const yr = d.getFullYear();
+      const mo = d.getMonth();
+      const monthKey = `${yr}-${String(mo + 1).padStart(2, '0')}`;
+      const monthLabel = d.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+
+      const existingMonthly = monthlyMap.get(monthKey) || {
+        label: monthLabel,
+        collected: 0,
+        due: 0,
+        maintenance: 0,
+        sortKey: yr * 100 + mo,
+      };
+      existingMonthly.collected += (p.amountPaid || 0);
+      existingMonthly.due += remainingForMonth;
+      monthlyMap.set(monthKey, existingMonthly);
+    }
+
+    if (payments.length === 0) {
+      paidAmount = u.totalRentPaid || 0;
+      dueAmount = u.totalRentDue || 0;
+    }
+
+    totalRentalRevenueCollected += paidAmount;
+    totalRentalDue += dueAmount;
+    const itemScheduledRent = paidAmount + dueAmount;
+    totalScheduledRent += itemScheduledRent;
+
+    const netProfit = paidAmount - itemMaintCost;
+    const roiPercent = purchaseCost > 0 ? Number(((paidAmount / purchaseCost) * 100).toFixed(1)) : 100;
+    const recoveryPercent = purchaseCost > 0 ? Math.min(250, Number(((paidAmount / purchaseCost) * 100).toFixed(1))) : 100;
+    const isCapexRecovered = paidAmount >= purchaseCost && purchaseCost > 0;
+    if (isCapexRecovered) {
+      capitalRecoveredCount++;
+    }
+
+    items.push({
+      id: u._id.toString(),
+      issueReference: u.issueReference,
+      customerName: u.assignedPerson,
+      customerContact: u.assignedPersonContact,
+      customerEmail: u.customerEmail,
+      productName,
+      sku,
+      brand,
+      category: categoryName,
+      serializedItemId: serialUnit?._id?.toString(),
+      assetId,
+      serialNumber,
+      locationName,
+      issueDate: u.issueDate ? new Date(u.issueDate).toISOString() : new Date().toISOString(),
+      expectedReturnDate: u.expectedReturnDate ? new Date(u.expectedReturnDate).toISOString() : new Date().toISOString(),
+      actualReturnDate: u.actualReturnDate ? new Date(u.actualReturnDate).toISOString() : undefined,
+      status: isOverdue ? 'OVERDUE' : (isRet ? 'RETURNED' : 'ACTIVE'),
+      isRental: u.isRental !== false,
+      lockInPeriodMonths: u.lockInPeriodMonths || 3,
+      monthlyRent,
+      securityDeposit: u.securityDeposit || 0,
+      totalRentPaid: paidAmount,
+      totalRentDue: dueAmount,
+      totalScheduledRent: itemScheduledRent,
+      purchaseCost,
+      maintenanceCost: itemMaintCost,
+      netProfit,
+      roiPercent,
+      isCapexRecovered,
+      recoveryPercent,
+      accessories: u.includedAccessories || [],
+      paymentsCount: payments.length,
+      paidMonthsCount,
+      overdueMonthsCount,
+      nextPaymentDue,
+      monthlyPayments: payments.map((p) => ({
+        monthIndex: p.monthIndex,
+        billingMonth: p.billingMonth,
+        dueDate: p.dueDate ? new Date(p.dueDate).toISOString() : '',
+        amountDue: p.amountDue,
+        amountPaid: p.amountPaid,
+        paidAt: p.paidAt ? new Date(p.paidAt).toISOString() : undefined,
+        paymentMethod: p.paymentMethod,
+        transactionRef: p.transactionRef,
+        status: p.status,
+        notes: p.notes,
+      })),
+    });
+  }
+
+  // Monthly timeline array sorted chronologically
+  const monthlyCashflow = Array.from(monthlyMap.entries())
+    .sort((a, b) => a[1].sortKey - b[1].sortKey)
+    .slice(-12) // Last 12 months
+    .map(([monthKey, val]) => ({
+      monthKey,
+      label: val.label,
+      collected: val.collected,
+      due: val.due,
+      maintenance: val.maintenance,
+      netProfit: val.collected - val.maintenance,
+    }));
+
+  // Category performance aggregation
+  const catGroup = new Map<
+    string,
+    { category: string; rentalsCount: number; totalCollected: number; totalCapex: number; maintenanceCost: number }
+  >();
+
+  for (const item of items) {
+    const c = item.category || 'Other';
+    const existing = catGroup.get(c) || {
+      category: c,
+      rentalsCount: 0,
+      totalCollected: 0,
+      totalCapex: 0,
+      maintenanceCost: 0,
+    };
+    existing.rentalsCount++;
+    existing.totalCollected += item.totalRentPaid;
+    existing.totalCapex += item.purchaseCost;
+    existing.maintenanceCost += item.maintenanceCost;
+    catGroup.set(c, existing);
+  }
+
+  const categoryPerformance = Array.from(catGroup.values()).map((cg) => ({
+    ...cg,
+    netProfit: cg.totalCollected - cg.maintenanceCost,
+    roiPercent: cg.totalCapex > 0 ? Number(((cg.totalCollected / cg.totalCapex) * 100).toFixed(1)) : 100,
+  }));
+
+  const totalRentals = items.length;
+  const netRentalProfit = totalRentalRevenueCollected - totalMaintenanceExpense;
+  const portfolioRoiPercent =
+    totalAssetInvestmentCost > 0
+      ? Number(((totalRentalRevenueCollected / totalAssetInvestmentCost) * 100).toFixed(1))
+      : 0;
+  const collectionRatePercent =
+    totalScheduledRent > 0
+      ? Math.round((totalRentalRevenueCollected / totalScheduledRent) * 100)
+      : 100;
+  const projectedARR = activeMRR * 12;
+
+  return {
+    kpis: {
+      totalRentals,
+      activeRentals,
+      overdueRentals,
+      returnedRentals,
+      totalRentalRevenueCollected,
+      totalRentalDue,
+      totalScheduledRent,
+      collectionRatePercent,
+      totalSecurityDepositsHeld,
+      activeMRR,
+      projectedARR,
+      totalAssetInvestmentCost,
+      totalMaintenanceExpense,
+      netRentalProfit,
+      portfolioRoiPercent,
+      capitalRecoveredCount,
+    },
+    monthlyCashflow,
+    categoryPerformance,
+    items,
+  };
+}
+

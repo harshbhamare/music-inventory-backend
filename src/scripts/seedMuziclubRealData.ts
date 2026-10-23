@@ -12,6 +12,9 @@ import { InternalUsage } from '../models/InternalUsage.js';
 import { AppSetting } from '../models/AppSetting.js';
 import { EmailReportConfig } from '../models/EmailReportConfig.js';
 import { Sale } from '../models/Sale.js';
+import { Purchase } from '../models/Purchase.js';
+import { PurchaseReceipt } from '../models/PurchaseReceipt.js';
+import { MaintenanceRecord } from '../models/MaintenanceRecord.js';
 import {
   ROLES,
   TRACKING_MODES,
@@ -20,6 +23,12 @@ import {
   USAGE_PURPOSES,
   USAGE_STATUSES,
   REPORT_TYPES,
+  SALE_STATUSES,
+  PAYMENT_STATUSES,
+  PAYMENT_METHODS,
+  ITEM_CONDITIONS,
+  MAINTENANCE_STATUSES,
+  PURCHASE_STATUSES,
 } from '../config/constants.js';
 
 export async function seedMuziclubRealData() {
@@ -121,13 +130,16 @@ export async function seedMuziclubRealData() {
     supMap.set(s.name, sup);
   }
 
-  // 6. Clear past inventory data to insert pure, clean Muziclub records
+  // 6. Clear past inventory data to insert pure, clean Stereobliss records
   await Promise.all([
     Product.deleteMany({}),
     SerializedItem.deleteMany({}),
     StockMovement.deleteMany({}),
     Sale.deleteMany({}),
+    Purchase.deleteMany({}),
+    PurchaseReceipt.deleteMany({}),
     InternalUsage.deleteMany({}),
+    MaintenanceRecord.deleteMany({}),
   ]);
 
   // 7. Seed Authentic Muziclub Products
@@ -334,108 +346,592 @@ export async function seedMuziclubRealData() {
     }
   }
 
-  // 8. Create 2 Authentic Recent Customer Sales
+  // 8. Create Authentic Sales Across Recent Weeks
   const guitarProduct = (await Product.findOne({ sku: 'SKU-0001' }))!;
-  const cableProduct = (await Product.findOne({ sku: 'SKU-0007' }))!;
+  const stratProduct = (await Product.findOne({ sku: 'SKU-0002' }))!;
+  const keyboardProduct = (await Product.findOne({ sku: 'SKU-0003' }))!;
+  const drumProduct = (await Product.findOne({ sku: 'SKU-0004' }))!;
+  const micProduct = (await Product.findOne({ sku: 'SKU-0005' }))!;
   const stringsProduct = (await Product.findOne({ sku: 'SKU-0006' }))!;
+  const cableProduct = (await Product.findOne({ sku: 'SKU-0007' }))!;
+  const picksProduct = (await Product.findOne({ sku: 'SKU-0008' }))!;
 
-  // Sale 1: Student package (Yamaha F310 + Tweed cable)
-  await Sale.create({
-    invoiceNumber: 'INV-2026-0001',
-    customerName: 'Rahul Deshmukh',
-    customerPhone: '+91 98220 54321',
-    customerEmail: 'rahul.deshmukh@gmail.com',
-    location: location._id,
-    paymentMethod: 'UPI',
-    paymentStatus: 'PAID',
-    status: 'COMPLETED',
-    items: [
+  const now = new Date();
+  const daysAgo = (days: number) => new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+
+  // Inward Purchase Orders & Receipts for Stock Inflow Visuals
+  const po1 = await Purchase.create({
+    purchaseOrderNumber: 'PO-2026-0001',
+    supplier: supMap.get('Yamaha Music India Pvt Ltd')._id,
+    orderDate: daysAgo(25),
+    lineItems: [
       {
         product: guitarProduct._id,
-        quantity: 1,
-        unitPrice: guitarProduct.defaultSellingPrice,
-        subtotal: guitarProduct.defaultSellingPrice,
+        quantityOrdered: 4,
+        quantityReceived: 4,
+        unitCost: guitarProduct.purchaseCost,
+        totalCost: guitarProduct.purchaseCost * 4,
+      },
+    ],
+    subtotal: guitarProduct.purchaseCost * 4,
+    additionalCosts: 0,
+    totalCost: guitarProduct.purchaseCost * 4,
+    status: PURCHASE_STATUSES.COMPLETED,
+    destinationLocation: location._id,
+    createdBy: superAdmin._id,
+  });
+
+  const po2 = await Purchase.create({
+    purchaseOrderNumber: 'PO-2026-0002',
+    supplier: supMap.get('Casio India Retail Support')._id,
+    orderDate: daysAgo(16),
+    lineItems: [
+      {
+        product: keyboardProduct._id,
+        quantityOrdered: 3,
+        quantityReceived: 3,
+        unitCost: keyboardProduct.purchaseCost,
+        totalCost: keyboardProduct.purchaseCost * 3,
+      },
+    ],
+    subtotal: keyboardProduct.purchaseCost * 3,
+    additionalCosts: 0,
+    totalCost: keyboardProduct.purchaseCost * 3,
+    status: PURCHASE_STATUSES.COMPLETED,
+    destinationLocation: location._id,
+    createdBy: superAdmin._id,
+  });
+
+  const po3 = await Purchase.create({
+    purchaseOrderNumber: 'PO-2026-0003',
+    supplier: supMap.get('Bajaao Wholesale Division')._id,
+    orderDate: daysAgo(9),
+    lineItems: [
+      {
+        product: stringsProduct._id,
+        quantityOrdered: 20,
+        quantityReceived: 20,
+        unitCost: stringsProduct.purchaseCost,
+        totalCost: stringsProduct.purchaseCost * 20,
       },
       {
         product: cableProduct._id,
-        quantity: 1,
-        unitPrice: cableProduct.defaultSellingPrice,
-        subtotal: cableProduct.defaultSellingPrice,
+        quantityOrdered: 10,
+        quantityReceived: 10,
+        unitCost: cableProduct.purchaseCost,
+        totalCost: cableProduct.purchaseCost * 10,
       },
     ],
-    subtotal: guitarProduct.defaultSellingPrice + cableProduct.defaultSellingPrice,
-    taxAmount: 0,
-    grandTotal: guitarProduct.defaultSellingPrice + cableProduct.defaultSellingPrice,
-    soldBy: superAdmin._id,
-    createdAt: new Date(),
+    subtotal: stringsProduct.purchaseCost * 20 + cableProduct.purchaseCost * 10,
+    additionalCosts: 0,
+    totalCost: stringsProduct.purchaseCost * 20 + cableProduct.purchaseCost * 10,
+    status: PURCHASE_STATUSES.COMPLETED,
+    destinationLocation: location._id,
+    createdBy: superAdmin._id,
   });
 
-  // Sale 2: Accessories sale
-  await Sale.create({
-    invoiceNumber: 'INV-2026-0002',
-    customerName: 'Ananya Roy',
-    customerPhone: '+91 99701 11223',
-    customerEmail: 'ananya.roy@yahoo.co.in',
-    location: location._id,
-    paymentMethod: 'CASH',
-    paymentStatus: 'PAID',
-    status: 'COMPLETED',
-    items: [
-      {
-        product: stringsProduct._id,
-        quantity: 2,
-        unitPrice: stringsProduct.defaultSellingPrice,
-        subtotal: stringsProduct.defaultSellingPrice * 2,
-      },
-    ],
-    subtotal: stringsProduct.defaultSellingPrice * 2,
-    taxAmount: 0,
-    grandTotal: stringsProduct.defaultSellingPrice * 2,
-    soldBy: superAdmin._id,
-    createdAt: new Date(),
-  });
+  await PurchaseReceipt.create([
+    {
+      receiptNumber: 'REC-2026-001',
+      purchase: po1._id,
+      destinationLocation: location._id,
+      receivedDate: daysAgo(21),
+      lineItems: [
+        { product: guitarProduct._id, quantityReceived: 4, unitCost: guitarProduct.purchaseCost },
+      ],
+      receivedBy: superAdmin._id,
+    },
+    {
+      receiptNumber: 'REC-2026-002',
+      purchase: po2._id,
+      destinationLocation: location._id,
+      receivedDate: daysAgo(14),
+      lineItems: [
+        { product: keyboardProduct._id, quantityReceived: 3, unitCost: keyboardProduct.purchaseCost },
+      ],
+      receivedBy: superAdmin._id,
+    },
+    {
+      receiptNumber: 'REC-2026-003',
+      purchase: po3._id,
+      destinationLocation: location._id,
+      receivedDate: daysAgo(7),
+      lineItems: [
+        { product: stringsProduct._id, quantityReceived: 20, unitCost: stringsProduct.purchaseCost },
+        { product: cableProduct._id, quantityReceived: 10, unitCost: cableProduct.purchaseCost },
+      ],
+      receivedBy: superAdmin._id,
+    },
+  ]);
 
-  // 9. Create 1 Active Instrument Academy Loan in InternalUsage
-  const loanItem = await SerializedItem.findOne({ manufacturerSerial: 'YAM-F310-094' });
-  if (loanItem) {
-    loanItem.status = SERIALIZED_STATUSES.ISSUED_INTERNAL;
-    await loanItem.save();
+  // Multiple Customer Sales across weeks
+  await Sale.create([
+    {
+      invoiceNumber: 'INV-2026-0001',
+      customerName: 'Rahul Deshmukh',
+      customerPhone: '+91 98220 54321',
+      customerEmail: 'rahul.deshmukh@gmail.com',
+      location: location._id,
+      paymentMethod: PAYMENT_METHODS.UPI,
+      paymentStatus: PAYMENT_STATUSES.PAID,
+      saleStatus: SALE_STATUSES.CONFIRMED,
+      lineItems: [
+        {
+          product: guitarProduct._id,
+          quantity: 1,
+          unitPrice: guitarProduct.defaultSellingPrice,
+          discount: 0,
+          total: guitarProduct.defaultSellingPrice,
+        },
+        {
+          product: cableProduct._id,
+          quantity: 1,
+          unitPrice: cableProduct.defaultSellingPrice,
+          discount: 0,
+          total: cableProduct.defaultSellingPrice,
+        },
+      ],
+      subtotal: guitarProduct.defaultSellingPrice + cableProduct.defaultSellingPrice,
+      discountTotal: 0,
+      taxableAmount: guitarProduct.defaultSellingPrice + cableProduct.defaultSellingPrice,
+      cgstRate: 9,
+      cgstAmount: 0,
+      sgstRate: 9,
+      sgstAmount: 0,
+      taxTotal: 0,
+      grandTotal: guitarProduct.defaultSellingPrice + cableProduct.defaultSellingPrice,
+      soldBy: superAdmin._id,
+      createdAt: daysAgo(2),
+    },
+    {
+      invoiceNumber: 'INV-2026-0002',
+      customerName: 'Ananya Roy',
+      customerPhone: '+91 99701 11223',
+      customerEmail: 'ananya.roy@yahoo.co.in',
+      location: location._id,
+      paymentMethod: PAYMENT_METHODS.CASH,
+      paymentStatus: PAYMENT_STATUSES.PAID,
+      saleStatus: SALE_STATUSES.CONFIRMED,
+      lineItems: [
+        {
+          product: stringsProduct._id,
+          quantity: 2,
+          unitPrice: stringsProduct.defaultSellingPrice,
+          discount: 0,
+          total: stringsProduct.defaultSellingPrice * 2,
+        },
+        {
+          product: picksProduct._id,
+          quantity: 1,
+          unitPrice: picksProduct.defaultSellingPrice,
+          discount: 0,
+          total: picksProduct.defaultSellingPrice,
+        },
+      ],
+      subtotal: stringsProduct.defaultSellingPrice * 2 + picksProduct.defaultSellingPrice,
+      discountTotal: 0,
+      taxableAmount: stringsProduct.defaultSellingPrice * 2 + picksProduct.defaultSellingPrice,
+      cgstRate: 9,
+      cgstAmount: 0,
+      sgstRate: 9,
+      sgstAmount: 0,
+      taxTotal: 0,
+      grandTotal: stringsProduct.defaultSellingPrice * 2 + picksProduct.defaultSellingPrice,
+      soldBy: superAdmin._id,
+      createdAt: daysAgo(5),
+    },
+    {
+      invoiceNumber: 'INV-2026-0003',
+      customerName: 'Vikramaditya Shinde',
+      customerPhone: '+91 98900 12345',
+      customerEmail: 'vikram.shinde@outlook.com',
+      location: location._id,
+      paymentMethod: PAYMENT_METHODS.CARD,
+      paymentStatus: PAYMENT_STATUSES.PAID,
+      saleStatus: SALE_STATUSES.CONFIRMED,
+      lineItems: [
+        {
+          product: keyboardProduct._id,
+          quantity: 1,
+          unitPrice: keyboardProduct.defaultSellingPrice,
+          discount: 500,
+          total: keyboardProduct.defaultSellingPrice - 500,
+        },
+      ],
+      subtotal: keyboardProduct.defaultSellingPrice,
+      discountTotal: 500,
+      taxableAmount: keyboardProduct.defaultSellingPrice - 500,
+      cgstRate: 9,
+      cgstAmount: 0,
+      sgstRate: 9,
+      sgstAmount: 0,
+      taxTotal: 0,
+      grandTotal: keyboardProduct.defaultSellingPrice - 500,
+      soldBy: superAdmin._id,
+      createdAt: daysAgo(12),
+    },
+    {
+      invoiceNumber: 'INV-2026-0004',
+      customerName: 'Aarav Patel (Band Lead)',
+      customerPhone: '+91 98231 99887',
+      customerEmail: 'aarav.patel@gmail.com',
+      location: location._id,
+      paymentMethod: PAYMENT_METHODS.UPI,
+      paymentStatus: PAYMENT_STATUSES.PAID,
+      saleStatus: SALE_STATUSES.CONFIRMED,
+      lineItems: [
+        {
+          product: micProduct._id,
+          quantity: 1,
+          unitPrice: micProduct.defaultSellingPrice,
+          discount: 0,
+          total: micProduct.defaultSellingPrice,
+        },
+      ],
+      subtotal: micProduct.defaultSellingPrice,
+      discountTotal: 0,
+      taxableAmount: micProduct.defaultSellingPrice,
+      cgstRate: 9,
+      cgstAmount: 0,
+      sgstRate: 9,
+      sgstAmount: 0,
+      taxTotal: 0,
+      grandTotal: micProduct.defaultSellingPrice,
+      soldBy: superAdmin._id,
+      createdAt: daysAgo(18),
+    },
+  ]);
+
+  // 9. Create Authentic Rental Agreements & Maintenance Records
+  const loanGuitar = await SerializedItem.findOne({ manufacturerSerial: 'YAM-F310-094' });
+  const loanKeyboard = await SerializedItem.findOne({ manufacturerSerial: 'CAS-CTX-4401' });
+  const loanDrums = await SerializedItem.findOne({ manufacturerSerial: 'ROL-TD02-108' });
+  const loanStrat = await SerializedItem.findOne({ manufacturerSerial: 'MX24018291' });
+  const loanMic = await SerializedItem.findOne({ manufacturerSerial: 'SH-SM58-8821' });
+
+  // Rental 1: Yamaha F310 Guitar - Highly Profitable 10-Month Rental (130% ROI)
+  if (loanGuitar) {
+    loanGuitar.status = SERIALIZED_STATUSES.ISSUED_INTERNAL;
+    loanGuitar.assignedTo = 'Aditya Joshi';
+    await loanGuitar.save();
+
+    const guitarPayments: any[] = [];
+    const monthlyRate = 1200;
+    for (let m = 1; m <= 12; m++) {
+      const pDueDate = new Date(now.getFullYear(), now.getMonth() - (10 - m), 5);
+      const isPaid = m <= 10;
+      guitarPayments.push({
+        monthIndex: m,
+        billingMonth: `Month ${m} (${pDueDate.toLocaleString('default', { month: 'short', year: 'numeric' })})`,
+        dueDate: pDueDate,
+        amountDue: monthlyRate,
+        amountPaid: isPaid ? monthlyRate : 0,
+        paidAt: isPaid ? pDueDate : undefined,
+        paymentMethod: 'UPI',
+        transactionRef: isPaid ? `UPI-YAM-RENT-M0${m}` : undefined,
+        status: isPaid ? 'PAID' : (m === 11 ? 'DUE' : 'DUE'),
+        notes: isPaid ? 'Paid on schedule via GPay' : undefined,
+      });
+    }
 
     await InternalUsage.create({
-      issueReference: 'LOAN-2026-001',
-      serializedItem: loanItem._id,
-      product: loanItem.product,
+      issueReference: 'USE-2026-00001',
       purpose: USAGE_PURPOSES.PRACTICE,
-      assignedPerson: 'Aditya Joshi (Rental Customer)',
-      assignedDepartment: 'Guitar Department',
+      assignedPerson: 'Aditya Joshi (Acoustic Student)',
+      assignedPersonContact: '+91 98221 11224',
+      customerEmail: 'aditya.joshi@gmail.com',
       location: location._id,
-      issueDate: new Date(),
-      expectedReturnDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+      items: [
+        {
+          product: loanGuitar.product,
+          serializedItemId: loanGuitar._id,
+          quantityIssued: 1,
+          quantityReturned: 0,
+          issueCondition: ITEM_CONDITIONS.GOOD,
+        },
+      ],
+      issueDate: daysAgo(300),
+      expectedReturnDate: new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000),
       status: USAGE_STATUSES.ACTIVE,
+      isRental: true,
+      lockInPeriodMonths: 12,
+      securityDeposit: 3000,
+      monthlyRent: 1200,
+      includedAccessories: ['Padded Gig Bag', 'Guitar Strap', 'Clip-on Tuner'],
+      monthlyPayments: guitarPayments,
+      totalRentPaid: 12000,
+      totalRentDue: 2400,
       issuedBy: superAdmin._id,
     });
 
-    await StockMovement.create({
-      product: loanItem.product,
-      serializedItem: loanItem._id,
+    // Maintenance record on this guitar
+    await MaintenanceRecord.create({
+      recordReference: 'MAINT-2026-001',
+      product: loanGuitar.product,
+      serializedItem: loanGuitar._id,
       location: location._id,
-      movementType: MOVEMENT_TYPES.INTERNAL_ISSUE,
-      quantityDelta: -1,
-      sourceStatus: SERIALIZED_STATUSES.AVAILABLE,
-      destinationStatus: SERIALIZED_STATUSES.ISSUED_INTERNAL,
-      transactionRef: 'LOAN-2026-001',
-      transactionModel: 'InternalUsage',
-      reason: 'Issued for classroom training practice',
-      performedBy: superAdmin._id,
+      problemDescription: 'Fretboard oiling & new D\'Addario string setup',
+      repairDetails: 'Hydrated fretboard, leveled action to 2.0mm, replaced strings',
+      vendor: 'Stereobliss In-House Workshop',
+      cost: 450,
+      status: MAINTENANCE_STATUSES.COMPLETED,
+      startedAt: daysAgo(90),
+      completedAt: daysAgo(89),
+      createdByUser: superAdmin._id,
+      notes: 'Standard 6-month routine service for active rental client',
     });
   }
 
-  // 10. Ensure Automated Cron Report Configs in DB
+  // Rental 2: Casio CT-X700 Keyboard - Active 6-Month Rental (50.8% Capex Recouped)
+  if (loanKeyboard) {
+    loanKeyboard.status = SERIALIZED_STATUSES.ISSUED_INTERNAL;
+    loanKeyboard.assignedTo = 'Rohan Deshmukh';
+    await loanKeyboard.save();
+
+    const keyboardPayments: any[] = [];
+    const kMonthlyRate = 1500;
+    for (let m = 1; m <= 6; m++) {
+      const pDueDate = new Date(now.getFullYear(), now.getMonth() - (4 - m), 10);
+      const isPaid = m <= 4;
+      keyboardPayments.push({
+        monthIndex: m,
+        billingMonth: `Month ${m} (${pDueDate.toLocaleString('default', { month: 'short', year: 'numeric' })})`,
+        dueDate: pDueDate,
+        amountDue: kMonthlyRate,
+        amountPaid: isPaid ? kMonthlyRate : 0,
+        paidAt: isPaid ? pDueDate : undefined,
+        paymentMethod: 'UPI',
+        transactionRef: isPaid ? `UPI-CAS-RENT-M0${m}` : undefined,
+        status: isPaid ? 'PAID' : 'DUE',
+      });
+    }
+
+    await InternalUsage.create({
+      issueReference: 'USE-2026-00002',
+      purpose: USAGE_PURPOSES.CLASS,
+      assignedPerson: 'Rohan Deshmukh (Keyboard Beginner)',
+      assignedPersonContact: '+91 97654 32109',
+      customerEmail: 'rohan.deshmukh@gmail.com',
+      location: location._id,
+      items: [
+        {
+          product: loanKeyboard.product,
+          serializedItemId: loanKeyboard._id,
+          quantityIssued: 1,
+          quantityReturned: 0,
+          issueCondition: ITEM_CONDITIONS.GOOD,
+        },
+      ],
+      issueDate: daysAgo(120),
+      expectedReturnDate: new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000),
+      status: USAGE_STATUSES.ACTIVE,
+      isRental: true,
+      lockInPeriodMonths: 6,
+      securityDeposit: 5000,
+      monthlyRent: 1500,
+      includedAccessories: ['Heavy-Duty Keyboard Stand', 'Power Adapter & Cable'],
+      monthlyPayments: keyboardPayments,
+      totalRentPaid: 6000,
+      totalRentDue: 3000,
+      issuedBy: superAdmin._id,
+    });
+  }
+
+  // Rental 3: Roland TD-02K V-Drums - Active with Overdue Month Alert
+  if (loanDrums) {
+    loanDrums.status = SERIALIZED_STATUSES.ISSUED_INTERNAL;
+    loanDrums.assignedTo = 'Siddharth Menon';
+    await loanDrums.save();
+
+    const drumPayments: any[] = [];
+    const drumRate = 3500;
+    for (let m = 1; m <= 6; m++) {
+      const pDueDate = new Date(now.getFullYear(), now.getMonth() - (2 - m), 15);
+      const isPaid = m === 1;
+      const isPastDue = m === 2;
+      drumPayments.push({
+        monthIndex: m,
+        billingMonth: `Month ${m} (${pDueDate.toLocaleString('default', { month: 'short', year: 'numeric' })})`,
+        dueDate: pDueDate,
+        amountDue: drumRate,
+        amountPaid: isPaid ? drumRate : 0,
+        paidAt: isPaid ? pDueDate : undefined,
+        paymentMethod: 'BANK_TRANSFER',
+        status: isPaid ? 'PAID' : (isPastDue ? 'OVERDUE' : 'DUE'),
+        notes: isPastDue ? 'Overdue reminder sent via WhatsApp' : undefined,
+      });
+    }
+
+    await InternalUsage.create({
+      issueReference: 'USE-2026-00003',
+      purpose: USAGE_PURPOSES.PRACTICE,
+      assignedPerson: 'Siddharth Menon (Session Drummer)',
+      assignedPersonContact: '+91 99223 44556',
+      customerEmail: 'siddharth.drums@gmail.com',
+      location: location._id,
+      items: [
+        {
+          product: loanDrums.product,
+          serializedItemId: loanDrums._id,
+          quantityIssued: 1,
+          quantityReturned: 0,
+          issueCondition: ITEM_CONDITIONS.NEW,
+        },
+      ],
+      issueDate: daysAgo(50),
+      expectedReturnDate: new Date(now.getTime() + 130 * 24 * 60 * 60 * 1000),
+      status: USAGE_STATUSES.OVERDUE,
+      isRental: true,
+      lockInPeriodMonths: 6,
+      securityDeposit: 10000,
+      monthlyRent: 3500,
+      includedAccessories: ['Drum Throne', 'Vic Firth 5A Drumsticks', 'Audio Cable'],
+      monthlyPayments: drumPayments,
+      totalRentPaid: 3500,
+      totalRentDue: 17500,
+      issuedBy: superAdmin._id,
+    });
+  }
+
+  // Rental 4: Fender Player Stratocaster - Successfully Completed & Returned (₹27,000 revenue)
+  if (loanStrat) {
+    loanStrat.status = SERIALIZED_STATUSES.AVAILABLE;
+    await loanStrat.save();
+
+    const stratPayments: any[] = [];
+    const stratRate = 4500;
+    for (let m = 1; m <= 6; m++) {
+      const pDueDate = new Date(now.getFullYear(), now.getMonth() - (8 - m), 1);
+      stratPayments.push({
+        monthIndex: m,
+        billingMonth: `Month ${m} (${pDueDate.toLocaleString('default', { month: 'short', year: 'numeric' })})`,
+        dueDate: pDueDate,
+        amountDue: stratRate,
+        amountPaid: stratRate,
+        paidAt: pDueDate,
+        paymentMethod: 'CARD',
+        status: 'PAID',
+      });
+    }
+
+    await InternalUsage.create({
+      issueReference: 'USE-2026-00004',
+      purpose: USAGE_PURPOSES.EVENT,
+      assignedPerson: 'Meera Iyer (Jazz Performer)',
+      assignedPersonContact: '+91 98110 99881',
+      customerEmail: 'meera.iyer@livemusic.in',
+      location: location._id,
+      items: [
+        {
+          product: loanStrat.product,
+          serializedItemId: loanStrat._id,
+          quantityIssued: 1,
+          quantityReturned: 1,
+          issueCondition: ITEM_CONDITIONS.MINT,
+        },
+      ],
+      issueDate: daysAgo(240),
+      expectedReturnDate: daysAgo(60),
+      actualReturnDate: daysAgo(60),
+      status: USAGE_STATUSES.RETURNED,
+      isRental: true,
+      lockInPeriodMonths: 6,
+      securityDeposit: 15000,
+      monthlyRent: 4500,
+      includedAccessories: ['Fender Hardcase', 'Fender Tweed Cable', 'Guitar Strap'],
+      monthlyPayments: stratPayments,
+      totalRentPaid: 27000,
+      totalRentDue: 0,
+      issuedBy: superAdmin._id,
+    });
+  }
+
+  // Rental 5: Shure SM58 Vocal Microphone - Active 3-Month Rental
+  if (loanMic) {
+    loanMic.status = SERIALIZED_STATUSES.ISSUED_INTERNAL;
+    loanMic.assignedTo = 'Kabir Verma';
+    await loanMic.save();
+
+    const micPayments: any[] = [];
+    const micRate = 1000;
+    for (let m = 1; m <= 3; m++) {
+      const pDueDate = new Date(now.getFullYear(), now.getMonth() - (2 - m), 20);
+      const isPaid = m <= 2;
+      micPayments.push({
+        monthIndex: m,
+        billingMonth: `Month ${m} (${pDueDate.toLocaleString('default', { month: 'short', year: 'numeric' })})`,
+        dueDate: pDueDate,
+        amountDue: micRate,
+        amountPaid: isPaid ? micRate : 0,
+        paidAt: isPaid ? pDueDate : undefined,
+        paymentMethod: 'UPI',
+        status: isPaid ? 'PAID' : 'DUE',
+      });
+    }
+
+    await InternalUsage.create({
+      issueReference: 'USE-2026-00005',
+      purpose: USAGE_PURPOSES.REHEARSAL,
+      assignedPerson: 'Kabir Verma (Live Vocalist)',
+      assignedPersonContact: '+91 98330 77665',
+      customerEmail: 'kabir.verma@band.in',
+      location: location._id,
+      items: [
+        {
+          product: loanMic.product,
+          serializedItemId: loanMic._id,
+          quantityIssued: 1,
+          quantityReturned: 0,
+          issueCondition: ITEM_CONDITIONS.GOOD,
+        },
+      ],
+      issueDate: daysAgo(45),
+      expectedReturnDate: new Date(now.getTime() + 45 * 24 * 60 * 60 * 1000),
+      status: USAGE_STATUSES.ACTIVE,
+      isRental: true,
+      lockInPeriodMonths: 3,
+      securityDeposit: 2500,
+      monthlyRent: 1000,
+      includedAccessories: ['Microphone Stand', 'XLR-to-XLR Cable (6m)', 'Mic Clip'],
+      monthlyPayments: micPayments,
+      totalRentPaid: 2000,
+      totalRentDue: 1000,
+      issuedBy: superAdmin._id,
+    });
+  }
+
+  // 10. Ensure Automated Cron Report Configs in DB (including Rental Profitability)
   const reportConfigs = [
-    { reportType: REPORT_TYPES.DAILY_STOCK_SUMMARY, scheduleCron: '0 20 * * *', recipients: ['inventory@stereobliss.com', 'admin@stereobliss.com'] },
-    { reportType: REPORT_TYPES.WEEKLY_SALES_SUMMARY, scheduleCron: '0 9 * * 1', recipients: ['management@stereobliss.com'] },
-    { reportType: REPORT_TYPES.OVERDUE_USAGE_REMINDER, scheduleCron: '0 10 * * *', recipients: ['rentals@stereobliss.com'] },
-    { reportType: REPORT_TYPES.LOW_STOCK_ALERT, scheduleCron: '0 8 * * *', recipients: ['procurement@stereobliss.com'] },
+    {
+      reportType: REPORT_TYPES.DAILY_STOCK_SUMMARY,
+      title: 'Daily Stock & Inventory Summary',
+      scheduleCron: '0 20 * * *',
+      recipients: ['inventory@stereobliss.com', 'admin@stereobliss.com'],
+    },
+    {
+      reportType: REPORT_TYPES.WEEKLY_SALES_SUMMARY,
+      title: 'Weekly Sales Performance Summary',
+      scheduleCron: '0 9 * * 1',
+      recipients: ['management@stereobliss.com'],
+    },
+    {
+      reportType: REPORT_TYPES.OVERDUE_USAGE_REMINDER,
+      title: 'Daily Overdue Instrument Loan Alerts',
+      scheduleCron: '0 10 * * *',
+      recipients: ['rentals@stereobliss.com'],
+    },
+    {
+      reportType: REPORT_TYPES.LOW_STOCK_ALERT,
+      title: 'Low Stock Safety Buffer Alert',
+      scheduleCron: '0 8 * * *',
+      recipients: ['procurement@stereobliss.com'],
+    },
+    {
+      reportType: REPORT_TYPES.RENTAL_PROFITABILITY_REPORT,
+      title: 'Rental Instrument Profitability & Fleet Yield Report',
+      scheduleCron: '0 9 1 * *',
+      recipients: ['management@stereobliss.com', 'finance@stereobliss.com'],
+    },
   ];
 
   for (const rc of reportConfigs) {

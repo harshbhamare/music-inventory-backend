@@ -363,6 +363,14 @@ router.get(
           timeZone: setting?.timeZone || 'Asia/Kolkata',
           isEnabled: true,
         },
+        {
+          reportType: REPORT_TYPES.RENTAL_PROFITABILITY_REPORT,
+          title: 'Rental Instrument Profitability & Fleet Yield Report',
+          recipients: [],
+          scheduleCron: '0 9 1 * *', // 1st of month 9:00 AM
+          timeZone: setting?.timeZone || 'Asia/Kolkata',
+          isEnabled: true,
+        },
       ];
 
       for (const sc of standardConfigs) {
