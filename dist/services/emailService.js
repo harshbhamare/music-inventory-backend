@@ -834,6 +834,234 @@ export async function sendTestEmail(recipient, triggeredBy) {
     });
 }
 /**
+ * Dispatches an official rent payment reminder email to the rental customer
+ */
+export async function sendRentalPaymentReminderEmail(params) {
+    const org = await getOrgInfo();
+    const validRecipients = normalizeRecipients(params.recipientEmail);
+    if (validRecipients.length === 0) {
+        throw new Error(`Invalid recipient email address: "${params.recipientEmail}"`);
+    }
+    const formattedDue = params.dueDate
+        ? new Date(params.dueDate).toLocaleDateString('en-IN', {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+        })
+        : 'Immediate';
+    const isOverdue = params.daysOverdue && params.daysOverdue > 0;
+    const statusColor = isOverdue ? '#dc2626' : '#d97706';
+    const statusBg = isOverdue ? '#fef2f2' : '#fffbeb';
+    const statusBorder = isOverdue ? '#fecaca' : '#fde68a';
+    const statusLabel = isOverdue ? `OVERDUE (${params.daysOverdue} days)` : 'DUE FOR PAYMENT';
+    const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 620px; margin: auto; padding: 28px; border: 1px solid #e2e8f0; border-radius: 14px; background: #ffffff; color: #1e293b;">
+      <div style="border-bottom: 2px solid #f59e0b; padding-bottom: 16px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between;">
+        <div>
+          <h2 style="color: #b45309; margin: 0; font-size: 22px; font-weight: 700;">${org.companyName}</h2>
+          <div style="color: #64748b; font-size: 13px; margin-top: 3px;">${org.storeName} &bull; Musical Instrument Rentals</div>
+        </div>
+        <div style="display: inline-block; padding: 6px 12px; background: ${statusBg}; border: 1px solid ${statusBorder}; border-radius: 20px; font-size: 11px; font-weight: 800; color: ${statusColor}; text-transform: uppercase;">
+          ${statusLabel}
+        </div>
+      </div>
+
+      <p style="font-size: 15px; line-height: 1.6; margin-top: 0;">
+        Dear <strong>${params.customerName}</strong>,
+      </p>
+
+      <p style="font-size: 14px; line-height: 1.6; color: #334155;">
+        This is a friendly payment reminder from <strong>${org.storeName}</strong> regarding your rented instrument agreement. Your scheduled rental payment is due for settlement.
+      </p>
+
+      <div style="margin: 20px 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;">
+        <div style="background: #f1f5f9; padding: 10px 16px; font-size: 12px; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.5px;">
+          Rental Agreement Details
+        </div>
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0; width: 40%;">Instrument / Item:</td>
+            <td style="padding: 12px 16px; font-weight: 700; color: #0f172a; border-bottom: 1px solid #e2e8f0;">
+              ${params.productName} ${params.assetId ? `<span style="font-weight: normal; color: #64748b;">(Asset ID: ${params.assetId})</span>` : ''}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Agreement Ref:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">${params.issueReference}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Billing Period:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">${params.billingMonth || 'Current Rental Cycle'}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Payment Due Date:</td>
+            <td style="padding: 12px 16px; font-weight: 700; color: ${statusColor}; border-bottom: 1px solid #e2e8f0;">${formattedDue}</td>
+          </tr>
+          <tr style="background: ${statusBg};">
+            <td style="padding: 14px 16px; font-weight: 700; color: #0f172a; font-size: 14px;">Total Amount Due:</td>
+            <td style="padding: 14px 16px; font-size: 18px; font-weight: 800; color: ${statusColor};">
+              ₹${formatIndianCurrency(params.pendingAmount)}
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      ${params.customNote
+        ? `<div style="margin: 16px 0; padding: 12px 16px; background: #fefce8; border-left: 4px solid #eab308; border-radius: 6px; font-size: 13px; color: #854d0e;">
+               <strong>Store Note:</strong> ${params.customNote}
+             </div>`
+        : ''}
+
+      <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 10px; padding: 16px; margin: 20px 0;">
+        <h4 style="margin: 0 0 8px 0; color: #1e40af; font-size: 13px; font-weight: 700; text-transform: uppercase;">
+          Payment Methods
+        </h4>
+        <ul style="margin: 0; padding-left: 18px; font-size: 13px; color: #1e3a8a; line-height: 1.6;">
+          <li><strong>UPI:</strong> Please pay to store UPI ID or scan QR code at the counter.</li>
+          <li><strong>Store Counter:</strong> Cash, Debit/Credit Card or NetBanking accepted at ${org.storeName}.</li>
+          <li>After payment, kindly share your transaction reference for receipt generation.</li>
+        </ul>
+      </div>
+
+      <p style="font-size: 12px; color: #64748b; line-height: 1.5;">
+        <em>Note: If you have already completed this payment recently, please accept our thanks and disregard this reminder, or reply to this email with your transaction reference.</em>
+      </p>
+
+      <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #94a3b8; display: flex; justify-content: space-between;">
+        <div>Dispatched by: <strong>${params.sentBy.name}</strong> (${params.sentBy.role || 'Management'})</div>
+        <div>Contact: <a href="mailto:${org.contactEmail}" style="color: #f59e0b; text-decoration: none;">${org.contactEmail}</a></div>
+      </div>
+    </div>
+  `;
+    return sendNotificationEmail({
+        reportType: REPORT_TYPES.RENTAL_PAYMENT_REMINDER,
+        recipients: validRecipients,
+        subject: `Payment Reminder: ₹${formatIndianCurrency(params.pendingAmount)} due for ${params.productName} (${params.issueReference})`,
+        htmlContent: html,
+    });
+}
+/**
+ * Dispatches an official payment confirmation and receipt email after rent payment is recorded
+ */
+export async function sendRentalPaymentReceiptEmail(params) {
+    const org = await getOrgInfo();
+    const validRecipients = normalizeRecipients(params.recipientEmail);
+    if (validRecipients.length === 0) {
+        console.warn(`[EMAIL] Skipping payment receipt email: invalid recipient "${params.recipientEmail}"`);
+        return null;
+    }
+    // Also include store contact email so management has full record/accountability
+    const storeRecipients = normalizeRecipients(org.contactEmail);
+    const allRecipients = Array.from(new Set([...validRecipients, ...storeRecipients]));
+    const formattedPaidAt = new Date(params.paidAt).toLocaleDateString('en-IN', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+    });
+    const nextDueText = params.nextDueDate
+        ? new Date(params.nextDueDate).toLocaleDateString('en-IN', {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+        })
+        : 'All Scheduled Dues Clear';
+    const receiptRef = params.transactionRef || `RCPT-${Date.now().toString().slice(-6)}`;
+    const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 620px; margin: auto; padding: 28px; border: 1px solid #cbd5e1; border-radius: 14px; background: #ffffff; color: #1e293b;">
+      <div style="border-bottom: 2px solid #10b981; padding-bottom: 16px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between;">
+        <div>
+          <h2 style="color: #047857; margin: 0; font-size: 22px; font-weight: 700;">${org.companyName}</h2>
+          <div style="color: #64748b; font-size: 13px; margin-top: 3px;">${org.storeName} &bull; Payment Receipt</div>
+        </div>
+        <div style="display: inline-block; padding: 6px 14px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 20px; font-size: 12px; font-weight: 800; color: #047857; text-transform: uppercase;">
+          PAID &amp; CONFIRMED &#10003;
+        </div>
+      </div>
+
+      <p style="font-size: 15px; line-height: 1.6; margin-top: 0;">
+        Dear <strong>${params.customerName}</strong>,
+      </p>
+
+      <p style="font-size: 14px; line-height: 1.6; color: #334155;">
+        Thank you! We have successfully recorded your rental payment for <strong>${params.productName}</strong>. Here is your official payment receipt and updated agreement ledger:
+      </p>
+
+      <!-- Receipt Box -->
+      <div style="margin: 20px 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;">
+        <div style="background: #ecfdf5; border-bottom: 1px solid #d1fae5; padding: 12px 16px; display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 12px; font-weight: 700; color: #065f46; text-transform: uppercase;">Receipt / Transaction Summary</span>
+          <span style="font-size: 12px; font-weight: 700; color: #047857;">Ref: ${receiptRef}</span>
+        </div>
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0; width: 42%;">Amount Paid:</td>
+            <td style="padding: 12px 16px; font-size: 18px; font-weight: 800; color: #047857; border-bottom: 1px solid #e2e8f0;">
+              ₹${formatIndianCurrency(params.amountPaid)}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Payment Mode:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">${params.paymentMethod || 'UPI'}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Transaction Ref:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">${params.transactionRef || 'Counter Payment'}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Date &amp; Time Paid:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">${formattedPaidAt}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Covering Period / Month:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">${params.billingMonth}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Instrument Rented:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">
+              ${params.productName} ${params.assetId ? `<span style="font-weight: normal; color: #64748b;">(${params.assetId})</span>` : ''}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Rental Ref:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">${params.issueReference}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Total Rent Paid to Date:</td>
+            <td style="padding: 12px 16px; font-weight: 700; color: #047857; border-bottom: 1px solid #e2e8f0;">₹${formatIndianCurrency(params.totalRentPaid)}</td>
+          </tr>
+          <tr style="background: ${params.totalRentDue > 0 ? '#fffbeb' : '#f0fdf4'};">
+            <td style="padding: 12px 16px; color: #64748b; font-weight: 600;">Remaining Balance Due:</td>
+            <td style="padding: 12px 16px; font-weight: 800; color: ${params.totalRentDue > 0 ? '#b45309' : '#059669'};">
+              ₹${formatIndianCurrency(params.totalRentDue)} ${params.totalRentDue === 0 ? '(All Clear)' : ''}
+            </td>
+          </tr>
+          ${params.totalRentDue > 0
+        ? `<tr>
+                  <td style="padding: 10px 16px; color: #64748b; font-size: 12px;">Next Scheduled Due Date:</td>
+                  <td style="padding: 10px 16px; font-weight: 600; color: #475569; font-size: 12px;">${nextDueText}</td>
+                </tr>`
+        : ''}
+        </table>
+      </div>
+
+      <!-- Accountability Box -->
+      <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 16px; margin: 16px 0; font-size: 12px; color: #475569;">
+        <strong>Accountability Record:</strong> Payment verified &amp; recorded by <strong>${params.recordedBy.name}</strong> (${params.recordedBy.role || 'Staff'}) on ${new Date().toLocaleString('en-IN')}.
+      </div>
+
+      <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #94a3b8; text-align: center;">
+        Thank you for playing with <strong>${org.companyName}</strong>! For assistance, email <a href="mailto:${org.contactEmail}" style="color: #047857; text-decoration: none;">${org.contactEmail}</a>.
+      </div>
+    </div>
+  `;
+    return sendNotificationEmail({
+        reportType: REPORT_TYPES.RENTAL_PAYMENT_CONFIRMATION,
+        recipients: allRecipients,
+        subject: `Payment Receipt: ₹${formatIndianCurrency(params.amountPaid)} received for ${params.productName} (${params.issueReference})`,
+        htmlContent: html,
+    });
+}
+/**
  * High-level router to dispatch any report type by recipient email
  */
 export async function dispatchReportEmail(reportType, recipients, options) {

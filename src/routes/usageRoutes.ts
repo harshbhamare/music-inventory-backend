@@ -10,6 +10,8 @@ import {
   adjustRentalMonthDue,
   addRentalMonth,
   sendRentalReminder,
+  getRentalDuesSummary,
+  sendBulkRentalReminders,
 } from '../services/internalUsageService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
@@ -81,6 +83,36 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
     next(err);
   }
 });
+
+// Get rental dues summary and active dues list for notification center & dashboard
+router.get(
+  '/dues-summary',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const data = await getRentalDuesSummary();
+      res.json({ success: true, data });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Dispatch batch reminders to overdue / due rentals
+router.post(
+  '/bulk-reminders',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await sendBulkRentalReminders(req.body.usageIds, req.user!);
+      res.json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 // Get internal usage by ID
 router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
@@ -245,7 +277,10 @@ router.post(
   requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const result = await sendRentalReminder(req.params.id as string, req.user!);
+      const result = await sendRentalReminder(req.params.id as string, req.user!, {
+        recipientEmail: req.body.recipientEmail,
+        customNote: req.body.customNote,
+      });
       res.json({ success: true, data: result });
     } catch (err) {
       next(err);

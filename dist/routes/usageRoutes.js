@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { InternalUsage } from '../models/InternalUsage.js';
 import { UsageReturn } from '../models/UsageReturn.js';
-import { issueInstruments, returnInstruments, extendExpectedReturnDate, recordRentalPayment, updateRentalPayment, adjustRentalMonthDue, addRentalMonth, sendRentalReminder, } from '../services/internalUsageService.js';
+import { issueInstruments, returnInstruments, extendExpectedReturnDate, recordRentalPayment, updateRentalPayment, adjustRentalMonthDue, addRentalMonth, sendRentalReminder, getRentalDuesSummary, sendBulkRentalReminders, } from '../services/internalUsageService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { validate } from '../middleware/validate.js';
@@ -53,6 +53,26 @@ router.get('/', requireAuth, async (req, res, next) => {
                 pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
             },
         });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Get rental dues summary and active dues list for notification center & dashboard
+router.get('/dues-summary', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (_req, res, next) => {
+    try {
+        const data = await getRentalDuesSummary();
+        res.json({ success: true, data });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Dispatch batch reminders to overdue / due rentals
+router.post('/bulk-reminders', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
+    try {
+        const result = await sendBulkRentalReminders(req.body.usageIds, req.user);
+        res.json({ success: true, data: result });
     }
     catch (err) {
         next(err);
@@ -163,7 +183,10 @@ router.post('/:id/add-month', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.
 // Send rental payment / overdue email reminder
 router.post('/:id/send-reminder', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
     try {
-        const result = await sendRentalReminder(req.params.id, req.user);
+        const result = await sendRentalReminder(req.params.id, req.user, {
+            recipientEmail: req.body.recipientEmail,
+            customNote: req.body.customNote,
+        });
         res.json({ success: true, data: result });
     }
     catch (err) {

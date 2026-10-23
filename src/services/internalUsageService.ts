@@ -17,6 +17,10 @@ import { logAudit } from './auditService.js';
 import { withTransaction } from '../config/db.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { AuthenticatedUser } from '../middleware/auth.js';
+import {
+  sendRentalPaymentReminderEmail,
+  sendRentalPaymentReceiptEmail,
+} from './emailService.js';
 
 export interface IssueInternalUsageInput {
   purpose: UsagePurpose;
@@ -572,6 +576,43 @@ export async function recordRentalPayment(
     reason: `Recorded rent payment of ₹${input.amount} for ${usage.assignedPerson} (${payment.billingMonth})`,
   });
 
+  // Dispatch payment confirmation and receipt email for accountability
+  if (payment.amountPaid > 0 && usage.customerEmail && usage.customerEmail.includes('@')) {
+    try {
+      await usage.populate('items.product', 'name');
+      await usage.populate('items.serializedItemId', 'assetId manufacturerSerial');
+      const prodName = (usage.items[0]?.product as any)?.name || 'Musical Instrument';
+      const assetId =
+        (usage.items[0]?.serializedItemId as any)?.assetId ||
+        (usage.items[0]?.serializedItemId as any)?.manufacturerSerial;
+      const nextPayment = usage.monthlyPayments.find((p) => p.status !== 'PAID');
+
+      sendRentalPaymentReceiptEmail({
+        recipientEmail: usage.customerEmail,
+        customerName: usage.assignedPerson,
+        customerContact: usage.assignedPersonContact,
+        issueReference: usage.issueReference,
+        productName: prodName,
+        assetId,
+        amountPaid: payment.amountPaid,
+        amountDue: payment.amountDue,
+        paymentMethod: payment.paymentMethod || 'UPI',
+        transactionRef: payment.transactionRef,
+        billingMonth: payment.billingMonth,
+        paidAt: payment.paidAt || new Date(),
+        totalRentPaid: usage.totalRentPaid,
+        totalRentDue: usage.totalRentDue,
+        nextDueDate: nextPayment?.dueDate,
+        recordedBy: { name: actor.name, email: actor.email, role: actor.role },
+        notes: payment.notes,
+      }).catch((emailErr) => {
+        console.error('[EMAIL_RECEIPT_ERROR] Failed to dispatch receipt email:', emailErr);
+      });
+    } catch (err) {
+      console.error('[EMAIL_RECEIPT_PREP_ERROR]', err);
+    }
+  }
+
   return usage;
 }
 
@@ -665,6 +706,48 @@ export async function updateRentalPayment(
     },
     reason: `Updated payment details for ${payment.billingMonth} (₹${payment.amountPaid}, Trn: ${payment.transactionRef || 'N/A'})`,
   });
+
+  // If payment was recorded/updated with amountPaid > 0, send receipt
+  if (
+    input.amountPaid !== undefined &&
+    input.amountPaid > 0 &&
+    usage.customerEmail &&
+    usage.customerEmail.includes('@')
+  ) {
+    try {
+      await usage.populate('items.product', 'name');
+      await usage.populate('items.serializedItemId', 'assetId manufacturerSerial');
+      const prodName = (usage.items[0]?.product as any)?.name || 'Musical Instrument';
+      const assetId =
+        (usage.items[0]?.serializedItemId as any)?.assetId ||
+        (usage.items[0]?.serializedItemId as any)?.manufacturerSerial;
+      const nextPayment = usage.monthlyPayments.find((p) => p.status !== 'PAID');
+
+      sendRentalPaymentReceiptEmail({
+        recipientEmail: usage.customerEmail,
+        customerName: usage.assignedPerson,
+        customerContact: usage.assignedPersonContact,
+        issueReference: usage.issueReference,
+        productName: prodName,
+        assetId,
+        amountPaid: payment.amountPaid,
+        amountDue: payment.amountDue,
+        paymentMethod: payment.paymentMethod || 'UPI',
+        transactionRef: payment.transactionRef,
+        billingMonth: payment.billingMonth,
+        paidAt: payment.paidAt || new Date(),
+        totalRentPaid: usage.totalRentPaid,
+        totalRentDue: usage.totalRentDue,
+        nextDueDate: nextPayment?.dueDate,
+        recordedBy: { name: actor.name, email: actor.email, role: actor.role },
+        notes: payment.notes,
+      }).catch((emailErr) => {
+        console.error('[EMAIL_RECEIPT_ERROR] Failed to dispatch updated receipt email:', emailErr);
+      });
+    } catch (err) {
+      console.error('[EMAIL_RECEIPT_PREP_ERROR]', err);
+    }
+  }
 
   return usage;
 }
@@ -784,22 +867,88 @@ export async function addRentalMonth(
   return usage;
 }
 
-export async function sendRentalReminder(usageId: string, actor: AuthenticatedUser) {
-  const usage = await InternalUsage.findById(usageId).populate('items.product', 'name');
+export async function sendRentalReminder(
+  usageId: string,
+  actor: AuthenticatedUser,
+  options?: {
+    recipientEmail?: string;
+    customNote?: string;
+  }
+) {
+  const usage = await InternalUsage.findById(usageId)
+    .populate('items.product', 'name sku brand')
+    .populate('items.serializedItemId', 'assetId manufacturerSerial');
+
   if (!usage) {
     throw new AppError('Rental record not found.', 404, 'RENTAL_NOT_FOUND');
   }
 
-  const recipient = usage.customerEmail || usage.assignedPersonContact || usage.assignedPerson;
+  const recipient = (options?.recipientEmail || usage.customerEmail || '').trim();
   const prodName = (usage.items[0]?.product as any)?.name || 'Musical Instrument';
-  const pendingAmount = usage.totalRentDue > 0 ? usage.totalRentDue : usage.monthlyRent;
+  const assetId =
+    (usage.items[0]?.serializedItemId as any)?.assetId ||
+    (usage.items[0]?.serializedItemId as any)?.manufacturerSerial;
+
+  const now = new Date();
+  const unpaidMonths = usage.monthlyPayments?.filter((p) => p.status !== 'PAID') || [];
+  const overdueMonths = unpaidMonths.filter((p) => new Date(p.dueDate) < now);
+  const oldestDue = overdueMonths[0] || unpaidMonths[0];
+
+  const pendingAmount =
+    usage.totalRentDue > 0
+      ? usage.totalRentDue
+      : oldestDue
+      ? Math.max(0, oldestDue.amountDue - (oldestDue.amountPaid || 0))
+      : usage.monthlyRent || 0;
+
+  const daysOverdue =
+    oldestDue && new Date(oldestDue.dueDate) < now
+      ? Math.max(
+          1,
+          Math.floor((now.getTime() - new Date(oldestDue.dueDate).getTime()) / (1000 * 60 * 60 * 24))
+        )
+      : usage.expectedReturnDate && new Date(usage.expectedReturnDate) < now
+      ? Math.max(
+          1,
+          Math.floor(
+            (now.getTime() - new Date(usage.expectedReturnDate).getTime()) / (1000 * 60 * 60 * 24)
+          )
+        )
+      : 0;
 
   const reminderMessage = `Dear ${usage.assignedPerson}, this is a payment reminder from Stereobliss Retail & Rentals. Your rental payment of ₹${pendingAmount} for "${prodName}" (Ref: ${usage.issueReference}) is due. Please pay via UPI/Card at your earliest convenience. Thank you!`;
 
+  let emailDeliveryResult: any = null;
+  let emailDispatched = false;
+
+  if (recipient && recipient.includes('@')) {
+    try {
+      emailDeliveryResult = await sendRentalPaymentReminderEmail({
+        recipientEmail: recipient,
+        customerName: usage.assignedPerson,
+        customerContact: usage.assignedPersonContact,
+        issueReference: usage.issueReference,
+        productName: prodName,
+        assetId,
+        pendingAmount,
+        monthlyRent: usage.monthlyRent || 0,
+        dueDate: oldestDue?.dueDate || usage.expectedReturnDate,
+        billingMonth: oldestDue?.billingMonth,
+        daysOverdue,
+        customNote: options?.customNote,
+        sentBy: { name: actor.name, email: actor.email, role: actor.role },
+      });
+      emailDispatched = true;
+    } catch (err: any) {
+      console.error('[EMAIL_REMINDER_ERROR] Failed to send reminder email:', err);
+    }
+  }
+
+  const destination = recipient || usage.assignedPersonContact || usage.assignedPerson;
   usage.remindersSent.push({
     sentAt: new Date(),
-    sentTo: recipient,
-    channel: usage.customerEmail ? 'EMAIL' : 'SMS',
+    sentTo: destination,
+    channel: recipient ? 'EMAIL' : 'SMS',
     message: reminderMessage,
     sentBy: new Types.ObjectId(actor.id),
   });
@@ -811,16 +960,159 @@ export async function sendRentalReminder(usageId: string, actor: AuthenticatedUs
     action: 'RENTAL_REMINDER_SENT',
     entityType: 'InternalUsage',
     entityId: usage._id.toString(),
-    afterState: { recipient, pendingAmount },
-    reason: `Dispatched payment reminder to ${recipient}`,
+    afterState: { recipient: destination, pendingAmount, emailDispatched },
+    reason: `Dispatched payment reminder to ${destination}${emailDispatched ? ' via Email' : ''}`,
   });
 
   return {
     success: true,
     message: reminderMessage,
-    sentTo: recipient,
-    channel: usage.customerEmail ? 'EMAIL' : 'SMS',
+    sentTo: destination,
+    channel: recipient ? 'EMAIL' : 'SMS',
+    emailDispatched,
+    emailStatus: emailDeliveryResult?.status || (emailDispatched ? 'SENT' : 'NO_EMAIL_CONFIGURED'),
     sentAt: new Date(),
     usage,
+  };
+}
+
+export async function getRentalDuesSummary() {
+  const now = new Date();
+  const usages = await InternalUsage.find({
+    status: {
+      $in: [USAGE_STATUSES.ACTIVE, USAGE_STATUSES.PARTIALLY_RETURNED, USAGE_STATUSES.OVERDUE],
+    },
+  })
+    .populate('items.product', 'name sku brand')
+    .populate('items.serializedItemId', 'assetId manufacturerSerial condition')
+    .sort({ expectedReturnDate: 1 })
+    .lean();
+
+  let totalPendingAmount = 0;
+  let totalOverdueAmount = 0;
+  let overdueCount = 0;
+  let dueSoonCount = 0;
+
+  const items: any[] = [];
+
+  for (const u of usages) {
+    const isReturnOverdue = u.expectedReturnDate && new Date(u.expectedReturnDate) < now;
+    const unpaidMonths = (u.monthlyPayments || []).filter((p) => p.status !== 'PAID');
+    const overdueMonths = unpaidMonths.filter((p) => new Date(p.dueDate) < now);
+
+    const pendingRent =
+      u.totalRentDue > 0
+        ? u.totalRentDue
+        : unpaidMonths.reduce(
+            (acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)),
+            0
+          );
+
+    // If there is no pending rent and return is not overdue, skip
+    if (pendingRent <= 0 && !isReturnOverdue) {
+      continue;
+    }
+
+    const isOverdue = isReturnOverdue || overdueMonths.length > 0;
+    const oldestDue = overdueMonths[0] || unpaidMonths[0];
+    const targetDueDate = oldestDue?.dueDate || u.expectedReturnDate;
+
+    let daysOverdue = 0;
+    if (targetDueDate && new Date(targetDueDate) < now) {
+      daysOverdue = Math.max(
+        1,
+        Math.floor((now.getTime() - new Date(targetDueDate).getTime()) / (1000 * 60 * 60 * 24))
+      );
+    }
+
+    const dueAmount = pendingRent > 0 ? pendingRent : u.monthlyRent || 0;
+
+    totalPendingAmount += dueAmount;
+    if (isOverdue) {
+      totalOverdueAmount += dueAmount;
+      overdueCount++;
+    } else {
+      dueSoonCount++;
+    }
+
+    const primaryItem = u.items && u.items.length > 0 ? u.items[0] : null;
+    const prod = primaryItem?.product as any;
+    const serialUnit = primaryItem?.serializedItemId as any;
+
+    const lastReminder =
+      u.remindersSent && u.remindersSent.length > 0
+        ? u.remindersSent[u.remindersSent.length - 1]
+        : null;
+
+    items.push({
+      id: u._id.toString(),
+      issueReference: u.issueReference,
+      assignedPerson: u.assignedPerson,
+      customerEmail: u.customerEmail,
+      assignedPersonContact: u.assignedPersonContact,
+      productName: prod?.name || 'Musical Instrument',
+      assetId: serialUnit?.assetId || serialUnit?.manufacturerSerial,
+      totalRentDue: dueAmount,
+      monthlyRent: u.monthlyRent || 0,
+      nextDueDate: targetDueDate,
+      daysOverdue,
+      status: isOverdue ? 'OVERDUE' : daysOverdue === 0 ? 'DUE' : 'UPCOMING',
+      billingMonth: oldestDue?.billingMonth || 'Active Loan Cycle',
+      remindersSentCount: u.remindersSent?.length || 0,
+      lastReminderSentAt: lastReminder?.sentAt,
+    });
+  }
+
+  // Sort items: OVERDUE first (descending daysOverdue), then DUE/UPCOMING
+  items.sort((a, b) => {
+    if (a.status === 'OVERDUE' && b.status !== 'OVERDUE') return -1;
+    if (a.status !== 'OVERDUE' && b.status === 'OVERDUE') return 1;
+    return b.daysOverdue - a.daysOverdue;
+  });
+
+  return {
+    summary: {
+      totalPendingAmount,
+      totalOverdueAmount,
+      overdueCount,
+      dueSoonCount,
+      totalRentalsWithDues: items.length,
+    },
+    items,
+  };
+}
+
+export async function sendBulkRentalReminders(
+  usageIds: string[] | undefined,
+  actor: AuthenticatedUser
+) {
+  let targetIds = usageIds;
+  if (!targetIds || targetIds.length === 0) {
+    const summary = await getRentalDuesSummary();
+    targetIds = summary.items.filter((item) => item.customerEmail).map((item) => item.id);
+  }
+
+  let sentCount = 0;
+  let skippedCount = 0;
+  const errors: string[] = [];
+
+  for (const id of targetIds) {
+    try {
+      const res = await sendRentalReminder(id, actor);
+      if (res.emailDispatched) {
+        sentCount++;
+      } else {
+        skippedCount++;
+      }
+    } catch (err: any) {
+      errors.push(`Rental ${id}: ${err.message}`);
+    }
+  }
+
+  return {
+    totalRequested: targetIds.length,
+    sentCount,
+    skippedCount,
+    errors,
   };
 }
