@@ -83,17 +83,22 @@ export function formatIndianCurrency(num: number): string {
   });
 }
 
+import { fileURLToPath } from 'url';
+
+const currentServiceDir = path.dirname(fileURLToPath(import.meta.url));
+
 /**
- * Resolves the invoice template image across possible paths in dev, dist, and project root
+ * Resolves the invoice template image strictly within the backend repository
  */
 function resolveTemplateImagePath(): string | null {
   const candidatePaths = [
+    // Relative to this service file (works in dev and production dist)
+    path.resolve(currentServiceDir, '../assets/templates/invoice_template.png'),
+    path.resolve(currentServiceDir, '../../assets/templates/invoice_template.png'),
+    // Relative to cwd when executed from backend root
     path.resolve(process.cwd(), 'src/assets/templates/invoice_template.png'),
     path.resolve(process.cwd(), 'assets/templates/invoice_template.png'),
-    path.resolve(process.cwd(), '../assets/templates/invoice_template.png'),
-    path.resolve(process.cwd(), '../invoice template/invoice_template.png'),
-    path.resolve(process.cwd(), 'invoice template/invoice_template.png'),
-    path.resolve(process.cwd(), '../frontend/public/templates/invoice_template.png'),
+    path.resolve(process.cwd(), 'dist/assets/templates/invoice_template.png'),
   ];
 
   for (const p of candidatePaths) {
