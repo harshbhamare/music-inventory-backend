@@ -231,7 +231,7 @@ router.get('/settings', requireAuth, async (_req: Request, res: Response, next: 
 router.patch(
   '/settings',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  requireRole(ROLES.SUPER_ADMIN),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const {

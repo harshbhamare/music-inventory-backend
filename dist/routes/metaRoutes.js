@@ -179,7 +179,7 @@ router.get('/settings', requireAuth, async (_req, res, next) => {
         next(err);
     }
 });
-router.patch('/settings', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
+router.patch('/settings', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (req, res, next) => {
     try {
         const { companyName, storeName, storeCode, contactEmail, contactPhone, address, gstin, stateName, stateCode, currency, currencySymbol, managerApprovalThresholdValue, lowStockAlertThresholdDefault, timeZone, defaultLocationId, } = req.body;
         let setting = await AppSetting.findOne();
