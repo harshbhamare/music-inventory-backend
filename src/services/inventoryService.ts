@@ -23,8 +23,8 @@ export interface CreateProductInput {
   description?: string;
   trackingMode?: 'QUANTITY' | 'SERIALIZED';
   unitOfMeasure?: string;
-  purchaseCost: number;
-  defaultSellingPrice: number;
+  purchaseCost?: number;
+  defaultSellingPrice?: number;
   supplier?: string;
   minStockThreshold?: number;
   imageUrl?: string;
@@ -187,8 +187,8 @@ export async function createProduct(input: CreateProductInput, actor: Authentica
     description: input.description?.trim() || undefined,
     trackingMode,
     unitOfMeasure: input.unitOfMeasure || 'pcs',
-    purchaseCost: input.purchaseCost,
-    defaultSellingPrice: input.defaultSellingPrice,
+    purchaseCost: input.purchaseCost ?? 0,
+    defaultSellingPrice: input.defaultSellingPrice ?? 0,
     supplier: input.supplier || undefined,
     minStockThreshold: input.minStockThreshold !== undefined ? input.minStockThreshold : 5,
     imageUrl: input.imageUrl,

@@ -355,6 +355,7 @@ export interface QuickReceiveInput {
     product: string;
     quantity: number;
     unitCost?: number;
+    sellingPrice?: number;
     serializedUnits?: Array<{
       assetId?: string;
       manufacturerSerial?: string;
@@ -476,7 +477,14 @@ export async function quickReceiveStock(input: QuickReceiveInput, actor: Authent
         );
       }
 
-      // Update Product Stock
+      // Update Product Stock and Pricing
+      if (typeof itemInput.unitCost === 'number' && itemInput.unitCost >= 0) {
+        product.purchaseCost = itemInput.unitCost;
+      }
+      if (typeof itemInput.sellingPrice === 'number' && itemInput.sellingPrice >= 0) {
+        product.defaultSellingPrice = itemInput.sellingPrice;
+      }
+
       product.stockQuantity.onHand += qty;
       let locStock = product.locationStock.find((ls: any) => ls.location.toString() === locationId.toString());
       if (locStock) {

@@ -332,7 +332,13 @@ export async function quickReceiveStock(input, actor) {
                     performedBy: actor.id,
                 }, session);
             }
-            // Update Product Stock
+            // Update Product Stock and Pricing
+            if (typeof itemInput.unitCost === 'number' && itemInput.unitCost >= 0) {
+                product.purchaseCost = itemInput.unitCost;
+            }
+            if (typeof itemInput.sellingPrice === 'number' && itemInput.sellingPrice >= 0) {
+                product.defaultSellingPrice = itemInput.sellingPrice;
+            }
             product.stockQuantity.onHand += qty;
             let locStock = product.locationStock.find((ls) => ls.location.toString() === locationId.toString());
             if (locStock) {
