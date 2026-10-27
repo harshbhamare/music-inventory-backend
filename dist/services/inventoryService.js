@@ -124,6 +124,7 @@ export async function createProduct(input, actor) {
         name: input.name,
         sku,
         color: input.color?.trim() || undefined,
+        hsnCode: input.hsnCode?.trim() || '9202',
         category: input.category,
         brand,
         modelName: input.modelName?.trim() || undefined,

@@ -16,6 +16,7 @@ export interface CreateProductInput {
   name: string;
   sku?: string;
   color?: string;
+  hsnCode?: string;
   category: string;
   brand?: string;
   modelName?: string;
@@ -179,6 +180,7 @@ export async function createProduct(input: CreateProductInput, actor: Authentica
     name: input.name,
     sku,
     color: input.color?.trim() || undefined,
+    hsnCode: input.hsnCode?.trim() || '9202',
     category: input.category,
     brand,
     modelName: input.modelName?.trim() || undefined,
