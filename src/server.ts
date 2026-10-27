@@ -3,6 +3,7 @@ import { connectDB } from './config/db.js';
 import { ENV } from './config/env.js';
 import { initializeScheduledJobs } from './jobs/cronJobs.js';
 import { ensureDatabaseSeeded } from './scripts/seed.js';
+import { Product } from './models/Product.js';
 
 async function bootstrap() {
   try {
@@ -11,6 +12,9 @@ async function bootstrap() {
 
     // Auto-seed if database is empty
     await ensureDatabaseSeeded();
+
+    // Ensure all products are purely bulk quantity (serialized completely removed)
+    await Product.updateMany({ trackingMode: { $ne: 'QUANTITY' } }, { $set: { trackingMode: 'QUANTITY' } });
 
     // Background cron jobs removed per requirement (manual report emailing enabled)
     // initializeScheduledJobs();
