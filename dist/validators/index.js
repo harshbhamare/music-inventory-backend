@@ -103,8 +103,8 @@ export const receivePurchaseSchema = z.object({
 export const createSaleSchema = z.object({
     body: z.object({
         customerName: z.string().min(1, 'Customer name is required'),
-        customerEmail: z.string().email().optional().or(z.literal('')),
-        customerPhone: z.string().optional(),
+        customerEmail: z.string().email('Valid customer email address is required').min(1, 'Customer email is required'),
+        customerPhone: z.string().min(10, 'Valid 10-digit customer phone number is required'),
         customerGstin: z.string().optional(),
         customerAddress: z.string().optional(),
         eWayBillNo: z.string().optional(),
@@ -112,6 +112,10 @@ export const createSaleSchema = z.object({
         destination: z.string().optional(),
         location: z.string().min(1, 'Location is required'),
         paymentMethod: z.enum(Object.values(PAYMENT_METHODS)).default(PAYMENT_METHODS.UPI),
+        saleType: z.enum(['DIRECT', 'EMI']).default('DIRECT'),
+        isEmi: z.boolean().optional().default(false),
+        downPayment: z.number().min(0).optional().default(0),
+        emiTenureMonths: z.number().int().min(1).max(36).optional().default(6),
         notes: z.string().optional(),
         remarks: z.string().optional(),
         idempotencyKey: z.string().optional(),
@@ -125,6 +129,17 @@ export const createSaleSchema = z.object({
             serializedItemIds: z.array(z.string()).optional(),
         }))
             .min(1, 'At least one sale item is required'),
+    }),
+});
+export const recordEmiPaymentSchema = z.object({
+    body: z.object({
+        amount: z.number().min(1, 'Payment amount must be greater than 0'),
+        billingMonth: z.string().optional(),
+        paymentId: z.string().optional(),
+        monthIndex: z.number().int().min(1).optional(),
+        paymentMethod: z.string().optional().default('UPI'),
+        transactionRef: z.string().optional(),
+        notes: z.string().optional(),
     }),
 });
 // Rentals & Instrument Loans

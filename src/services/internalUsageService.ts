@@ -1,5 +1,6 @@
 import mongoose, { Types } from 'mongoose';
 import { InternalUsage, IInternalUsage } from '../models/InternalUsage.js';
+import { Sale } from '../models/Sale.js';
 import { UsageReturn } from '../models/UsageReturn.js';
 import { Product } from '../models/Product.js';
 import { SerializedItem } from '../models/SerializedItem.js';
@@ -1047,6 +1048,7 @@ export async function getRentalDuesSummary() {
     items.push({
       id: u._id.toString(),
       issueReference: u.issueReference,
+      loanType: 'RENTAL',
       assignedPerson: u.assignedPerson,
       customerEmail: u.customerEmail,
       assignedPersonContact: u.assignedPersonContact,
@@ -1059,6 +1061,74 @@ export async function getRentalDuesSummary() {
       status: isOverdue ? 'OVERDUE' : daysOverdue === 0 ? 'DUE' : 'UPCOMING',
       billingMonth: oldestDue?.billingMonth || 'Active Loan Cycle',
       remindersSentCount: u.remindersSent?.length || 0,
+      lastReminderSentAt: lastReminder?.sentAt,
+    });
+  }
+
+  // Also query active EMI Sales with pending installment dues
+  const emiSales = await Sale.find({
+    isEmi: true,
+    totalEmiDue: { $gt: 0 },
+    saleStatus: { $ne: 'CANCELLED' },
+  })
+    .populate('lineItems.product', 'name sku brand')
+    .sort({ createdAt: 1 })
+    .lean();
+
+  for (const sale of emiSales) {
+    const unpaidEmis = (sale.emiPayments || []).filter((p) => p.status !== 'PAID');
+    const overdueEmis = unpaidEmis.filter((p) => new Date(p.dueDate) < now);
+
+    const pendingEmi =
+      sale.totalEmiDue > 0
+        ? sale.totalEmiDue
+        : unpaidEmis.reduce((acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)), 0);
+
+    if (pendingEmi <= 0) continue;
+
+    const isOverdue = overdueEmis.length > 0;
+    const oldestDue = overdueEmis[0] || unpaidEmis[0];
+    const targetDueDate = oldestDue?.dueDate || sale.createdAt;
+
+    let daysOverdue = 0;
+    if (targetDueDate && new Date(targetDueDate) < now) {
+      daysOverdue = Math.max(
+        1,
+        Math.floor((now.getTime() - new Date(targetDueDate).getTime()) / (1000 * 60 * 60 * 24))
+      );
+    }
+
+    const dueAmount = pendingEmi;
+
+    totalPendingAmount += dueAmount;
+    if (isOverdue) {
+      totalOverdueAmount += dueAmount;
+      overdueCount++;
+    } else {
+      dueSoonCount++;
+    }
+
+    const prodNames = sale.lineItems?.map((li: any) => li.product?.name).filter(Boolean).join(', ') || 'Musical Equipment';
+    const lastReminder =
+      sale.remindersSent && sale.remindersSent.length > 0
+        ? sale.remindersSent[sale.remindersSent.length - 1]
+        : null;
+
+    items.push({
+      id: sale._id.toString(),
+      issueReference: sale.invoiceNumber,
+      loanType: 'EMI',
+      assignedPerson: sale.customerName,
+      customerEmail: sale.customerEmail,
+      assignedPersonContact: sale.customerPhone,
+      productName: prodNames,
+      totalRentDue: dueAmount,
+      monthlyRent: sale.monthlyEmiAmount || dueAmount,
+      nextDueDate: targetDueDate,
+      daysOverdue,
+      status: isOverdue ? 'OVERDUE' : daysOverdue === 0 ? 'DUE' : 'UPCOMING',
+      billingMonth: oldestDue?.billingMonth || 'Active EMI Plan',
+      remindersSentCount: sale.remindersSent?.length || 0,
       lastReminderSentAt: lastReminder?.sentAt,
     });
   }
@@ -1098,14 +1168,30 @@ export async function sendBulkRentalReminders(
 
   for (const id of targetIds) {
     try {
-      const res = await sendRentalReminder(id, actor);
-      if (res.emailDispatched) {
-        sentCount++;
+      const usage = await InternalUsage.findById(id);
+      if (usage) {
+        const res = await sendRentalReminder(id, actor);
+        if (res.emailDispatched) {
+          sentCount++;
+        } else {
+          skippedCount++;
+        }
       } else {
-        skippedCount++;
+        const sale = await Sale.findById(id);
+        if (sale && sale.isEmi) {
+          const { sendEmiReminder } = await import('./salesService.js');
+          const res = await sendEmiReminder(id, actor);
+          if (res.emailDispatched) {
+            sentCount++;
+          } else {
+            skippedCount++;
+          }
+        } else {
+          skippedCount++;
+        }
       }
     } catch (err: any) {
-      errors.push(`Rental ${id}: ${err.message}`);
+      errors.push(`Record ${id}: ${err.message}`);
     }
   }
 

@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { Sale } from '../models/Sale.js';
 import { CustomerReturn } from '../models/CustomerReturn.js';
-import { createSale, processSaleReturn } from '../services/salesService.js';
+import { createSale, processSaleReturn, recordEmiPayment, sendEmiReminder } from '../services/salesService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { validate } from '../middleware/validate.js';
-import { createSaleSchema } from '../validators/index.js';
+import { createSaleSchema, recordEmiPaymentSchema } from '../validators/index.js';
 import { ROLES } from '../config/constants.js';
 const router = Router();
 // List sales
@@ -149,6 +149,26 @@ router.get('/returns/all', requireAuth, async (_req, res, next) => {
             .sort({ createdAt: -1 })
             .lean();
         res.json({ success: true, data: { returns } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Record EMI monthly installment payment
+router.post('/:id/emi-payments', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(recordEmiPaymentSchema), async (req, res, next) => {
+    try {
+        const sale = await recordEmiPayment(req.params.id, req.body, req.user);
+        res.json({ success: true, data: { sale } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Dispatch EMI payment reminder email
+router.post('/:id/emi-reminders', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
+    try {
+        const result = await sendEmiReminder(req.params.id, req.user, req.body);
+        res.json({ success: true, data: result });
     }
     catch (err) {
         next(err);

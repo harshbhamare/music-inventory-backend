@@ -180,14 +180,30 @@ router.post('/:id/add-month', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.
         next(err);
     }
 });
-// Send rental payment / overdue email reminder
+// Send rental / EMI payment / overdue email reminder
 router.post('/:id/send-reminder', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
     try {
-        const result = await sendRentalReminder(req.params.id, req.user, {
-            recipientEmail: req.body.recipientEmail,
-            customNote: req.body.customNote,
-        });
-        res.json({ success: true, data: result });
+        const { InternalUsage } = await import('../models/InternalUsage.js');
+        const usage = await InternalUsage.findById(req.params.id);
+        if (usage) {
+            const result = await sendRentalReminder(req.params.id, req.user, {
+                recipientEmail: req.body.recipientEmail,
+                customNote: req.body.customNote,
+            });
+            return res.json({ success: true, data: result });
+        }
+        // Check if it's an EMI Sale
+        const { Sale } = await import('../models/Sale.js');
+        const sale = await Sale.findById(req.params.id);
+        if (sale && sale.isEmi) {
+            const { sendEmiReminder } = await import('../services/salesService.js');
+            const result = await sendEmiReminder(req.params.id, req.user, {
+                recipientEmail: req.body.recipientEmail,
+                customNote: req.body.customNote,
+            });
+            return res.json({ success: true, data: result });
+        }
+        return res.status(404).json({ success: false, message: 'Dues record not found.' });
     }
     catch (err) {
         next(err);

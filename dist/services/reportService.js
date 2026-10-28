@@ -9,7 +9,7 @@ import { StockMovement } from '../models/StockMovement.js';
 import { Category } from '../models/Category.js';
 import '../models/User.js';
 import '../models/StockLocation.js';
-import { SERIALIZED_STATUSES, USAGE_STATUSES, ADJUSTMENT_STATUSES, TRACKING_MODES, SALE_STATUSES, } from '../config/constants.js';
+import { SERIALIZED_STATUSES, USAGE_STATUSES, MAINTENANCE_STATUSES, ADJUSTMENT_STATUSES, TRACKING_MODES, SALE_STATUSES, } from '../config/constants.js';
 export async function getDashboardMetrics(startDate, endDate) {
     const start = startDate ? new Date(startDate) : new Date(0);
     const end = endDate ? new Date(endDate) : new Date();
@@ -18,7 +18,7 @@ export async function getDashboardMetrics(startDate, endDate) {
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
     sevenDaysAgo.setHours(0, 0, 0, 0);
     // Execute all dashboard queries in parallel with field projections for maximum performance
-    const [products, serializedSummary, serializedInUseCount, activeUsageCount, overdueUsageCount, instrumentsUnderMaintenanceCount, todayReceiptsCount, periodSales, pendingApprovalsCount, recentMovements, last7DaysSales,] = await Promise.all([
+    const [products, serializedSummary, activeUsages, overdueUsageCount, maintenanceCount, todayReceiptsCount, periodSales, pendingApprovalsCount, recentMovements, last7DaysSales, activeEmiSales,] = await Promise.all([
         Product.find({ isActive: true })
             .select('stockQuantity minStockThreshold purchaseCost defaultSellingPrice trackingMode')
             .lean(),
@@ -36,21 +36,22 @@ export async function getDashboardMetrics(startDate, endDate) {
                 },
             },
         ]),
-        SerializedItem.countDocuments({ status: SERIALIZED_STATUSES.ISSUED_INTERNAL }),
-        InternalUsage.countDocuments({
+        InternalUsage.find({
             status: { $in: [USAGE_STATUSES.ACTIVE, USAGE_STATUSES.PARTIALLY_RETURNED] },
-        }),
+        }).select('items').lean(),
         InternalUsage.countDocuments({
             status: { $in: [USAGE_STATUSES.ACTIVE, USAGE_STATUSES.PARTIALLY_RETURNED, USAGE_STATUSES.OVERDUE] },
             expectedReturnDate: { $lt: now },
         }),
-        SerializedItem.countDocuments({ status: SERIALIZED_STATUSES.MAINTENANCE }),
+        MaintenanceRecord.countDocuments({
+            status: { $in: [MAINTENANCE_STATUSES.IN_PROGRESS, MAINTENANCE_STATUSES.WAITING_PARTS] },
+        }),
         PurchaseReceipt.countDocuments({ receivedDate: { $gte: start, $lte: end } }),
         Sale.find({
-            status: { $ne: 'CANCELLED' },
+            saleStatus: { $ne: 'CANCELLED' },
             createdAt: { $gte: start, $lte: end },
         })
-            .select('grandTotal')
+            .select('grandTotal isEmi totalEmiPaid totalEmiDue')
             .lean(),
         InventoryAdjustment.countDocuments({ status: ADJUSTMENT_STATUSES.PENDING_APPROVAL }),
         StockMovement.find()
@@ -64,7 +65,7 @@ export async function getDashboardMetrics(startDate, endDate) {
         Sale.aggregate([
             {
                 $match: {
-                    status: { $ne: 'CANCELLED' },
+                    saleStatus: { $ne: 'CANCELLED' },
                     createdAt: { $gte: sevenDaysAgo },
                 },
             },
@@ -77,6 +78,11 @@ export async function getDashboardMetrics(startDate, endDate) {
             },
             { $sort: { _id: 1 } },
         ]),
+        Sale.find({
+            isEmi: true,
+            totalEmiDue: { $gt: 0 },
+            saleStatus: { $ne: 'CANCELLED' },
+        }).select('totalEmiDue monthlyEmiAmount').lean(),
     ]);
     // Index serialized aggregation by productId string
     const serializedMap = new Map();
@@ -115,6 +121,20 @@ export async function getDashboardMetrics(startDate, endDate) {
         }
         totalPotentialRetailValuation += onHand * (p.defaultSellingPrice || 0);
     }
+    // Calculate actual total units currently out on rental or internal loan (supports both bulk and serialized)
+    let totalUnitsInUse = 0;
+    for (const u of activeUsages) {
+        for (const item of u.items || []) {
+            totalUnitsInUse += Math.max(0, (item.quantityIssued || 0) - (item.quantityReturned || 0));
+        }
+    }
+    const productIssuedInternalSum = products.reduce((acc, p) => acc + (p.stockQuantity?.issuedInternal || 0), 0);
+    const serializedInUseCount = Math.max(totalUnitsInUse, productIssuedInternalSum);
+    const activeUsageCount = activeUsages.length;
+    const totalEmiReceivables = activeEmiSales.reduce((sum, s) => sum + (s.totalEmiDue || 0), 0);
+    const activeEmiSalesCount = activeEmiSales.length;
+    const quarantinedSum = products.reduce((acc, p) => acc + (p.stockQuantity?.quarantined || 0), 0);
+    const instrumentsUnderMaintenanceCount = Math.max(maintenanceCount, quarantinedSum);
     const periodSalesCount = periodSales.length;
     const periodSalesRevenue = periodSales.reduce((acc, s) => acc + (s.grandTotal || 0), 0);
     return {
@@ -133,6 +153,8 @@ export async function getDashboardMetrics(startDate, endDate) {
             pendingApprovalsCount,
             totalInventoryValuationAtCost,
             totalPotentialRetailValuation,
+            activeEmiSalesCount,
+            totalEmiReceivables,
         },
         recentMovements,
         salesTrend: last7DaysSales,

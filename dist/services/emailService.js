@@ -1092,3 +1092,221 @@ export async function dispatchReportEmail(reportType, recipients, options) {
             return await sendDailyStockSummary(recipients, options?.notes);
     }
 }
+/**
+ * Dispatches an official EMI payment reminder email to the customer
+ */
+export async function sendEmiPaymentReminderEmail(params) {
+    const org = await getOrgInfo();
+    const validRecipients = normalizeRecipients(params.recipientEmail);
+    if (validRecipients.length === 0) {
+        throw new Error(`Invalid recipient email address: "${params.recipientEmail}"`);
+    }
+    const formattedDue = params.dueDate
+        ? new Date(params.dueDate).toLocaleDateString('en-IN', {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+        })
+        : 'Immediate';
+    const isOverdue = params.daysOverdue && params.daysOverdue > 0;
+    const statusColor = isOverdue ? '#dc2626' : '#d97706';
+    const statusBg = isOverdue ? '#fef2f2' : '#fffbeb';
+    const statusBorder = isOverdue ? '#fecaca' : '#fde68a';
+    const statusLabel = isOverdue ? `EMI OVERDUE (${params.daysOverdue} days)` : 'EMI PAYMENT DUE';
+    const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 620px; margin: auto; padding: 28px; border: 1px solid #e2e8f0; border-radius: 14px; background: #ffffff; color: #1e293b;">
+      <div style="border-bottom: 2px solid #f59e0b; padding-bottom: 16px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between;">
+        <div>
+          <h2 style="color: #b45309; margin: 0; font-size: 22px; font-weight: 700;">${org.companyName}</h2>
+          <div style="color: #64748b; font-size: 13px; margin-top: 3px;">${org.storeName} &bull; Retail Purchase EMI Financing</div>
+        </div>
+        <div style="display: inline-block; padding: 6px 12px; background: ${statusBg}; border: 1px solid ${statusBorder}; border-radius: 20px; font-size: 11px; font-weight: 800; color: ${statusColor}; text-transform: uppercase;">
+          ${statusLabel}
+        </div>
+      </div>
+
+      <p style="font-size: 15px; line-height: 1.6; margin-top: 0;">
+        Dear <strong>${params.customerName}</strong>,
+      </p>
+
+      <p style="font-size: 14px; line-height: 1.6; color: #334155;">
+        This is a friendly reminder from <strong>${org.storeName}</strong> regarding your purchase EMI installment under Invoice <strong>${params.invoiceNumber}</strong>. Your scheduled installment payment is due for settlement.
+      </p>
+
+      <div style="margin: 20px 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;">
+        <div style="background: #f1f5f9; padding: 10px 16px; font-size: 12px; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.5px;">
+          EMI Financing Agreement Details
+        </div>
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0; width: 40%;">Purchased Item:</td>
+            <td style="padding: 12px 16px; font-weight: 700; color: #0f172a; border-bottom: 1px solid #e2e8f0;">
+              ${params.productName}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Tax Invoice Number:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">${params.invoiceNumber}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Installment Month:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">${params.billingMonth || 'Scheduled Installment'}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Installment Due Date:</td>
+            <td style="padding: 12px 16px; font-weight: 700; color: ${statusColor}; border-bottom: 1px solid #e2e8f0;">${formattedDue}</td>
+          </tr>
+          <tr style="background: ${statusBg};">
+            <td style="padding: 14px 16px; font-weight: 700; color: #0f172a; font-size: 14px;">Total Pending Due:</td>
+            <td style="padding: 14px 16px; font-size: 18px; font-weight: 800; color: ${statusColor};">
+              ₹${formatIndianCurrency(params.pendingAmount)}
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      ${params.customNote
+        ? `<div style="margin: 16px 0; padding: 12px 16px; background: #fefce8; border-left: 4px solid #eab308; border-radius: 6px; font-size: 13px; color: #854d0e;">
+               <strong>Store Note:</strong> ${params.customNote}
+             </div>`
+        : ''}
+
+      <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 10px; padding: 16px; margin: 20px 0;">
+        <h4 style="margin: 0 0 8px 0; color: #1e40af; font-size: 13px; font-weight: 700; text-transform: uppercase;">
+          Payment Methods
+        </h4>
+        <ul style="margin: 0; padding-left: 18px; font-size: 13px; color: #1e3a8a; line-height: 1.6;">
+          <li><strong>UPI:</strong> GPay / PhonePe / Paytm to store counter or scan QR code.</li>
+          <li><strong>Store Counter:</strong> Cash, Credit/Debit Card, NetBanking at ${org.storeName}.</li>
+          <li>After payment, kindly share transaction reference for instant receipt generation.</li>
+        </ul>
+      </div>
+
+      <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #94a3b8; display: flex; justify-content: space-between;">
+        <div>Dispatched by: <strong>${params.sentBy.name}</strong> (${params.sentBy.role || 'Management'})</div>
+        <div>Contact: <a href="mailto:${org.contactEmail}" style="color: #f59e0b; text-decoration: none;">${org.contactEmail}</a></div>
+      </div>
+    </div>
+  `;
+    return sendNotificationEmail({
+        reportType: REPORT_TYPES.EMI_PAYMENT_REMINDER,
+        recipients: validRecipients,
+        subject: `EMI Payment Reminder: ₹${formatIndianCurrency(params.pendingAmount)} due for ${params.productName} (${params.invoiceNumber})`,
+        htmlContent: html,
+    });
+}
+/**
+ * Dispatches an official payment confirmation and receipt email after an EMI payment is recorded
+ */
+export async function sendEmiPaymentReceiptEmail(params) {
+    const org = await getOrgInfo();
+    const validRecipients = normalizeRecipients(params.recipientEmail);
+    if (validRecipients.length === 0) {
+        console.warn(`[EMAIL] Skipping payment receipt email: invalid recipient "${params.recipientEmail}"`);
+        return null;
+    }
+    const storeRecipients = normalizeRecipients(org.contactEmail);
+    const allRecipients = Array.from(new Set([...validRecipients, ...storeRecipients]));
+    const formattedPaidAt = new Date(params.paidAt).toLocaleDateString('en-IN', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+    });
+    const nextDueText = params.nextDueDate
+        ? new Date(params.nextDueDate).toLocaleDateString('en-IN', {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+        })
+        : 'All Scheduled EMIs Completed!';
+    const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 620px; margin: auto; padding: 28px; border: 1px solid #10b981; border-radius: 14px; background: #ffffff; color: #1e293b;">
+      <div style="border-bottom: 2px solid #10b981; padding-bottom: 16px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between;">
+        <div>
+          <h2 style="color: #065f46; margin: 0; font-size: 22px; font-weight: 700;">${org.companyName}</h2>
+          <div style="color: #64748b; font-size: 13px; margin-top: 3px;">${org.storeName} &bull; EMI Payment Confirmation Receipt</div>
+        </div>
+        <div style="display: inline-block; padding: 6px 14px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 20px; font-size: 11px; font-weight: 800; color: #047857; text-transform: uppercase;">
+          RECEIPT VERIFIED
+        </div>
+      </div>
+
+      <p style="font-size: 15px; line-height: 1.6; margin-top: 0;">
+        Dear <strong>${params.customerName}</strong>,
+      </p>
+
+      <p style="font-size: 14px; line-height: 1.6; color: #334155;">
+        We have received and recorded your scheduled EMI installment payment of <strong>₹${formatIndianCurrency(params.amountPaid)}</strong> for Invoice <strong>${params.invoiceNumber}</strong>. Here are the official receipt details:
+      </p>
+
+      <div style="margin: 20px 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+          <tr style="background: #f0fdf4;">
+            <td style="padding: 12px 16px; font-weight: 700; color: #065f46; border-bottom: 1px solid #bbf7d0;">Installment Amount Received:</td>
+            <td style="padding: 12px 16px; font-size: 18px; font-weight: 800; color: #047857; border-bottom: 1px solid #bbf7d0;">
+              ₹${formatIndianCurrency(params.amountPaid)}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Payment Mode:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">${params.paymentMethod}</td>
+          </tr>
+          ${params.transactionRef
+        ? `<tr>
+                  <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Transaction Ref:</td>
+                  <td style="padding: 12px 16px; font-family: monospace; font-weight: 700; color: #0f172a; border-bottom: 1px solid #e2e8f0;">${params.transactionRef}</td>
+                </tr>`
+        : ''}
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Date Received:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">${formattedPaidAt}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Covering Installment:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">${params.billingMonth}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Purchased Item:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">
+              ${params.productName}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Invoice Ref:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">${params.invoiceNumber}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Total EMI Paid to Date:</td>
+            <td style="padding: 12px 16px; font-weight: 700; color: #047857; border-bottom: 1px solid #e2e8f0;">₹${formatIndianCurrency(params.totalEmiPaid)}</td>
+          </tr>
+          <tr style="background: ${params.totalEmiDue > 0 ? '#fffbeb' : '#f0fdf4'};">
+            <td style="padding: 12px 16px; color: #64748b; font-weight: 600;">Remaining Balance Due:</td>
+            <td style="padding: 12px 16px; font-weight: 800; color: ${params.totalEmiDue > 0 ? '#b45309' : '#059669'};">
+              ₹${formatIndianCurrency(params.totalEmiDue)} ${params.totalEmiDue === 0 ? '(All Clear - Paid in Full!)' : ''}
+            </td>
+          </tr>
+          ${params.totalEmiDue > 0
+        ? `<tr>
+                  <td style="padding: 10px 16px; color: #64748b; font-size: 12px;">Next Scheduled EMI Due Date:</td>
+                  <td style="padding: 10px 16px; font-weight: 600; color: #475569; font-size: 12px;">${nextDueText}</td>
+                </tr>`
+        : ''}
+        </table>
+      </div>
+
+      <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 16px; margin: 16px 0; font-size: 12px; color: #475569;">
+        <strong>Accountability Record:</strong> Payment verified &amp; recorded by <strong>${params.recordedBy.name}</strong> (${params.recordedBy.role || 'Staff'}) on ${new Date().toLocaleString('en-IN')}.
+      </div>
+
+      <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #94a3b8; text-align: center;">
+        Thank you for choosing <strong>${org.companyName}</strong>! For assistance, email <a href="mailto:${org.contactEmail}" style="color: #047857; text-decoration: none;">${org.contactEmail}</a>.
+      </div>
+    </div>
+  `;
+    return sendNotificationEmail({
+        reportType: REPORT_TYPES.EMI_PAYMENT_RECEIPT,
+        recipients: allRecipients,
+        subject: `EMI Payment Receipt: ₹${formatIndianCurrency(params.amountPaid)} received for ${params.productName} (${params.invoiceNumber})`,
+        htmlContent: html,
+    });
+}

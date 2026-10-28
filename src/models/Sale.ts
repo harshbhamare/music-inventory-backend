@@ -6,6 +6,8 @@ import {
   PaymentStatus,
   PAYMENT_METHODS,
   PaymentMethod,
+  SALE_TYPES,
+  SaleType,
 } from '../config/constants.js';
 
 export interface ISaleLineItem {
@@ -21,11 +23,33 @@ export interface ISaleLineItem {
   serializedItemIds?: Types.ObjectId[];
 }
 
+export interface IEmiMonthlyPayment {
+  _id?: Types.ObjectId;
+  monthIndex: number;
+  billingMonth: string;
+  dueDate: Date;
+  amountDue: number;
+  amountPaid: number;
+  paidAt?: Date;
+  paymentMethod?: string;
+  transactionRef?: string;
+  status: 'PAID' | 'DUE' | 'OVERDUE';
+  notes?: string;
+}
+
+export interface IEmiReminder {
+  sentAt: Date;
+  sentTo: string;
+  channel: 'EMAIL' | 'SMS' | 'WHATSAPP';
+  message: string;
+  sentBy: Types.ObjectId;
+}
+
 export interface ISale extends Document {
   invoiceNumber: string;
   customerName: string;
-  customerEmail?: string;
-  customerPhone?: string;
+  customerEmail: string;
+  customerPhone: string;
   customerGstin?: string;
   customerAddress?: string;
   eWayBillNo?: string;
@@ -48,6 +72,15 @@ export interface ISale extends Document {
   paymentStatus: PaymentStatus;
   paymentMethod: PaymentMethod;
   saleStatus: SaleStatus;
+  saleType: SaleType;
+  isEmi: boolean;
+  downPayment: number;
+  emiTenureMonths: number;
+  monthlyEmiAmount: number;
+  totalEmiPaid: number;
+  totalEmiDue: number;
+  emiPayments: IEmiMonthlyPayment[];
+  remindersSent: IEmiReminder[];
   notes?: string;
   remarks?: string;
   soldBy: Types.ObjectId;
@@ -73,12 +106,44 @@ const SaleLineItemSchema = new Schema<ISaleLineItem>(
   { _id: false }
 );
 
+const EmiMonthlyPaymentSchema = new Schema<IEmiMonthlyPayment>(
+  {
+    monthIndex: { type: Number, required: true },
+    billingMonth: { type: String, required: true },
+    dueDate: { type: Date, required: true },
+    amountDue: { type: Number, required: true, min: 0 },
+    amountPaid: { type: Number, default: 0, min: 0 },
+    paidAt: { type: Date },
+    paymentMethod: { type: String },
+    transactionRef: { type: String, trim: true },
+    status: {
+      type: String,
+      enum: ['PAID', 'DUE', 'OVERDUE'],
+      default: 'DUE',
+      required: true,
+    },
+    notes: { type: String, trim: true },
+  },
+  { timestamps: true }
+);
+
+const EmiReminderSchema = new Schema<IEmiReminder>(
+  {
+    sentAt: { type: Date, default: Date.now },
+    sentTo: { type: String, required: true },
+    channel: { type: String, enum: ['EMAIL', 'SMS', 'WHATSAPP'], default: 'EMAIL' },
+    message: { type: String, required: true },
+    sentBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  },
+  { _id: false }
+);
+
 const SaleSchema = new Schema<ISale>(
   {
     invoiceNumber: { type: String, required: true, unique: true, uppercase: true, trim: true },
     customerName: { type: String, required: true, trim: true },
-    customerEmail: { type: String, lowercase: true, trim: true },
-    customerPhone: { type: String, trim: true },
+    customerEmail: { type: String, required: true, lowercase: true, trim: true },
+    customerPhone: { type: String, required: true, trim: true },
     customerGstin: { type: String, uppercase: true, trim: true },
     customerAddress: { type: String, trim: true },
     eWayBillNo: { type: String, trim: true },
@@ -116,6 +181,20 @@ const SaleSchema = new Schema<ISale>(
       default: SALE_STATUSES.CONFIRMED,
       required: true,
     },
+    saleType: {
+      type: String,
+      enum: Object.values(SALE_TYPES),
+      default: SALE_TYPES.DIRECT,
+      required: true,
+    },
+    isEmi: { type: Boolean, default: false },
+    downPayment: { type: Number, default: 0, min: 0 },
+    emiTenureMonths: { type: Number, default: 0, min: 0 },
+    monthlyEmiAmount: { type: Number, default: 0, min: 0 },
+    totalEmiPaid: { type: Number, default: 0, min: 0 },
+    totalEmiDue: { type: Number, default: 0, min: 0 },
+    emiPayments: [EmiMonthlyPaymentSchema],
+    remindersSent: [EmiReminderSchema],
     notes: { type: String, trim: true },
     remarks: { type: String, trim: true },
     soldBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
