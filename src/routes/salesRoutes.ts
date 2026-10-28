@@ -1,11 +1,11 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { Sale } from '../models/Sale.js';
 import { CustomerReturn } from '../models/CustomerReturn.js';
-import { createSale, processSaleReturn, recordEmiPayment, sendEmiReminder } from '../services/salesService.js';
+import { createSale, updateSale, processSaleReturn, recordEmiPayment, sendEmiReminder } from '../services/salesService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { validate } from '../middleware/validate.js';
-import { createSaleSchema, recordEmiPaymentSchema } from '../validators/index.js';
+import { createSaleSchema, updateSaleSchema, recordEmiPaymentSchema } from '../validators/index.js';
 import { ROLES } from '../config/constants.js';
 
 const router = Router();
@@ -32,6 +32,8 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
         .populate('location', 'name code')
         .populate('soldBy', 'name email')
         .populate('lineItems.product', 'name sku brand')
+        .populate('paymentLogs.recordedBy', 'name email')
+        .populate('remindersSent.sentBy', 'name email')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -57,8 +59,10 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
     const sale = await Sale.findById(req.params.id)
       .populate('location', 'name code address')
       .populate('soldBy', 'name email')
-      .populate('lineItems.product', 'name sku brand modelName defaultSellingPrice')
+      .populate('lineItems.product', 'name sku brand modelName defaultSellingPrice color')
       .populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition')
+      .populate('paymentLogs.recordedBy', 'name email')
+      .populate('remindersSent.sentBy', 'name email')
       .lean();
 
     res.json({ success: true, data: { sale } });
@@ -179,6 +183,31 @@ router.get('/returns/all', requireAuth, async (_req: Request, res: Response, nex
   }
 });
 
+// Update sale bill / invoice (Manager or Superadmin)
+router.put(
+  '/:id',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  validate(updateSaleSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const sale = await updateSale(req.params.id as string, req.body, req.user!);
+      const populated = await Sale.findById(sale._id)
+        .populate('location', 'name code address')
+        .populate('soldBy', 'name email')
+        .populate('lineItems.product', 'name sku brand modelName defaultSellingPrice color')
+        .populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition')
+        .populate('paymentLogs.recordedBy', 'name email')
+        .populate('remindersSent.sentBy', 'name email')
+        .lean();
+
+      res.json({ success: true, data: { sale: populated } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
 // Record EMI monthly installment payment
 router.post(
   '/:id/emi-payments',
@@ -188,7 +217,16 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const sale = await recordEmiPayment(req.params.id as string, req.body, req.user!);
-      res.json({ success: true, data: { sale } });
+      const populated = await Sale.findById(sale._id)
+        .populate('location', 'name code address')
+        .populate('soldBy', 'name email')
+        .populate('lineItems.product', 'name sku brand modelName defaultSellingPrice color')
+        .populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition')
+        .populate('paymentLogs.recordedBy', 'name email')
+        .populate('remindersSent.sentBy', 'name email')
+        .lean();
+
+      res.json({ success: true, data: { sale: populated } });
     } catch (err) {
       next(err);
     }

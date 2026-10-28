@@ -161,8 +161,38 @@ export const recordEmiPaymentSchema = z.object({
     paymentId: z.string().optional(),
     monthIndex: z.number().int().min(1).optional(),
     paymentMethod: z.string().optional().default('UPI'),
-    transactionRef: z.string().optional(),
+    transactionRef: z.string().min(1, 'Transaction number / UPI reference is compulsory'),
     notes: z.string().optional(),
+  }),
+});
+
+export const updateSaleSchema = z.object({
+  body: z.object({
+    customerName: z.string().min(1, 'Customer name is required').optional(),
+    customerEmail: z.string().email('Valid customer email is required').optional(),
+    customerPhone: z.string().min(10, 'Valid customer phone number is required').optional(),
+    customerGstin: z.string().optional(),
+    customerAddress: z.string().optional(),
+    eWayBillNo: z.string().optional(),
+    dispatchThrough: z.string().optional(),
+    destination: z.string().optional(),
+    paymentMethod: z.string().optional(),
+    notes: z.string().optional(),
+    remarks: z.string().optional(),
+    downPayment: z.number().min(0).optional(),
+    emiTenureMonths: z.number().int().min(1).max(36).optional(),
+    lineItems: z
+      .array(
+        z.object({
+          product: z.string().min(1),
+          unitPrice: z.number().min(0),
+          discount: z.number().min(0).optional(),
+          quantity: z.number().int().min(1),
+          hsnCode: z.string().optional(),
+        })
+      )
+      .optional(),
+    reason: z.string().optional(),
   }),
 });
 

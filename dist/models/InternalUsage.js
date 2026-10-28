@@ -31,6 +31,20 @@ const RentalReminderSchema = new Schema({
     message: { type: String, required: true },
     sentBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
 }, { _id: true });
+const RentalPaymentLogSchema = new Schema({
+    paymentType: {
+        type: String,
+        enum: ['SECURITY_DEPOSIT', 'RENTAL_PAYMENT'],
+        required: true,
+    },
+    amount: { type: Number, required: true, min: 0 },
+    paymentMethod: { type: String, required: true },
+    transactionRef: { type: String, required: true, trim: true },
+    billingMonth: { type: String, trim: true },
+    notes: { type: String, trim: true },
+    recordedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    paidAt: { type: Date, default: Date.now },
+}, { _id: true, timestamps: true });
 const InternalUsageSchema = new Schema({
     issueReference: { type: String, required: true, unique: true, uppercase: true, trim: true },
     purpose: {
@@ -64,6 +78,7 @@ const InternalUsageSchema = new Schema({
     totalRentPaid: { type: Number, default: 0, min: 0 },
     totalRentDue: { type: Number, default: 0, min: 0 },
     remindersSent: [RentalReminderSchema],
+    paymentLogs: [RentalPaymentLogSchema],
     extensions: [
         {
             extendedDate: { type: Date, required: true },

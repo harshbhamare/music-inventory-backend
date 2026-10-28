@@ -303,18 +303,48 @@ export async function generateTaxInvoicePdf(sale) {
                 currentY += rowHeight;
             });
             // 6. Payment Method & Totals Section
-            const summaryStartY = currentY + 18;
-            // Left: Payment Method
-            doc.font(fonts.bold).fontSize(9.5).fillColor('#0f172a').text('Payment Method', leftMargin, summaryStartY);
-            doc.font(fonts.regular).fontSize(8.5).fillColor('#334155').text(paymentMethod, leftMargin, summaryStartY + 14);
-            // Right: Totals
-            const totalsBoxX = 350;
-            const totalsWidth = rightMargin - totalsBoxX;
-            let totY = summaryStartY;
+            const summaryStartY = currentY + 16;
+            const isEmiSale = sale.isEmi === true || sale.saleType === 'EMI';
             const taxableAmount = sale.taxableAmount || (sale.subtotal - (sale.discountTotal || 0));
             const cgstAmount = sale.cgstAmount || Math.round(taxableAmount * 0.09 * 100) / 100;
             const sgstAmount = sale.sgstAmount || Math.round(taxableAmount * 0.09 * 100) / 100;
-            const grandTotal = sale.grandTotal || (taxableAmount + cgstAmount + sgstAmount);
+            const grandTotal = Math.round(sale.grandTotal || (taxableAmount + cgstAmount + sgstAmount));
+            const totalsBoxX = 350;
+            const totalsWidth = rightMargin - totalsBoxX;
+            let totY = summaryStartY;
+            // Left: Payment Method or EMI Financing Facility Box
+            if (isEmiSale) {
+                const emiBoxWidth = totalsBoxX - leftMargin - 15;
+                const downPayment = Math.round(sale.downPayment || 0);
+                const financedAmt = Math.round(Math.max(0, grandTotal - downPayment));
+                const totalPaid = Math.round(sale.totalEmiPaid ?? downPayment);
+                const totalDue = Math.round(sale.totalEmiDue ?? financedAmt);
+                const tenure = sale.emiTenureMonths || 6;
+                const monthlyAmt = sale.monthlyEmiAmount || (tenure > 0 ? Math.round(financedAmt / tenure) : 0);
+                const emiBoxHeight = 114;
+                doc.roundedRect(leftMargin, summaryStartY, emiBoxWidth, emiBoxHeight, 4).fillAndStroke('#f8fafc', '#cbd5e1');
+                // Header ribbon
+                doc.roundedRect(leftMargin, summaryStartY, emiBoxWidth, 20, 4).fill('#0284c7');
+                doc.font(fonts.bold).fontSize(8.5).fillColor('#ffffff').text('CUSTOMER EMI FINANCING & REPAYMENT TERMS', leftMargin + 8, summaryStartY + 5);
+                let rowY = summaryStartY + 25;
+                const drawEmiRow = (label, value, isBold = false, valColor = '#0f172a') => {
+                    doc.font(fonts.bold).fontSize(8).fillColor('#64748b').text(label, leftMargin + 8, rowY);
+                    doc.font(isBold ? fonts.bold : fonts.regular).fontSize(8).fillColor(valColor).text(value, leftMargin + 130, rowY, { width: emiBoxWidth - 138, align: 'right' });
+                    rowY += 12;
+                };
+                drawEmiRow('Payment Mode', `Customer EMI Plan (${tenure} Months)`);
+                drawEmiRow('Initial Deposit / Down Payment', `${fonts.symbolPrefix}${formatIndianCurrency(downPayment)}`, true, '#059669');
+                drawEmiRow('Financed Principal', `${fonts.symbolPrefix}${formatIndianCurrency(financedAmt)}`);
+                drawEmiRow('Monthly Installment', `${fonts.symbolPrefix}${formatIndianCurrency(monthlyAmt)} / Month`);
+                drawEmiRow('Total Collected to Date', `${fonts.symbolPrefix}${formatIndianCurrency(totalPaid)}`, true, '#059669');
+                drawEmiRow('Outstanding EMI Balance', `${fonts.symbolPrefix}${formatIndianCurrency(totalDue)}`, true, totalDue > 0 ? '#e11d48' : '#059669');
+                drawEmiRow('Financing Status', totalDue <= 0 ? 'COMPLETED / FULLY PAID' : 'ACTIVE EMI REPAYMENT', true, totalDue <= 0 ? '#059669' : '#0284c7');
+            }
+            else {
+                doc.font(fonts.bold).fontSize(9.5).fillColor('#0f172a').text('Payment Method', leftMargin, summaryStartY);
+                doc.font(fonts.regular).fontSize(8.5).fillColor('#334155').text(paymentMethod, leftMargin, summaryStartY + 14);
+            }
+            // Right: Totals
             const renderTotalLine = (label, amount) => {
                 doc.font(fonts.regular).fontSize(8.5).fillColor('#334155').text(label, totalsBoxX, totY);
                 doc.font(fonts.regular).fontSize(8.5).fillColor('#0f172a').text(`${fonts.symbolPrefix}${formatIndianCurrency(amount)}`, totalsBoxX, totY, { width: totalsWidth, align: 'right' });
@@ -323,14 +353,69 @@ export async function generateTaxInvoicePdf(sale) {
             renderTotalLine('Subtotal', taxableAmount);
             renderTotalLine('CGST (9%)', cgstAmount);
             renderTotalLine('SGST (9%)', sgstAmount);
-            // Highlighted TOTAL (INR) Bar
-            const totalBarY = totY + 2;
-            const totalBarHeight = 26;
-            doc.rect(totalsBoxX - 6, totalBarY, totalsWidth + 6, totalBarHeight).fill('#e1f0fa');
-            doc.font(fonts.bold).fontSize(9.5).fillColor('#0f172a').text('TOTAL (INR)', totalsBoxX, totalBarY + 7);
-            doc.font(fonts.bold).fontSize(10.5).fillColor('#0f172a').text(`${fonts.symbolPrefix}${formatIndianCurrency(grandTotal)}`, totalsBoxX, totalBarY + 6.5, { width: totalsWidth, align: 'right' });
-            // 7. Divider Line below Totals
-            const lowerDividerY = totalBarY + totalBarHeight + 24;
+            if (isEmiSale) {
+                const downPayment = Math.round(sale.downPayment || 0);
+                const financedAmt = Math.round(Math.max(0, grandTotal - downPayment));
+                const totalDue = Math.round(sale.totalEmiDue ?? financedAmt);
+                // Highlighted TOTAL (INR) Bar
+                const totalBarY = totY + 2;
+                const totalBarHeight = 22;
+                doc.rect(totalsBoxX - 6, totalBarY, totalsWidth + 6, totalBarHeight).fill('#e1f0fa');
+                doc.font(fonts.bold).fontSize(9).fillColor('#0f172a').text('TOTAL INVOICE (INR)', totalsBoxX, totalBarY + 5.5);
+                doc.font(fonts.bold).fontSize(9.5).fillColor('#0f172a').text(`${fonts.symbolPrefix}${formatIndianCurrency(grandTotal)}`, totalsBoxX, totalBarY + 5.5, { width: totalsWidth, align: 'right' });
+                totY = totalBarY + totalBarHeight + 5;
+                // Down payment deduction row
+                doc.font(fonts.bold).fontSize(8.5).fillColor('#059669').text('Less: Deposit Paid', totalsBoxX, totY);
+                doc.font(fonts.bold).fontSize(8.5).fillColor('#059669').text(`(-) ${fonts.symbolPrefix}${formatIndianCurrency(downPayment)}`, totalsBoxX, totY, { width: totalsWidth, align: 'right' });
+                totY += 14;
+                // Remaining EMI Balance Due Highlight
+                const emiBarHeight = 22;
+                doc.rect(totalsBoxX - 6, totY, totalsWidth + 6, emiBarHeight).fill('#fef3c7');
+                doc.font(fonts.bold).fontSize(8.5).fillColor('#92400e').text('NET EMI BALANCE DUE', totalsBoxX, totY + 5.5);
+                doc.font(fonts.bold).fontSize(9.5).fillColor('#92400e').text(`${fonts.symbolPrefix}${formatIndianCurrency(totalDue)}`, totalsBoxX, totY + 5.5, { width: totalsWidth, align: 'right' });
+                totY += emiBarHeight;
+            }
+            else {
+                const totalBarY = totY + 2;
+                const totalBarHeight = 26;
+                doc.rect(totalsBoxX - 6, totalBarY, totalsWidth + 6, totalBarHeight).fill('#e1f0fa');
+                doc.font(fonts.bold).fontSize(9.5).fillColor('#0f172a').text('TOTAL (INR)', totalsBoxX, totalBarY + 7);
+                doc.font(fonts.bold).fontSize(10.5).fillColor('#0f172a').text(`${fonts.symbolPrefix}${formatIndianCurrency(grandTotal)}`, totalsBoxX, totalBarY + 6.5, { width: totalsWidth, align: 'right' });
+                totY = totalBarY + totalBarHeight;
+            }
+            // 7. Optional EMI Repayment Schedule Ledger
+            let afterSummaryY = Math.max(summaryStartY + (isEmiSale ? 122 : 45), totY + 14);
+            if (isEmiSale && sale.emiPayments && sale.emiPayments.length > 0) {
+                doc.font(fonts.bold).fontSize(8.5).fillColor('#0f172a').text('MONTH-BY-MONTH EMI REPAYMENT SCHEDULE & LEDGER', leftMargin, afterSummaryY);
+                afterSummaryY += 12;
+                const schedHeaderHeight = 16;
+                doc.rect(leftMargin, afterSummaryY, contentWidth, schedHeaderHeight).fill('#1e293b');
+                doc.font(fonts.bold).fontSize(7.5).fillColor('#ffffff');
+                doc.text('Installment', leftMargin + 6, afterSummaryY + 4, { width: 100 });
+                doc.text('Due Date', leftMargin + 110, afterSummaryY + 4, { width: 75 });
+                doc.text(`Amount Due (${fonts.symbolPrefix})`, leftMargin + 190, afterSummaryY + 4, { width: 75, align: 'right' });
+                doc.text(`Amount Paid (${fonts.symbolPrefix})`, leftMargin + 275, afterSummaryY + 4, { width: 75, align: 'right' });
+                doc.text('Status', leftMargin + 360, afterSummaryY + 4, { width: 60, align: 'center' });
+                doc.text('Transaction Ref', leftMargin + 425, afterSummaryY + 4, { width: 85, align: 'center' });
+                let schedRowY = afterSummaryY + schedHeaderHeight;
+                sale.emiPayments.forEach((p) => {
+                    const rowH = 14;
+                    const isPaid = p.status === 'PAID';
+                    doc.rect(leftMargin, schedRowY, contentWidth, rowH).fill(isPaid ? '#f0fdf4' : '#ffffff');
+                    doc.rect(leftMargin, schedRowY, contentWidth, rowH).lineWidth(0.4).stroke('#e2e8f0');
+                    doc.font(fonts.regular).fontSize(7.5).fillColor('#0f172a');
+                    doc.text(p.billingMonth || `Month ${p.monthIndex}`, leftMargin + 6, schedRowY + 3, { width: 100 });
+                    doc.text(p.dueDate ? new Date(p.dueDate).toLocaleDateString('en-IN') : '—', leftMargin + 110, schedRowY + 3, { width: 75 });
+                    doc.text(formatIndianCurrency(p.amountDue), leftMargin + 190, schedRowY + 3, { width: 75, align: 'right' });
+                    doc.font(fonts.bold).fillColor(p.amountPaid > 0 ? '#059669' : '#64748b').text(formatIndianCurrency(p.amountPaid || 0), leftMargin + 275, schedRowY + 3, { width: 75, align: 'right' });
+                    doc.font(fonts.bold).fontSize(7).fillColor(isPaid ? '#059669' : '#d97706').text(p.status, leftMargin + 360, schedRowY + 3, { width: 60, align: 'center' });
+                    doc.font(fonts.regular).fontSize(7).fillColor('#64748b').text(p.transactionRef || (isPaid ? 'Counter' : '—'), leftMargin + 425, schedRowY + 3, { width: 85, align: 'center' });
+                    schedRowY += rowH;
+                });
+                afterSummaryY = schedRowY + 10;
+            }
+            // 8. Divider Line below Totals
+            const lowerDividerY = afterSummaryY + 8;
             doc.moveTo(leftMargin, lowerDividerY).lineTo(rightMargin, lowerDividerY).lineWidth(0.6).stroke('#cbd5e1');
             // 8. Terms & Conditions Section
             const termsY = lowerDividerY + 16;

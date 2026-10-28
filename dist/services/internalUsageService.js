@@ -155,6 +155,20 @@ export async function issueInstruments(input, actor) {
             totalRentPaid: 0,
             totalRentDue,
             remindersSent: [],
+            paymentLogs: securityDeposit > 0
+                ? [
+                    {
+                        paymentType: 'SECURITY_DEPOSIT',
+                        amount: securityDeposit,
+                        paymentMethod: 'UPI',
+                        transactionRef: `DEP-${issueReference}`,
+                        billingMonth: 'Security Deposit',
+                        notes: 'Initial refundable security deposit paid upon rental handover',
+                        recordedBy: new Types.ObjectId(actor.id),
+                        paidAt: new Date(),
+                    },
+                ]
+                : [],
         });
         await usage.save({ session });
         // Link currentUsage on serialized items
@@ -398,6 +412,18 @@ export async function recordRentalPayment(usageId, input, actor) {
     const totalDue = usage.monthlyPayments.reduce((acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)), 0);
     usage.totalRentPaid = totalPaid;
     usage.totalRentDue = totalDue;
+    if (!usage.paymentLogs)
+        usage.paymentLogs = [];
+    usage.paymentLogs.push({
+        paymentType: 'RENTAL_PAYMENT',
+        amount: payment.amountPaid,
+        paymentMethod: payment.paymentMethod || 'UPI',
+        transactionRef: payment.transactionRef || 'N/A',
+        billingMonth: payment.billingMonth,
+        notes: payment.notes,
+        recordedBy: new Types.ObjectId(actor.id),
+        paidAt: payment.paidAt || new Date(),
+    });
     await usage.save();
     await logAudit({
         actor,

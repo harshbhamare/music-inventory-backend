@@ -38,6 +38,18 @@ export interface IRentalReminder {
   sentBy: Types.ObjectId;
 }
 
+export interface IRentalPaymentLog {
+  _id?: Types.ObjectId;
+  paymentType: 'SECURITY_DEPOSIT' | 'RENTAL_PAYMENT';
+  amount: number;
+  paymentMethod: string;
+  transactionRef: string;
+  billingMonth?: string;
+  notes?: string;
+  recordedBy: Types.ObjectId;
+  paidAt: Date;
+}
+
 export interface IInternalUsage extends Document {
   issueReference: string;
   purpose: UsagePurpose;
@@ -62,6 +74,7 @@ export interface IInternalUsage extends Document {
   totalRentPaid: number;
   totalRentDue: number;
   remindersSent: IRentalReminder[];
+  paymentLogs: IRentalPaymentLog[];
   extensions: Array<{
     extendedDate: Date;
     reason: string;
@@ -115,6 +128,24 @@ const RentalReminderSchema = new Schema<IRentalReminder>(
   { _id: true }
 );
 
+const RentalPaymentLogSchema = new Schema<IRentalPaymentLog>(
+  {
+    paymentType: {
+      type: String,
+      enum: ['SECURITY_DEPOSIT', 'RENTAL_PAYMENT'],
+      required: true,
+    },
+    amount: { type: Number, required: true, min: 0 },
+    paymentMethod: { type: String, required: true },
+    transactionRef: { type: String, required: true, trim: true },
+    billingMonth: { type: String, trim: true },
+    notes: { type: String, trim: true },
+    recordedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    paidAt: { type: Date, default: Date.now },
+  },
+  { _id: true, timestamps: true }
+);
+
 const InternalUsageSchema = new Schema<IInternalUsage>(
   {
     issueReference: { type: String, required: true, unique: true, uppercase: true, trim: true },
@@ -149,6 +180,7 @@ const InternalUsageSchema = new Schema<IInternalUsage>(
     totalRentPaid: { type: Number, default: 0, min: 0 },
     totalRentDue: { type: Number, default: 0, min: 0 },
     remindersSent: [RentalReminderSchema],
+    paymentLogs: [RentalPaymentLogSchema],
     extensions: [
       {
         extendedDate: { type: Date, required: true },

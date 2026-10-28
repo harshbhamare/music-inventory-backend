@@ -45,6 +45,18 @@ export interface IEmiReminder {
   sentBy: Types.ObjectId;
 }
 
+export interface ISalePaymentLog {
+  _id?: Types.ObjectId;
+  paymentType: 'DOWN_PAYMENT' | 'EMI_INSTALLMENT' | 'FULL_PAYMENT';
+  amount: number;
+  paymentMethod: string;
+  transactionRef: string;
+  billingMonth?: string;
+  notes?: string;
+  recordedBy: Types.ObjectId;
+  paidAt: Date;
+}
+
 export interface ISale extends Document {
   invoiceNumber: string;
   customerName: string;
@@ -81,6 +93,7 @@ export interface ISale extends Document {
   totalEmiDue: number;
   emiPayments: IEmiMonthlyPayment[];
   remindersSent: IEmiReminder[];
+  paymentLogs: ISalePaymentLog[];
   notes?: string;
   remarks?: string;
   soldBy: Types.ObjectId;
@@ -136,6 +149,24 @@ const EmiReminderSchema = new Schema<IEmiReminder>(
     sentBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   },
   { _id: false }
+);
+
+const SalePaymentLogSchema = new Schema<ISalePaymentLog>(
+  {
+    paymentType: {
+      type: String,
+      enum: ['DOWN_PAYMENT', 'EMI_INSTALLMENT', 'FULL_PAYMENT'],
+      required: true,
+    },
+    amount: { type: Number, required: true, min: 0 },
+    paymentMethod: { type: String, required: true },
+    transactionRef: { type: String, required: true, trim: true },
+    billingMonth: { type: String, trim: true },
+    notes: { type: String, trim: true },
+    recordedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    paidAt: { type: Date, default: Date.now },
+  },
+  { _id: true, timestamps: true }
 );
 
 const SaleSchema = new Schema<ISale>(
@@ -195,6 +226,7 @@ const SaleSchema = new Schema<ISale>(
     totalEmiDue: { type: Number, default: 0, min: 0 },
     emiPayments: [EmiMonthlyPaymentSchema],
     remindersSent: [EmiReminderSchema],
+    paymentLogs: [SalePaymentLogSchema],
     notes: { type: String, trim: true },
     remarks: { type: String, trim: true },
     soldBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },

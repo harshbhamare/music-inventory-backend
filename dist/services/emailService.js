@@ -263,12 +263,31 @@ export async function sendInvoicePdfEmail(params) {
           <strong>${dateFormatted}</strong>
         </div>
         <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+          <span style="color: #64748b;">Purchase Type:</span>
+          <strong>${sale.isEmi ? `Customer EMI Plan (${sale.emiTenureMonths || 6} Months)` : 'Direct Purchase'}</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
           <span style="color: #64748b;">Payment Method:</span>
           <strong>${sale.paymentMethod || 'UPI'}</strong>
         </div>
+        ${sale.isEmi
+        ? `
+        <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+          <span style="color: #059669; font-weight: 600;">Initial Deposit / Down Payment:</span>
+          <strong style="color: #059669;">${org.currencySymbol}${formatIndianCurrency(sale.downPayment || 0)}</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+          <span style="color: #64748b;">Monthly Installment:</span>
+          <strong>${org.currencySymbol}${formatIndianCurrency(sale.monthlyEmiAmount || 0)} / mo</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+          <span style="color: #e11d48; font-weight: 600;">Outstanding EMI Balance:</span>
+          <strong style="color: #e11d48;">${org.currencySymbol}${formatIndianCurrency(sale.totalEmiDue || 0)}</strong>
+        </div>`
+        : ''}
         <div style="display: flex; justify-content: space-between;">
           <span style="color: #64748b;">Payment Status:</span>
-          <strong style="color: #10b981;">PAID</strong>
+          <strong style="color: ${sale.paymentStatus === 'PAID' ? '#10b981' : '#f59e0b'};">${sale.paymentStatus || 'CONFIRMED'}</strong>
         </div>
       </div>
 
@@ -291,6 +310,17 @@ export async function sendInvoicePdfEmail(params) {
       <div style="margin-top: 16px; padding-top: 12px; border-top: 2px solid #e2e8f0; text-align: right; font-size: 14px;">
         <span style="color: #64748b; font-weight: 600;">Grand Total: </span>
         <strong style="color: #0f172a; font-size: 18px; margin-left: 8px;">${org.currencySymbol}${formatIndianCurrency(sale.grandTotal)}</strong>
+        ${sale.isEmi
+        ? `
+        <div style="margin-top: 6px; font-size: 13px; color: #059669;">
+          <span>Initial Deposit Paid: </span>
+          <strong style="margin-left: 6px;">(-) ${org.currencySymbol}${formatIndianCurrency(sale.downPayment || 0)}</strong>
+        </div>
+        <div style="margin-top: 6px; font-size: 14px; color: #92400e; font-weight: 700;">
+          <span>Net EMI Balance Due: </span>
+          <span style="font-size: 16px; margin-left: 6px;">${org.currencySymbol}${formatIndianCurrency(sale.totalEmiDue || Math.max(0, sale.grandTotal - (sale.downPayment || 0)))}</span>
+        </div>`
+        : ''}
       </div>
 
       ${params.customNotes

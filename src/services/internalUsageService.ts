@@ -233,6 +233,21 @@ export async function issueInstruments(input: IssueInternalUsageInput, actor: Au
       totalRentPaid: 0,
       totalRentDue,
       remindersSent: [],
+      paymentLogs:
+        securityDeposit > 0
+          ? [
+              {
+                paymentType: 'SECURITY_DEPOSIT',
+                amount: securityDeposit,
+                paymentMethod: 'UPI',
+                transactionRef: `DEP-${issueReference}`,
+                billingMonth: 'Security Deposit',
+                notes: 'Initial refundable security deposit paid upon rental handover',
+                recordedBy: new Types.ObjectId(actor.id),
+                paidAt: new Date(),
+              },
+            ]
+          : [],
     });
 
     await usage.save({ session });
@@ -565,6 +580,18 @@ export async function recordRentalPayment(
   );
   usage.totalRentPaid = totalPaid;
   usage.totalRentDue = totalDue;
+
+  if (!usage.paymentLogs) (usage as any).paymentLogs = [];
+  (usage as any).paymentLogs.push({
+    paymentType: 'RENTAL_PAYMENT',
+    amount: payment.amountPaid,
+    paymentMethod: payment.paymentMethod || 'UPI',
+    transactionRef: payment.transactionRef || 'N/A',
+    billingMonth: payment.billingMonth,
+    notes: payment.notes,
+    recordedBy: new Types.ObjectId(actor.id),
+    paidAt: payment.paidAt || new Date(),
+  });
 
   await usage.save();
 
