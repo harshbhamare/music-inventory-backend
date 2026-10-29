@@ -1736,3 +1736,186 @@ export async function sendDepositDeductionNoticeEmail(params: DepositDeductionNo
     htmlContent: html,
   });
 }
+
+export interface RentalAgreementWelcomeParams {
+  recipientEmail: string;
+  customerName: string;
+  customerContact?: string;
+  issueReference: string;
+  productName: string;
+  monthlyRent: number;
+  securityDeposit: number;
+  depositTransactionRef: string;
+  depositMode: boolean;
+  lockInPeriodMonths: number;
+  expectedReturnDate: string;
+  includedAccessories: string[];
+}
+
+/**
+ * Sends a welcome / agreement confirmation email to the customer when a rental is created.
+ * Summarises instrument, terms, deposit, and monthly rent details.
+ */
+export async function sendRentalAgreementWelcomeEmail(params: RentalAgreementWelcomeParams) {
+  const org = await getOrgInfo();
+  const validRecipients = normalizeRecipients(params.recipientEmail);
+
+  if (validRecipients.length === 0) {
+    console.warn(`[EMAIL] Skipping rental welcome email: invalid recipient "${params.recipientEmail}"`);
+    return null;
+  }
+
+  const storeRecipients = normalizeRecipients(org.contactEmail);
+  const allRecipients = Array.from(new Set([...validRecipients, ...storeRecipients]));
+
+  const returnDate = new Date(params.expectedReturnDate).toLocaleDateString('en-IN', {
+    day: 'numeric', month: 'short', year: 'numeric',
+  });
+
+  const totalDeposit = formatIndianCurrency(params.securityDeposit);
+  const monthlyRent  = formatIndianCurrency(params.monthlyRent);
+
+  const depositModeNote = params.depositMode
+    ? `Your security deposit of ₹${totalDeposit} will be utilised as monthly rent payments (₹${monthlyRent}/mo). No separate monthly payment is required during the lock-in period.`
+    : `Your monthly rent of ₹${monthlyRent} is payable at the start of each month. A receipt will be emailed upon each payment.`;
+
+  const accessoriesHtml = params.includedAccessories.length > 0
+    ? params.includedAccessories.map(a => `<li style="padding: 2px 0;">${a}</li>`).join('')
+    : '<li>No bundled accessories</li>';
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 620px; margin: auto; padding: 28px; border: 1px solid #cbd5e1; border-radius: 14px; background: #ffffff; color: #1e293b;">
+      <div style="border-bottom: 2px solid #f59e0b; padding-bottom: 16px; margin-bottom: 20px;">
+        <h2 style="color: #b45309; margin: 0; font-size: 22px; font-weight: 700;">${org.companyName}</h2>
+        <div style="color: #64748b; font-size: 13px; margin-top: 3px;">${org.storeName} &bull; Rental Agreement Confirmation</div>
+      </div>
+
+      <p style="font-size: 15px; line-height: 1.6; margin-top: 0;">
+        Dear <strong>${params.customerName}</strong>,
+      </p>
+      <p style="font-size: 14px; line-height: 1.6; color: #334155;">
+        Thank you for renting with <strong>${org.storeName}</strong>! Your rental agreement has been confirmed. Here are your full agreement details for reference:
+      </p>
+
+      <div style="margin: 20px 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;">
+        <div style="background: #fefce8; border-bottom: 1px solid #fde68a; padding: 10px 16px; font-size: 12px; font-weight: 700; color: #92400e; text-transform: uppercase; letter-spacing: 0.5px;">
+          Agreement Summary — ${params.issueReference}
+        </div>
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+          <tr><td style="padding: 10px 16px; color: #64748b; border-bottom: 1px solid #f1f5f9; width: 45%;">Instrument Rented:</td><td style="padding: 10px 16px; font-weight: 700; color: #0f172a; border-bottom: 1px solid #f1f5f9;">${params.productName}</td></tr>
+          <tr><td style="padding: 10px 16px; color: #64748b; border-bottom: 1px solid #f1f5f9;">Agreement Reference:</td><td style="padding: 10px 16px; font-weight: 600; border-bottom: 1px solid #f1f5f9;">${params.issueReference}</td></tr>
+          <tr><td style="padding: 10px 16px; color: #64748b; border-bottom: 1px solid #f1f5f9;">Lock-In Period:</td><td style="padding: 10px 16px; font-weight: 600; border-bottom: 1px solid #f1f5f9;">${params.lockInPeriodMonths} Month${params.lockInPeriodMonths > 1 ? 's' : ''}</td></tr>
+          <tr><td style="padding: 10px 16px; color: #64748b; border-bottom: 1px solid #f1f5f9;">Agreement End Date:</td><td style="padding: 10px 16px; font-weight: 600; color: #b45309; border-bottom: 1px solid #f1f5f9;">${returnDate}</td></tr>
+          <tr><td style="padding: 10px 16px; color: #64748b; border-bottom: 1px solid #f1f5f9;">Monthly Rent:</td><td style="padding: 10px 16px; font-weight: 700; color: #d97706; border-bottom: 1px solid #f1f5f9;">₹${monthlyRent} / month</td></tr>
+          <tr><td style="padding: 10px 16px; color: #64748b; border-bottom: 1px solid #f1f5f9;">Security Deposit:</td><td style="padding: 10px 16px; font-weight: 700; color: #4f46e5; border-bottom: 1px solid #f1f5f9;">₹${totalDeposit} (Txn: ${params.depositTransactionRef || 'N/A'})</td></tr>
+          <tr><td style="padding: 10px 16px; color: #64748b;">Payment Mode:</td><td style="padding: 10px 16px; font-weight: 600;">${params.depositMode ? 'Deposit-as-Rent (auto-deducted monthly)' : 'Direct Monthly Payment'}</td></tr>
+        </table>
+      </div>
+
+      <div style="margin: 16px 0; padding: 14px 16px; background: #fffbeb; border: 1px solid #fde68a; border-left: 4px solid #f59e0b; border-radius: 8px; font-size: 13px; color: #78350f;">
+        <strong>Payment Terms:</strong><br/>
+        <span style="display: block; margin-top: 6px; line-height: 1.5;">${depositModeNote}</span>
+      </div>
+
+      ${params.includedAccessories.length > 0 ? `
+      <div style="margin: 16px 0;">
+        <div style="font-size: 12px; font-weight: 700; color: #475569; text-transform: uppercase; margin-bottom: 6px;">Bundled Accessories Included</div>
+        <ul style="margin: 0; padding-left: 20px; font-size: 13px; color: #334155; line-height: 1.6;">${accessoriesHtml}</ul>
+      </div>
+      ` : ''}
+
+      <p style="font-size: 12px; color: #64748b; margin-top: 20px;">
+        For any queries, please contact us at <a href="mailto:${org.contactEmail}" style="color: #f59e0b;">${org.contactEmail}</a>.
+      </p>
+
+      <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #94a3b8; text-align: center;">
+        Thank you for choosing <strong>${org.companyName}</strong>. Happy playing!
+      </div>
+    </div>
+  `;
+
+  return sendNotificationEmail({
+    reportType: REPORT_TYPES.RENTAL_PAYMENT_REMINDER as any,
+    recipients: allRecipients,
+    subject: `Rental Agreement Confirmed — ${params.productName} | ${params.issueReference}`,
+    htmlContent: html,
+  });
+}
+
+export interface DepositExhaustionParams {
+  recipientEmail: string;
+  customerName: string;
+  customerContact?: string;
+  issueReference: string;
+  productName: string;
+  monthlyRent: number;
+  lastBillingMonth: string;
+  sentBy: { name: string; email?: string; role?: string };
+}
+
+/**
+ * Sends a notice to the customer when their security deposit has been fully exhausted.
+ * Informs them that direct monthly rent payments are now required for continuation.
+ */
+export async function sendDepositExhaustionEmail(params: DepositExhaustionParams) {
+  const org = await getOrgInfo();
+  const validRecipients = normalizeRecipients(params.recipientEmail);
+
+  if (validRecipients.length === 0) {
+    console.warn(`[EMAIL] Skipping deposit exhaustion email: invalid recipient "${params.recipientEmail}"`);
+    return null;
+  }
+
+  const storeRecipients = normalizeRecipients(org.contactEmail);
+  const allRecipients = Array.from(new Set([...validRecipients, ...storeRecipients]));
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 620px; margin: auto; padding: 28px; border: 1px solid #fecaca; border-radius: 14px; background: #ffffff; color: #1e293b;">
+      <div style="border-bottom: 2px solid #dc2626; padding-bottom: 16px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between;">
+        <div>
+          <h2 style="color: #b91c1c; margin: 0; font-size: 22px; font-weight: 700;">${org.companyName}</h2>
+          <div style="color: #64748b; font-size: 13px; margin-top: 3px;">${org.storeName} &bull; Deposit Exhaustion Notice</div>
+        </div>
+        <div style="display: inline-block; padding: 6px 14px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 20px; font-size: 11px; font-weight: 800; color: #dc2626; text-transform: uppercase;">
+          ACTION REQUIRED
+        </div>
+      </div>
+
+      <p style="font-size: 15px; line-height: 1.6; margin-top: 0;">
+        Dear <strong>${params.customerName}</strong>,
+      </p>
+      <p style="font-size: 14px; line-height: 1.6; color: #334155;">
+        Your security deposit for the rental of <strong>${params.productName}</strong> (Ref: <strong>${params.issueReference}</strong>) has been <strong style="color: #dc2626;">fully utilised</strong> as of <strong>${params.lastBillingMonth}</strong>.
+      </p>
+
+      <div style="margin: 20px 0; padding: 16px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 10px; font-size: 13px; color: #991b1b;">
+        <strong>What this means:</strong>
+        <ul style="margin: 8px 0 0 0; padding-left: 20px; line-height: 1.8;">
+          <li>Your deposit of has been fully applied to your monthly rent payments.</li>
+          <li>To continue renting, you must now pay <strong>₹${formatIndianCurrency(params.monthlyRent)} per month</strong> directly.</li>
+          <li>Please visit the store or contact us to arrange your next payment before the upcoming due date.</li>
+        </ul>
+      </div>
+
+      <div style="margin: 16px 0; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 10px; padding: 16px; font-size: 13px; color: #1e40af;">
+        <strong>To Continue Your Rental:</strong>
+        <ul style="margin: 8px 0 0 0; padding-left: 18px; line-height: 1.6;">
+          <li><strong>UPI / Store counter</strong> — Pay ₹${formatIndianCurrency(params.monthlyRent)} and share the transaction reference for receipt generation.</li>
+          <li>Contact: <a href="mailto:${org.contactEmail}" style="color: #1d4ed8;">${org.contactEmail}</a></li>
+        </ul>
+      </div>
+
+      <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #94a3b8; display: flex; justify-content: space-between;">
+        <div>Sent by: <strong>${params.sentBy.name}</strong> (${params.sentBy.role || 'Management'})</div>
+        <div><a href="mailto:${org.contactEmail}" style="color: #f59e0b; text-decoration: none;">${org.contactEmail}</a></div>
+      </div>
+    </div>
+  `;
+
+  return sendNotificationEmail({
+    reportType: REPORT_TYPES.RENTAL_DEPOSIT_DEDUCTION_NOTICE as any,
+    recipients: allRecipients,
+    subject: `Deposit Fully Utilised — Continuation Rent Required | ${params.issueReference}`,
+    htmlContent: html,
+  });
+}
