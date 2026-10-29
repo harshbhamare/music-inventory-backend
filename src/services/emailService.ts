@@ -1600,3 +1600,139 @@ export async function sendEmiPaymentReceiptEmail(params: EmiPaymentReceiptParams
   });
 }
 
+
+export interface DepositDeductionNoticeParams {
+  recipientEmail: string;
+  customerName: string;
+  customerContact?: string;
+  issueReference: string;
+  productName: string;
+  assetId?: string;
+  billingMonth: string;
+  deductedAmount: number;
+  depositBalanceBefore: number;
+  depositBalanceAfter: number;
+  depositExhausted: boolean;
+  deductedAt: Date | string;
+  sentBy: { name: string; email?: string; role?: string };
+  notes?: string;
+}
+
+/**
+ * Sends an official rent-deduction notice to the customer when monthly rent is subtracted from deposit.
+ * Triggered by manager/admin clicking "Send Notice Email" from the notification bell.
+ */
+export async function sendDepositDeductionNoticeEmail(params: DepositDeductionNoticeParams) {
+  const org = await getOrgInfo();
+  const validRecipients = normalizeRecipients(params.recipientEmail);
+
+  if (validRecipients.length === 0) {
+    throw new Error(`Invalid recipient email for deposit deduction notice: "${params.recipientEmail}"`);
+  }
+
+  // Always CC the store email for accountability
+  const storeRecipients = normalizeRecipients(org.contactEmail);
+  const allRecipients = Array.from(new Set([...validRecipients, ...storeRecipients]));
+
+  const formattedDate = new Date(params.deductedAt).toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+
+  const balanceColor = params.depositBalanceAfter <= 0 ? '#dc2626' : params.depositBalanceAfter < params.deductedAmount * 2 ? '#d97706' : '#047857';
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 620px; margin: auto; padding: 28px; border: 1px solid #cbd5e1; border-radius: 14px; background: #ffffff; color: #1e293b;">
+      <div style="border-bottom: 2px solid #6366f1; padding-bottom: 16px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between;">
+        <div>
+          <h2 style="color: #4338ca; margin: 0; font-size: 22px; font-weight: 700;">${org.companyName}</h2>
+          <div style="color: #64748b; font-size: 13px; margin-top: 3px;">${org.storeName} &bull; Rental Deposit Statement</div>
+        </div>
+        <div style="display: inline-block; padding: 6px 14px; background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 20px; font-size: 11px; font-weight: 800; color: #4338ca; text-transform: uppercase;">
+          DEPOSIT DEDUCTION
+        </div>
+      </div>
+
+      <p style="font-size: 15px; line-height: 1.6; margin-top: 0;">
+        Dear <strong>${params.customerName}</strong>,
+      </p>
+
+      <p style="font-size: 14px; line-height: 1.6; color: #334155;">
+        This is to inform you that your monthly rental payment for <strong>${params.billingMonth}</strong> has been automatically deducted from your security deposit on file. No separate payment action is required from your end for this period.
+      </p>
+
+      <!-- Deduction Summary Table -->
+      <div style="margin: 20px 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;">
+        <div style="background: #eef2ff; border-bottom: 1px solid #c7d2fe; padding: 12px 16px; display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 12px; font-weight: 700; color: #3730a3; text-transform: uppercase;">Deposit Deduction Statement</span>
+          <span style="font-size: 12px; font-weight: 700; color: #4338ca;">${formattedDate}</span>
+        </div>
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0; width: 45%;">Instrument Rented:</td>
+            <td style="padding: 12px 16px; font-weight: 700; color: #0f172a; border-bottom: 1px solid #e2e8f0;">
+              ${params.productName}${params.assetId ? ` <span style="font-weight: normal; color: #64748b;">(${params.assetId})</span>` : ''}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Agreement Reference:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">${params.issueReference}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Billing Period:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">${params.billingMonth}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 16px; color: #64748b; border-bottom: 1px solid #e2e8f0;">Deposit Balance Before:</td>
+            <td style="padding: 12px 16px; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;">₹${formatIndianCurrency(params.depositBalanceBefore)}</td>
+          </tr>
+          <tr style="background: #fef3c7;">
+            <td style="padding: 13px 16px; font-weight: 700; color: #92400e; border-bottom: 1px solid #fde68a;">Rent Deducted This Month:</td>
+            <td style="padding: 13px 16px; font-size: 17px; font-weight: 800; color: #b45309; border-bottom: 1px solid #fde68a;">
+              − ₹${formatIndianCurrency(params.deductedAmount)}
+            </td>
+          </tr>
+          <tr style="background: ${params.depositBalanceAfter <= 0 ? '#fef2f2' : '#f0fdf4'};">
+            <td style="padding: 13px 16px; font-weight: 700; color: #0f172a;">Remaining Deposit Balance:</td>
+            <td style="padding: 13px 16px; font-size: 17px; font-weight: 800; color: ${balanceColor};">
+              ₹${formatIndianCurrency(params.depositBalanceAfter)}${params.depositBalanceAfter <= 0 ? ' (Fully Utilised)' : ''}
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      ${params.depositExhausted ? `
+      <div style="margin: 16px 0; padding: 14px 16px; background: #fef2f2; border: 1px solid #fecaca; border-left: 4px solid #dc2626; border-radius: 8px; font-size: 13px; color: #991b1b;">
+        <strong>⚠ Deposit Fully Utilised — Continuation Notice</strong><br/>
+        <span style="display: block; margin-top: 6px; color: #7f1d1d; line-height: 1.5;">
+          Your security deposit has been fully utilised for rental payments. To continue renting, monthly rent payments will now need to be made directly. Our team will reach out to discuss continuation terms. Please contact us at 
+          <a href="mailto:${org.contactEmail}" style="color: #dc2626;">${org.contactEmail}</a>.
+        </span>
+      </div>
+      ` : ''}
+
+      ${params.notes ? `
+      <div style="margin: 16px 0; padding: 12px 16px; background: #fefce8; border-left: 4px solid #eab308; border-radius: 6px; font-size: 13px; color: #854d0e;">
+        <strong>Note from Store:</strong> ${params.notes}
+      </div>
+      ` : ''}
+
+      <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 16px; margin: 16px 0; font-size: 12px; color: #475569;">
+        <strong>Accountability Record:</strong> This deduction was processed by <strong>${params.sentBy.name}</strong> (${params.sentBy.role || 'Management'}) on ${formattedDate}.
+        If you have any questions about this statement, please contact us directly at <a href="mailto:${org.contactEmail}" style="color: #4338ca;">${org.contactEmail}</a>.
+      </div>
+
+      <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #94a3b8; text-align: center;">
+        Thank you for renting with <strong>${org.companyName}</strong>!
+      </div>
+    </div>
+  `;
+
+  return sendNotificationEmail({
+    reportType: REPORT_TYPES.RENTAL_DEPOSIT_DEDUCTION_NOTICE as any,
+    recipients: allRecipients,
+    subject: `Rent Deducted from Deposit — ${params.billingMonth} | ${params.productName} (${params.issueReference})`,
+    htmlContent: html,
+  });
+}

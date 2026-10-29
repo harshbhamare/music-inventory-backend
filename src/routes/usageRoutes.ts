@@ -12,6 +12,8 @@ import {
   sendRentalReminder,
   getRentalDuesSummary,
   sendBulkRentalReminders,
+  recordDepositDeduction,
+  sendDepositDeductionNotice,
 } from '../services/internalUsageService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
@@ -24,6 +26,8 @@ import {
   updateRentalPaymentSchema,
   adjustRentalMonthDueSchema,
   addRentalMonthSchema,
+  recordDepositDeductionSchema,
+  sendDepositDeductionNoticeSchema,
 } from '../validators/index.js';
 import { ROLES, USAGE_STATUSES } from '../config/constants.js';
 
@@ -300,6 +304,43 @@ router.post(
       }
 
       return res.status(404).json({ success: false, message: 'Dues record not found.' });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Record monthly rent deduction from security deposit (deposit-mode rentals)
+router.post(
+  '/:id/deposit-deductions',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  validate(recordDepositDeductionSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const usage = await recordDepositDeduction(req.params.id as string, req.body, req.user!);
+      res.json({ success: true, data: { usage } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Send deposit deduction notice email to customer (triggered from notification bell)
+router.post(
+  '/:id/deposit-deductions/:deductionId/send-notice',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  validate(sendDepositDeductionNoticeSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await sendDepositDeductionNotice(
+        req.params.id as string,
+        req.params.deductionId as string,
+        req.user!,
+        { recipientEmail: req.body.recipientEmail, customNote: req.body.customNote }
+      );
+      res.json({ success: true, data: result });
     } catch (err) {
       next(err);
     }

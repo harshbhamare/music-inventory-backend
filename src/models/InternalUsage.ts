@@ -40,7 +40,7 @@ export interface IRentalReminder {
 
 export interface IRentalPaymentLog {
   _id?: Types.ObjectId;
-  paymentType: 'SECURITY_DEPOSIT' | 'RENTAL_PAYMENT';
+  paymentType: 'SECURITY_DEPOSIT' | 'RENTAL_PAYMENT' | 'DEPOSIT_DEDUCTION';
   amount: number;
   paymentMethod: string;
   transactionRef: string;
@@ -48,6 +48,23 @@ export interface IRentalPaymentLog {
   notes?: string;
   recordedBy: Types.ObjectId;
   paidAt: Date;
+}
+
+// One deposit-deduction entry per month when rent is auto-deducted from deposit pool
+export interface IDepositDeduction {
+  _id?: Types.ObjectId;
+  monthIndex: number;
+  billingMonth: string;
+  deductedAmount: number;
+  depositBalanceBefore: number;
+  depositBalanceAfter: number;
+  deductedAt: Date;
+  deductedBy: Types.ObjectId;
+  // noticeSent tracks whether the manager has clicked "Send Notice Email" from the bell
+  noticeSent: boolean;
+  noticeSentAt?: Date;
+  noticeSentBy?: Types.ObjectId;
+  notes?: string;
 }
 
 export interface IInternalUsage extends Document {
@@ -68,6 +85,13 @@ export interface IInternalUsage extends Document {
   isRental: boolean;
   lockInPeriodMonths: number;
   securityDeposit: number;
+  depositTransactionRef: string;   // mandatory txn ref when deposit is collected
+  depositMode: boolean;            // true = rent is deducted from deposit each month
+  depositBalance: number;          // running balance of remaining deposit
+  depositExhausted: boolean;       // true when depositBalance hits 0
+  depositDeductions: IDepositDeduction[]; // audit trail of each monthly deduction
+  // continuationRent: after deposit exhausted, customer continues paying rent separately
+  continuationStartedAt?: Date;
   monthlyRent: number;
   includedAccessories: string[];
   monthlyPayments: IRentalMonthlyPayment[];
@@ -132,7 +156,7 @@ const RentalPaymentLogSchema = new Schema<IRentalPaymentLog>(
   {
     paymentType: {
       type: String,
-      enum: ['SECURITY_DEPOSIT', 'RENTAL_PAYMENT'],
+      enum: ['SECURITY_DEPOSIT', 'RENTAL_PAYMENT', 'DEPOSIT_DEDUCTION'],
       required: true,
     },
     amount: { type: Number, required: true, min: 0 },
@@ -144,6 +168,23 @@ const RentalPaymentLogSchema = new Schema<IRentalPaymentLog>(
     paidAt: { type: Date, default: Date.now },
   },
   { _id: true, timestamps: true }
+);
+
+const DepositDeductionSchema = new Schema<IDepositDeduction>(
+  {
+    monthIndex: { type: Number, required: true },
+    billingMonth: { type: String, required: true },
+    deductedAmount: { type: Number, required: true, min: 0 },
+    depositBalanceBefore: { type: Number, required: true, min: 0 },
+    depositBalanceAfter: { type: Number, required: true, min: 0 },
+    deductedAt: { type: Date, default: Date.now },
+    deductedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    noticeSent: { type: Boolean, default: false },
+    noticeSentAt: { type: Date },
+    noticeSentBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    notes: { type: String, trim: true },
+  },
+  { _id: true }
 );
 
 const InternalUsageSchema = new Schema<IInternalUsage>(
@@ -174,6 +215,12 @@ const InternalUsageSchema = new Schema<IInternalUsage>(
     isRental: { type: Boolean, default: true },
     lockInPeriodMonths: { type: Number, default: 3, min: 1 },
     securityDeposit: { type: Number, default: 0, min: 0 },
+    depositTransactionRef: { type: String, trim: true, default: '' },
+    depositMode: { type: Boolean, default: false },
+    depositBalance: { type: Number, default: 0, min: 0 },
+    depositExhausted: { type: Boolean, default: false },
+    depositDeductions: [DepositDeductionSchema],
+    continuationStartedAt: { type: Date },
     monthlyRent: { type: Number, default: 0, min: 0 },
     includedAccessories: [{ type: String, trim: true }],
     monthlyPayments: [RentalMonthlyPaymentSchema],
