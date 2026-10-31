@@ -959,6 +959,37 @@ export async function adjustRentalMonthDue(
     payment.status = 'DUE';
   }
 
+  // Auto-carry forward any difference to the next month
+  const diff = prevDue - payment.amountDue;
+  if (diff !== 0) {
+    const nextPayment = usage.monthlyPayments.find((p) => p.monthIndex === payment.monthIndex + 1);
+    if (nextPayment) {
+      nextPayment.amountDue = Math.max(0, nextPayment.amountDue + diff);
+      const diffText = diff > 0 ? `+₹${diff}` : `-₹${Math.abs(diff)}`;
+      nextPayment.notes = `${nextPayment.notes ? nextPayment.notes + ' | ' : ''}Auto-adjusted (${diffText}) from Month ${payment.monthIndex} edit`;
+    } else if (diff > 0) {
+      // Append next month automatically so the remaining balance is carried forward
+      const lastPayment = usage.monthlyPayments[usage.monthlyPayments.length - 1];
+      const nextDueDate = new Date(lastPayment.dueDate);
+      nextDueDate.setMonth(nextDueDate.getMonth() + 1);
+      const nextMonthName = nextDueDate.toLocaleString('default', { month: 'short', year: 'numeric' });
+      const nextIndex = payment.monthIndex + 1;
+      usage.monthlyPayments.push({
+        monthIndex: nextIndex,
+        billingMonth: `Month ${nextIndex} (${nextMonthName})`,
+        dueDate: nextDueDate,
+        amountDue: diff,
+        amountPaid: 0,
+        status: 'DUE',
+        notes: `Auto-generated to carry forward ₹${diff} from Month ${payment.monthIndex} adjustment`,
+      });
+      usage.lockInPeriodMonths = Math.max(usage.lockInPeriodMonths || 0, nextIndex);
+      if (!usage.expectedReturnDate || nextDueDate > new Date(usage.expectedReturnDate)) {
+        usage.expectedReturnDate = nextDueDate;
+      }
+    }
+  }
+
   // Recalculate totals
   usage.totalRentPaid = usage.monthlyPayments.reduce((acc, p) => acc + (p.amountPaid || 0), 0);
   usage.totalRentDue = usage.monthlyPayments.reduce(
@@ -966,7 +997,13 @@ export async function adjustRentalMonthDue(
     0
   );
 
+  usage.markModified('monthlyPayments');
   await usage.save();
+
+  await usage.populate('location', 'name code');
+  await usage.populate('issuedBy', 'name email');
+  await usage.populate('items.product', 'name sku brand trackingMode color defaultSellingPrice purchaseCost');
+  await usage.populate('items.serializedItemId', 'assetId manufacturerSerial condition status');
 
   await logAudit({
     actor,
@@ -1022,6 +1059,12 @@ export async function addRentalMonth(
     status: 'DUE',
   });
 
+  // Keep lockInPeriodMonths and expectedReturnDate in sync with added months
+  usage.lockInPeriodMonths = Math.max(usage.lockInPeriodMonths || 0, nextIndex);
+  if (!usage.expectedReturnDate || newDueDate > new Date(usage.expectedReturnDate)) {
+    usage.expectedReturnDate = newDueDate;
+  }
+
   // Re-calculate totals
   usage.totalRentPaid = usage.monthlyPayments.reduce((acc, p) => acc + (p.amountPaid || 0), 0);
   usage.totalRentDue = usage.monthlyPayments.reduce(
@@ -1029,14 +1072,20 @@ export async function addRentalMonth(
     0
   );
 
+  usage.markModified('monthlyPayments');
   await usage.save();
+
+  await usage.populate('location', 'name code');
+  await usage.populate('issuedBy', 'name email');
+  await usage.populate('items.product', 'name sku brand trackingMode color defaultSellingPrice purchaseCost');
+  await usage.populate('items.serializedItemId', 'assetId manufacturerSerial condition status');
 
   await logAudit({
     actor,
     action: 'RENTAL_MONTH_ADDED',
     entityType: 'InternalUsage',
     entityId: usage._id.toString(),
-    afterState: { nextIndex, agreedRent, dueDate: newDueDate },
+    afterState: { nextIndex, agreedRent, dueDate: newDueDate, lockInPeriodMonths: usage.lockInPeriodMonths },
     reason: `Added Month ${nextIndex} to rental schedule for ${usage.assignedPerson}`,
   });
 
@@ -1691,7 +1740,7 @@ export async function updateRentalAgreement(
 ) {
   const usage = await InternalUsage.findById(usageId)
     .populate('location', 'name code')
-    .populate('items.product', 'name sku brand trackingMode color')
+    .populate('items.product', 'name sku brand trackingMode color defaultSellingPrice purchaseCost')
     .populate('items.serializedItemId', 'assetId manufacturerSerial condition status');
 
   if (!usage) {
@@ -1715,33 +1764,45 @@ export async function updateRentalAgreement(
 
   const baseDate = usage.issueDate ? new Date(usage.issueDate) : new Date();
 
-  // If tenure is updated, restructure scheduled months
+  // If tenure is updated, preserve existing scheduled months (including manually added ones)
   if (input.lockInPeriodMonths !== undefined && input.lockInPeriodMonths > 0) {
     const targetTenure = Math.max(1, input.lockInPeriodMonths);
     usage.lockInPeriodMonths = targetTenure;
 
-    // Preserve paid months
-    const paidMonths = (usage.monthlyPayments || []).filter((p) => p.status === 'PAID');
-    const paidCount = paidMonths.length;
-    const remainingCount = Math.max(0, targetTenure - paidCount);
+    const currentPayments = usage.monthlyPayments || [];
+    const paidMonths = currentPayments.filter((p) => p.status === 'PAID');
+    const currentTotal = currentPayments.length;
 
-    const newUnpaidMonths: any[] = [];
-    for (let i = 1; i <= remainingCount; i++) {
-      const m = paidCount + i;
-      const dueDate = addMonthsPreservingDay(baseDate, m);
-      const monthName = dueDate.toLocaleString('en-US', { month: 'short', year: 'numeric' });
-      newUnpaidMonths.push({
-        monthIndex: m,
-        billingMonth: `Month ${m} (${monthName})`,
-        dueDate,
-        amountDue: usage.monthlyRent || 0,
-        amountPaid: 0,
-        status: 'DUE',
-      });
+    if (targetTenure > currentTotal) {
+      // Append extra months up to targetTenure
+      for (let m = currentTotal + 1; m <= targetTenure; m++) {
+        const dueDate = addMonthsPreservingDay(baseDate, m);
+        const monthName = dueDate.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+        usage.monthlyPayments.push({
+          monthIndex: m,
+          billingMonth: `Month ${m} (${monthName})`,
+          dueDate,
+          amountDue: usage.monthlyRent || 0,
+          amountPaid: 0,
+          status: 'DUE',
+        });
+      }
+    } else if (targetTenure < currentTotal) {
+      // If reducing tenure, only remove trailing unpaid months down to targetTenure or paidCount
+      const keepCount = Math.max(paidMonths.length, targetTenure);
+      usage.monthlyPayments = currentPayments.slice(0, keepCount);
     }
 
-    usage.monthlyPayments = [...paidMonths, ...newUnpaidMonths];
-    usage.expectedReturnDate = addMonthsPreservingDay(baseDate, targetTenure);
+    // If monthly rent was updated, update unpaid scheduled months that have zero payments
+    if (input.monthlyRent !== undefined && input.monthlyRent >= 0) {
+      for (const p of usage.monthlyPayments) {
+        if (p.status !== 'PAID' && (p.amountPaid || 0) === 0) {
+          p.amountDue = usage.monthlyRent;
+        }
+      }
+    }
+
+    usage.expectedReturnDate = addMonthsPreservingDay(baseDate, Math.max(targetTenure, usage.monthlyPayments.length));
   }
 
   // If user selected "Pay All Remaining Now"

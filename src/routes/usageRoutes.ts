@@ -61,7 +61,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
       InternalUsage.find(query)
         .populate('location', 'name code')
         .populate('issuedBy', 'name email')
-        .populate('items.product', 'name sku brand trackingMode')
+        .populate('items.product', 'name sku brand trackingMode color defaultSellingPrice purchaseCost')
         .populate('items.serializedItemId', 'assetId manufacturerSerial condition')
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -126,7 +126,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
     const usage = await InternalUsage.findById(req.params.id as string)
       .populate('location', 'name code')
       .populate('issuedBy', 'name email')
-      .populate('items.product', 'name sku brand trackingMode')
+      .populate('items.product', 'name sku brand trackingMode color defaultSellingPrice purchaseCost')
       .populate('items.serializedItemId', 'assetId manufacturerSerial condition status')
       .populate('extensions.approvedBy', 'name email')
       .lean();
