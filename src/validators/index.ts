@@ -306,6 +306,7 @@ export const extendUsageSchema = z.object({
   body: z.object({
     extendedDate: z.string().min(1, 'New return date is required'),
     reason: z.string().min(3, 'Reason for extension is required'),
+    addRentalMonths: z.boolean().optional(),
   }),
 });
 

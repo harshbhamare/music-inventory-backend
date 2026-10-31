@@ -197,7 +197,8 @@ router.post(
         req.params.id as string,
         req.body.extendedDate,
         req.body.reason,
-        req.user!
+        req.user!,
+        { addRentalMonths: req.body.addRentalMonths }
       );
       res.json({ success: true, data: { usage } });
     } catch (err) {

@@ -493,21 +493,36 @@ export async function extendExpectedReturnDate(
   usageId: string,
   newDate: string,
   reason: string,
-  actor: AuthenticatedUser
+  actor: AuthenticatedUser,
+  options?: { addRentalMonths?: boolean }
 ) {
-  const usage = await InternalUsage.findById(usageId);
+  const usage = await InternalUsage.findById(usageId)
+    .populate('location', 'name code')
+    .populate('items.product', 'name sku brand trackingMode color')
+    .populate('items.serializedItemId', 'assetId manufacturerSerial condition status');
+
   if (!usage) {
     throw new AppError('Usage record not found.', 404, 'NOT_FOUND');
   }
 
   const parsedDate = new Date(newDate);
-  if (isNaN(parsedDate.getTime()) || parsedDate <= usage.expectedReturnDate) {
-    throw new AppError('New return date must be later than the current expected return date.', 400, 'INVALID_DATE');
+  if (isNaN(parsedDate.getTime())) {
+    throw new AppError('Invalid date format provided for return extension.', 400, 'INVALID_DATE');
   }
 
+  const currentExpected = new Date(usage.expectedReturnDate);
+  if (parsedDate <= currentExpected) {
+    throw new AppError(
+      `New return date (${parsedDate.toLocaleDateString()}) must be later than the current return deadline (${currentExpected.toLocaleDateString()}).`,
+      400,
+      'INVALID_DATE'
+    );
+  }
+
+  if (!usage.extensions) usage.extensions = [];
   usage.extensions.push({
     extendedDate: parsedDate,
-    reason: reason.trim(),
+    reason: (reason || 'Extended return deadline').trim(),
     approvedBy: new Types.ObjectId(actor.id),
     createdAt: new Date(),
   });
@@ -518,6 +533,42 @@ export async function extendExpectedReturnDate(
     usage.status = USAGE_STATUSES.ACTIVE;
   }
 
+  // If this is a rental agreement and extension spans additional months, extend payment schedule
+  if (usage.isRental && (usage.monthlyRent || 0) > 0 && options?.addRentalMonths !== false) {
+    const baseDate = usage.issueDate ? new Date(usage.issueDate) : new Date();
+    const diffMonths =
+      (parsedDate.getFullYear() - baseDate.getFullYear()) * 12 +
+      (parsedDate.getMonth() - baseDate.getMonth());
+    const targetMonths = Math.max(usage.lockInPeriodMonths || 1, diffMonths);
+
+    if (targetMonths > (usage.monthlyPayments || []).length) {
+      const currentCount = (usage.monthlyPayments || []).length;
+      const additionalMonths = targetMonths - currentCount;
+
+      for (let i = 1; i <= additionalMonths; i++) {
+        const m = currentCount + i;
+        const dueDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + m, 1);
+        const monthName = dueDate.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+        usage.monthlyPayments.push({
+          monthIndex: m,
+          billingMonth: `Month ${m} (${monthName})`,
+          dueDate,
+          amountDue: usage.monthlyRent || 0,
+          amountPaid: 0,
+          status: 'DUE',
+        });
+      }
+
+      usage.lockInPeriodMonths = targetMonths;
+      usage.totalRentDue = (usage.monthlyPayments || []).reduce(
+        (acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)),
+        0
+      );
+      usage.markModified('monthlyPayments');
+    }
+  }
+
+  usage.markModified('extensions');
   await usage.save();
 
   await logAudit({
@@ -1712,6 +1763,9 @@ export async function updateRentalAgreement(
     (acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)),
     0
   );
+
+  usage.markModified('monthlyPayments');
+  usage.markModified('paymentLogs');
 
   await usage.save();
 
