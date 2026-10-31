@@ -34,6 +34,8 @@ export interface IssueInternalUsageInput {
   customerEmail?: string;
   location: string;
   expectedReturnDate: string;
+  startDate?: string;
+  issueDate?: string;
   notes?: string;
   isRental?: boolean;
   lockInPeriodMonths?: number;
@@ -49,6 +51,22 @@ export interface IssueInternalUsageInput {
     serializedItemId?: string;
     issueCondition?: string;
   }>;
+}
+
+export function addMonthsPreservingDay(baseDate: Date | string, monthsToAdd: number): Date {
+  const d = new Date(baseDate);
+  const targetYear = d.getFullYear();
+  const targetMonth = d.getMonth() + monthsToAdd;
+  const targetDay = d.getDate();
+  const maxDaysInTargetMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
+  return new Date(
+    targetYear,
+    targetMonth,
+    Math.min(targetDay, maxDaysInTargetMonth),
+    d.getHours() || 18,
+    d.getMinutes() || 0,
+    0
+  );
 }
 
 export interface ReturnInternalUsageInput {
@@ -210,11 +228,11 @@ export async function issueInstruments(input: IssueInternalUsageInput, actor: Au
     }
 
     // In deposit mode monthly payments are pre-marked as covered by deposit (amountDue = 0 from customer)
+    const baseDate = input.startDate || input.issueDate ? new Date(input.startDate || input.issueDate!) : new Date();
     const monthlyPayments: any[] = [];
     if (monthlyRent > 0) {
-      const now = new Date();
       for (let m = 1; m <= lockInPeriodMonths; m++) {
-        const dueDate = new Date(now.getFullYear(), now.getMonth() + m, 1);
+        const dueDate = addMonthsPreservingDay(baseDate, m);
         const monthName = dueDate.toLocaleString('en-US', { month: 'short', year: 'numeric' });
         monthlyPayments.push({
           monthIndex: m,
@@ -240,7 +258,7 @@ export async function issueInstruments(input: IssueInternalUsageInput, actor: Au
       customerEmail: input.customerEmail?.trim().toLowerCase() || undefined,
       location: locationId,
       items: processedItems,
-      issueDate: new Date(),
+      issueDate: baseDate,
       expectedReturnDate,
       status: USAGE_STATUSES.ACTIVE,
       notes: input.notes,
@@ -547,7 +565,7 @@ export async function extendExpectedReturnDate(
 
       for (let i = 1; i <= additionalMonths; i++) {
         const m = currentCount + i;
-        const dueDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + m, 1);
+        const dueDate = addMonthsPreservingDay(baseDate, m);
         const monthName = dueDate.toLocaleString('en-US', { month: 'short', year: 'numeric' });
         usage.monthlyPayments.push({
           monthIndex: m,
@@ -1710,7 +1728,7 @@ export async function updateRentalAgreement(
     const newUnpaidMonths: any[] = [];
     for (let i = 1; i <= remainingCount; i++) {
       const m = paidCount + i;
-      const dueDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + m, 1);
+      const dueDate = addMonthsPreservingDay(baseDate, m);
       const monthName = dueDate.toLocaleString('en-US', { month: 'short', year: 'numeric' });
       newUnpaidMonths.push({
         monthIndex: m,
@@ -1723,7 +1741,7 @@ export async function updateRentalAgreement(
     }
 
     usage.monthlyPayments = [...paidMonths, ...newUnpaidMonths];
-    usage.expectedReturnDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + targetTenure, 1);
+    usage.expectedReturnDate = addMonthsPreservingDay(baseDate, targetTenure);
   }
 
   // If user selected "Pay All Remaining Now"

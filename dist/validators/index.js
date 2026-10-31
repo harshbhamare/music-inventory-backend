@@ -179,6 +179,8 @@ export const issueInternalUsageSchema = z.object({
         customerEmail: z.string().email().optional().or(z.literal('')),
         location: z.string().min(1, 'Location is required'),
         expectedReturnDate: z.string().min(1, 'Expected return date is required'),
+        startDate: z.string().optional(),
+        issueDate: z.string().optional(),
         notes: z.string().optional(),
         isRental: z.boolean().optional().default(true),
         lockInPeriodMonths: z.number().int().min(1).max(36).optional().default(3),
@@ -196,6 +198,21 @@ export const issueInternalUsageSchema = z.object({
             issueCondition: z.enum(Object.values(ITEM_CONDITIONS)).default(ITEM_CONDITIONS.GOOD),
         }))
             .min(1, 'At least one item must be issued'),
+    }),
+});
+export const updateRentalAgreementSchema = z.object({
+    body: z.object({
+        assignedPerson: z.string().min(1, 'Customer name is required').optional(),
+        assignedPersonContact: z.string().optional(),
+        customerEmail: z.string().email('Valid email required').optional().or(z.literal('')),
+        lockInPeriodMonths: z.number().int().min(1).max(36).optional(),
+        monthlyRent: z.number().min(0).optional(),
+        securityDeposit: z.number().min(0).optional(),
+        depositMode: z.boolean().optional(),
+        notes: z.string().optional(),
+        payAllRemainingNow: z.boolean().optional(),
+        paymentMethod: z.string().optional(),
+        transactionRef: z.string().optional(),
     }),
 });
 export const recordRentalPaymentSchema = z.object({
@@ -253,6 +270,7 @@ export const extendUsageSchema = z.object({
     body: z.object({
         extendedDate: z.string().min(1, 'New return date is required'),
         reason: z.string().min(3, 'Reason for extension is required'),
+        addRentalMonths: z.boolean().optional(),
     }),
 });
 // Adjustments

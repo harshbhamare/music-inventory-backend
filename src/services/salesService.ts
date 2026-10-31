@@ -26,6 +26,22 @@ import {
   sendEmiPaymentReceiptEmail,
 } from './emailService.js';
 
+export function addMonthsPreservingDay(baseDate: Date | string, monthsToAdd: number): Date {
+  const d = new Date(baseDate);
+  const targetYear = d.getFullYear();
+  const targetMonth = d.getMonth() + monthsToAdd;
+  const targetDay = d.getDate();
+  const maxDaysInTargetMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
+  return new Date(
+    targetYear,
+    targetMonth,
+    Math.min(targetDay, maxDaysInTargetMonth),
+    d.getHours() || 10,
+    d.getMinutes() || 0,
+    0
+  );
+}
+
 export interface CreateSaleInput {
   customerName: string;
   customerEmail: string;
@@ -41,6 +57,7 @@ export interface CreateSaleInput {
   isEmi?: boolean;
   downPayment?: number;
   emiTenureMonths?: number;
+  saleDate?: string | Date;
   notes?: string;
   remarks?: string;
   idempotencyKey?: string;
@@ -295,10 +312,10 @@ export async function createSale(input: CreateSaleInput, actor: AuthenticatedUse
       }
 
       if (financedAmount > 0) {
-        const now = new Date();
+        const now = input.saleDate ? new Date(input.saleDate) : new Date();
         let runningAllocated = 0;
         for (let m = 1; m <= emiTenureMonths; m++) {
-          const dueDate = new Date(now.getFullYear(), now.getMonth() + m, 1);
+          const dueDate = addMonthsPreservingDay(now, m);
           const monthName = dueDate.toLocaleString('en-US', { month: 'short', year: 'numeric' });
           let amountDue = monthlyEmiAmount;
           if (m === emiTenureMonths) {
@@ -933,7 +950,7 @@ export async function updateSale(saleId: string, input: UpdateSaleInput, actor: 
 
       for (let i = 1; i <= remainingTenure; i++) {
         const m = paidCount + i;
-        const dueDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + m, 1);
+        const dueDate = addMonthsPreservingDay(baseDate, m);
         const monthName = dueDate.toLocaleString('en-US', { month: 'short', year: 'numeric' });
         const isLast = i === remainingTenure;
         const due = isLast ? Math.max(0, runningRemaining) : newMonthlyDue;

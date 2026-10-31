@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { InternalUsage } from '../models/InternalUsage.js';
 import { UsageReturn } from '../models/UsageReturn.js';
-import { issueInstruments, returnInstruments, extendExpectedReturnDate, recordRentalPayment, updateRentalPayment, adjustRentalMonthDue, addRentalMonth, sendRentalReminder, getRentalDuesSummary, sendBulkRentalReminders, recordDepositDeduction, sendDepositDeductionNotice, } from '../services/internalUsageService.js';
+import { issueInstruments, returnInstruments, extendExpectedReturnDate, recordRentalPayment, updateRentalPayment, adjustRentalMonthDue, addRentalMonth, sendRentalReminder, getRentalDuesSummary, sendBulkRentalReminders, recordDepositDeduction, sendDepositDeductionNotice, updateRentalAgreement, } from '../services/internalUsageService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { validate } from '../middleware/validate.js';
-import { issueInternalUsageSchema, returnInternalUsageSchema, extendUsageSchema, recordRentalPaymentSchema, updateRentalPaymentSchema, adjustRentalMonthDueSchema, addRentalMonthSchema, recordDepositDeductionSchema, sendDepositDeductionNoticeSchema, } from '../validators/index.js';
+import { issueInternalUsageSchema, updateRentalAgreementSchema, returnInternalUsageSchema, extendUsageSchema, recordRentalPaymentSchema, updateRentalPaymentSchema, adjustRentalMonthDueSchema, addRentalMonthSchema, recordDepositDeductionSchema, sendDepositDeductionNoticeSchema, } from '../validators/index.js';
 import { ROLES, USAGE_STATUSES } from '../config/constants.js';
 const router = Router();
 // List internal usage loans
@@ -94,6 +94,16 @@ router.get('/:id', requireAuth, async (req, res, next) => {
         next(err);
     }
 });
+// Update rental agreement terms (tenure, rent, customer info, or settle remaining rent)
+router.put('/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(updateRentalAgreementSchema), async (req, res, next) => {
+    try {
+        const usage = await updateRentalAgreement(req.params.id, req.body, req.user);
+        res.json({ success: true, data: { usage } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
 // Issue equipment for classes / practice / rehearsal
 router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(issueInternalUsageSchema), async (req, res, next) => {
     try {
@@ -117,7 +127,7 @@ router.post('/:id/return', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MAN
 // Extend return date
 router.post('/:id/extend', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(extendUsageSchema), async (req, res, next) => {
     try {
-        const usage = await extendExpectedReturnDate(req.params.id, req.body.extendedDate, req.body.reason, req.user);
+        const usage = await extendExpectedReturnDate(req.params.id, req.body.extendedDate, req.body.reason, req.user, { addRentalMonths: req.body.addRentalMonths });
         res.json({ success: true, data: { usage } });
     }
     catch (err) {

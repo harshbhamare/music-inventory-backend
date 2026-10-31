@@ -206,6 +206,8 @@ export const issueInternalUsageSchema = z.object({
     customerEmail: z.string().email().optional().or(z.literal('')),
     location: z.string().min(1, 'Location is required'),
     expectedReturnDate: z.string().min(1, 'Expected return date is required'),
+    startDate: z.string().optional(),
+    issueDate: z.string().optional(),
     notes: z.string().optional(),
     isRental: z.boolean().optional().default(true),
     lockInPeriodMonths: z.number().int().min(1).max(36).optional().default(3),
