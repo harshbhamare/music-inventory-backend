@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { InternalUsage } from '../models/InternalUsage.js';
 import { UsageReturn } from '../models/UsageReturn.js';
-import { issueInstruments, returnInstruments, extendExpectedReturnDate, recordRentalPayment, updateRentalPayment, adjustRentalMonthDue, addRentalMonth, sendRentalReminder, getRentalDuesSummary, sendBulkRentalReminders, } from '../services/internalUsageService.js';
+import { issueInstruments, returnInstruments, extendExpectedReturnDate, recordRentalPayment, updateRentalPayment, adjustRentalMonthDue, addRentalMonth, sendRentalReminder, getRentalDuesSummary, sendBulkRentalReminders, recordDepositDeduction, sendDepositDeductionNotice, } from '../services/internalUsageService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { validate } from '../middleware/validate.js';
-import { issueInternalUsageSchema, returnInternalUsageSchema, extendUsageSchema, recordRentalPaymentSchema, updateRentalPaymentSchema, adjustRentalMonthDueSchema, addRentalMonthSchema, } from '../validators/index.js';
+import { issueInternalUsageSchema, returnInternalUsageSchema, extendUsageSchema, recordRentalPaymentSchema, updateRentalPaymentSchema, adjustRentalMonthDueSchema, addRentalMonthSchema, recordDepositDeductionSchema, sendDepositDeductionNoticeSchema, } from '../validators/index.js';
 import { ROLES, USAGE_STATUSES } from '../config/constants.js';
 const router = Router();
 // List internal usage loans
@@ -204,6 +204,26 @@ router.post('/:id/send-reminder', requireAuth, requireRole(ROLES.SUPER_ADMIN, RO
             return res.json({ success: true, data: result });
         }
         return res.status(404).json({ success: false, message: 'Dues record not found.' });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Record monthly rent deduction from security deposit (deposit-mode rentals)
+router.post('/:id/deposit-deductions', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(recordDepositDeductionSchema), async (req, res, next) => {
+    try {
+        const usage = await recordDepositDeduction(req.params.id, req.body, req.user);
+        res.json({ success: true, data: { usage } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Send deposit deduction notice email to customer (triggered from notification bell)
+router.post('/:id/deposit-deductions/:deductionId/send-notice', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(sendDepositDeductionNoticeSchema), async (req, res, next) => {
+    try {
+        const result = await sendDepositDeductionNotice(req.params.id, req.params.deductionId, req.user, { recipientEmail: req.body.recipientEmail, customNote: req.body.customNote });
+        res.json({ success: true, data: result });
     }
     catch (err) {
         next(err);

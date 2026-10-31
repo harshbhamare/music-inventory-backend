@@ -10,7 +10,7 @@ import { createStockMovement } from './inventoryService.js';
 import { logAudit } from './auditService.js';
 import { withTransaction } from '../config/db.js';
 import { AppError } from '../middleware/errorHandler.js';
-import { sendRentalPaymentReminderEmail, sendRentalPaymentReceiptEmail, } from './emailService.js';
+import { sendRentalPaymentReminderEmail, sendRentalPaymentReceiptEmail, sendDepositDeductionNoticeEmail, sendRentalAgreementWelcomeEmail, sendDepositExhaustionEmail, } from './emailService.js';
 export async function issueInstruments(input, actor) {
     const locationId = new Types.ObjectId(input.location);
     const location = await StockLocation.findById(locationId);
@@ -114,6 +114,14 @@ export async function issueInstruments(input, actor) {
         const securityDeposit = Math.max(0, input.securityDeposit || 0);
         const monthlyRent = Math.max(0, input.monthlyRent || 0);
         const includedAccessories = input.includedAccessories || [];
+        // Deposit mode: rent is deducted from the security deposit each month instead of collected separately
+        const depositMode = !!(input.depositMode && securityDeposit > 0 && monthlyRent > 0);
+        const depositTransactionRef = input.depositTransactionRef?.trim() || '';
+        // Mandatory: if deposit > 0 a transaction reference must be provided
+        if (securityDeposit > 0 && !depositTransactionRef) {
+            throw new AppError('Transaction reference number is mandatory when collecting a security deposit.', 400, 'DEPOSIT_TXN_REF_REQUIRED');
+        }
+        // In deposit mode monthly payments are pre-marked as covered by deposit (amountDue = 0 from customer)
         const monthlyPayments = [];
         if (monthlyRent > 0) {
             const now = new Date();
@@ -125,13 +133,16 @@ export async function issueInstruments(input, actor) {
                     monthIndex: m,
                     billingMonth: `Month ${m} (${monthName})`,
                     dueDate,
-                    amountDue: monthlyRent,
+                    // In deposit mode, each month's rent will be deducted from deposit — not "due" from customer
+                    amountDue: depositMode ? monthlyRent : monthlyRent,
                     amountPaid: 0,
                     status: 'DUE',
+                    notes: depositMode ? 'Covered by security deposit — awaiting monthly deduction' : undefined,
                 });
             }
         }
-        const totalRentDue = monthlyRent * lockInPeriodMonths;
+        // In deposit mode total rent is covered by deposit; customer owes nothing additional upfront
+        const totalRentDue = depositMode ? 0 : monthlyRent * lockInPeriodMonths;
         const usage = new InternalUsage({
             issueReference,
             purpose: input.purpose,
@@ -149,6 +160,11 @@ export async function issueInstruments(input, actor) {
             isRental,
             lockInPeriodMonths,
             securityDeposit,
+            depositTransactionRef,
+            depositMode,
+            depositBalance: securityDeposit, // starts as full deposit
+            depositExhausted: false,
+            depositDeductions: [],
             monthlyRent,
             includedAccessories,
             monthlyPayments,
@@ -160,10 +176,10 @@ export async function issueInstruments(input, actor) {
                     {
                         paymentType: 'SECURITY_DEPOSIT',
                         amount: securityDeposit,
-                        paymentMethod: 'UPI',
-                        transactionRef: `DEP-${issueReference}`,
+                        paymentMethod: input.depositPaymentMethod || 'CASH',
+                        transactionRef: depositTransactionRef,
                         billingMonth: 'Security Deposit',
-                        notes: 'Initial refundable security deposit paid upon rental handover',
+                        notes: `Refundable security deposit collected at rental handover. Txn: ${depositTransactionRef}`,
                         recordedBy: new Types.ObjectId(actor.id),
                         paidAt: new Date(),
                     },
@@ -186,6 +202,31 @@ export async function issueInstruments(input, actor) {
             afterState: { issueReference, assignedPerson: input.assignedPerson, purpose: input.purpose },
             reason: `Issued equipment for rental / internal activity`,
         });
+        // Send welcome / agreement confirmation email to customer (fire-and-forget, outside transaction)
+        if (input.customerEmail?.trim() && input.customerEmail.includes('@')) {
+            const productName = processedItems[0]?.productName || 'Musical Instrument';
+            setImmediate(async () => {
+                try {
+                    await sendRentalAgreementWelcomeEmail({
+                        recipientEmail: input.customerEmail.trim().toLowerCase(),
+                        customerName: input.assignedPerson.trim(),
+                        customerContact: input.assignedPersonContact?.trim(),
+                        issueReference,
+                        productName,
+                        monthlyRent,
+                        securityDeposit,
+                        depositTransactionRef,
+                        depositMode,
+                        lockInPeriodMonths,
+                        expectedReturnDate: input.expectedReturnDate,
+                        includedAccessories,
+                    });
+                }
+                catch (emailErr) {
+                    console.error('[EMAIL_WELCOME_ERROR] Failed to send rental agreement welcome email:', emailErr);
+                }
+            });
+        }
         return usage;
     });
 }
@@ -365,6 +406,10 @@ export async function recordRentalPayment(usageId, input, actor) {
         // If user clicked confirm payment on an already PAID month (e.g. repeated clicks):
         if (payment.status === 'PAID' && (payment.amountPaid || 0) >= payment.amountDue) {
             throw new AppError(`Payment for ${payment.billingMonth} is already recorded as PAID (₹${payment.amountPaid}). Use the Edit button on this month to modify payment details.`, 400, 'PAYMENT_ALREADY_RECORDED');
+        }
+        // Enforce mandatory transaction reference for all rent payments
+        if (!input.transactionRef || !input.transactionRef.trim()) {
+            throw new AppError('Transaction reference number is mandatory for all rent payments. Please provide the UPI ref, cash receipt no., or bank transfer ref.', 400, 'TXN_REF_REQUIRED');
         }
         // Set the amount paid directly (prevent accidental compound multiplication on rapid duplicate requests)
         payment.amountPaid = input.amount;
@@ -754,6 +799,38 @@ export async function getRentalDuesSummary() {
         const isReturnOverdue = u.expectedReturnDate && new Date(u.expectedReturnDate) < now;
         const unpaidMonths = (u.monthlyPayments || []).filter((p) => p.status !== 'PAID');
         const overdueMonths = unpaidMonths.filter((p) => new Date(p.dueDate) < now);
+        // --- Deposit-mode rentals: surface months that need a deduction notice sent ---
+        if (u.depositMode) {
+            const pendingNoticeDeductions = (u.depositDeductions || []).filter((d) => !d.noticeSent);
+            if (pendingNoticeDeductions.length > 0) {
+                const primaryItem = u.items && u.items.length > 0 ? u.items[0] : null;
+                const prod = primaryItem?.product;
+                const serialUnit = primaryItem?.serializedItemId;
+                items.push({
+                    id: u._id.toString(),
+                    issueReference: u.issueReference,
+                    loanType: 'RENTAL_DEPOSIT',
+                    assignedPerson: u.assignedPerson,
+                    customerEmail: u.customerEmail,
+                    assignedPersonContact: u.assignedPersonContact,
+                    productName: prod?.name || 'Musical Instrument',
+                    assetId: serialUnit?.assetId || serialUnit?.manufacturerSerial,
+                    totalRentDue: 0,
+                    monthlyRent: u.monthlyRent || 0,
+                    depositBalance: u.depositBalance ?? 0,
+                    depositExhausted: u.depositExhausted ?? false,
+                    pendingNoticeDeductions, // array of deductions awaiting notice
+                    nextDueDate: pendingNoticeDeductions[0]?.deductedAt,
+                    daysOverdue: 0,
+                    status: 'DEPOSIT_NOTICE_PENDING',
+                    billingMonth: pendingNoticeDeductions[0]?.billingMonth || 'Deposit Deduction',
+                    remindersSentCount: u.remindersSent?.length || 0,
+                    lastReminderSentAt: undefined,
+                });
+            }
+            // Skip normal due logic for deposit-mode — customer doesn't owe separate rent
+            continue;
+        }
         const pendingRent = u.totalRentDue > 0
             ? u.totalRentDue
             : unpaidMonths.reduce((acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)), 0);
@@ -923,5 +1000,208 @@ export async function sendBulkRentalReminders(usageIds, actor) {
         sentCount,
         skippedCount,
         errors,
+    };
+}
+/**
+ * Records a monthly rent deduction from the customer's security deposit.
+ * Called by manager/admin each month — marks the month as PAID via deposit,
+ * reduces depositBalance, and queues a "notice pending" flag for the bell.
+ */
+export async function recordDepositDeduction(usageId, input, actor) {
+    const usage = await InternalUsage.findById(usageId)
+        .populate('items.product', 'name sku brand')
+        .populate('items.serializedItemId', 'assetId manufacturerSerial');
+    if (!usage)
+        throw new AppError('Rental record not found.', 404, 'RENTAL_NOT_FOUND');
+    if (!usage.depositMode) {
+        throw new AppError('This rental is not in deposit-deduction mode.', 400, 'NOT_DEPOSIT_MODE');
+    }
+    if (usage.depositExhausted) {
+        throw new AppError('Security deposit is fully exhausted. Customer must now pay rent directly.', 400, 'DEPOSIT_EXHAUSTED');
+    }
+    const payment = usage.monthlyPayments.find((p) => p.monthIndex === input.monthIndex);
+    if (!payment) {
+        throw new AppError(`Month ${input.monthIndex} not found in rental schedule.`, 404, 'MONTH_NOT_FOUND');
+    }
+    if (payment.status === 'PAID') {
+        throw new AppError(`Month ${input.monthIndex} (${payment.billingMonth}) is already marked as PAID.`, 400, 'ALREADY_PAID');
+    }
+    const deductAmount = payment.amountDue;
+    const balanceBefore = usage.depositBalance;
+    if (balanceBefore < deductAmount) {
+        throw new AppError(`Insufficient deposit balance (₹${balanceBefore}) to cover rent of ₹${deductAmount}. Mark deposit as exhausted and switch to continuation mode.`, 400, 'INSUFFICIENT_DEPOSIT');
+    }
+    const balanceAfter = balanceBefore - deductAmount;
+    const nowExhausted = balanceAfter <= 0;
+    // Mark this month as paid via deposit
+    payment.amountPaid = deductAmount;
+    payment.paidAt = new Date();
+    payment.paymentMethod = 'DEPOSIT';
+    payment.transactionRef = `DEP-DEDUCT-M${input.monthIndex}-${usage.issueReference}`;
+    payment.status = 'PAID';
+    payment.notes = (payment.notes ? payment.notes + ' | ' : '') + `Rent deducted from security deposit by ${actor.name}`;
+    // Update deposit balance
+    usage.depositBalance = balanceAfter;
+    usage.depositExhausted = nowExhausted;
+    if (nowExhausted && !usage.continuationStartedAt) {
+        usage.continuationStartedAt = new Date();
+    }
+    // Push a deposit deduction record — noticeSent starts false (bell will prompt manager to send email)
+    usage.depositDeductions.push({
+        monthIndex: input.monthIndex,
+        billingMonth: payment.billingMonth,
+        deductedAmount: deductAmount,
+        depositBalanceBefore: balanceBefore,
+        depositBalanceAfter: balanceAfter,
+        deductedAt: new Date(),
+        deductedBy: new Types.ObjectId(actor.id),
+        noticeSent: false,
+        notes: input.notes?.trim(),
+    });
+    // If deposit is now exhausted, auto-generate continuation monthly payment rows
+    // so the manager can track ongoing rent payments from the customer directly.
+    if (nowExhausted) {
+        const lastMonthIndex = Math.max(...usage.monthlyPayments.map((p) => p.monthIndex), 0);
+        const existingIndices = new Set(usage.monthlyPayments.map((p) => p.monthIndex));
+        const totalExpected = usage.lockInPeriodMonths || 0;
+        // Generate any remaining months that haven't been created yet as DUE continuation months
+        const lastDueDate = usage.monthlyPayments.length > 0
+            ? new Date(usage.monthlyPayments[usage.monthlyPayments.length - 1].dueDate)
+            : new Date();
+        for (let m = lastMonthIndex + 1; m <= totalExpected; m++) {
+            if (!existingIndices.has(m)) {
+                const dueDate = new Date(lastDueDate);
+                dueDate.setMonth(dueDate.getMonth() + (m - lastMonthIndex));
+                const monthName = dueDate.toLocaleString('default', { month: 'short', year: 'numeric' });
+                usage.monthlyPayments.push({
+                    monthIndex: m,
+                    billingMonth: `Month ${m} (${monthName}) — Continuation`,
+                    dueDate,
+                    amountDue: usage.monthlyRent || deductAmount,
+                    amountPaid: 0,
+                    status: 'DUE',
+                    notes: 'Deposit exhausted — customer pays directly from this month',
+                });
+            }
+        }
+    }
+    // Recalculate rent totals
+    usage.totalRentPaid = usage.monthlyPayments.reduce((acc, p) => acc + (p.amountPaid || 0), 0);
+    usage.totalRentDue = usage.monthlyPayments.reduce((acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)), 0);
+    // Append to payment log
+    usage.paymentLogs.push({
+        paymentType: 'DEPOSIT_DEDUCTION',
+        amount: deductAmount,
+        paymentMethod: 'DEPOSIT',
+        transactionRef: `DEP-DEDUCT-M${input.monthIndex}-${usage.issueReference}`,
+        billingMonth: payment.billingMonth,
+        notes: `Security deposit deducted for ${payment.billingMonth}. Balance: ₹${balanceBefore} → ₹${balanceAfter}`,
+        recordedBy: new Types.ObjectId(actor.id),
+        paidAt: new Date(),
+    });
+    await usage.save();
+    await logAudit({
+        actor,
+        action: 'RENTAL_DEPOSIT_DEDUCTED',
+        entityType: 'InternalUsage',
+        entityId: usage._id.toString(),
+        afterState: {
+            monthIndex: input.monthIndex,
+            billingMonth: payment.billingMonth,
+            deductedAmount: deductAmount,
+            depositBalanceBefore: balanceBefore,
+            depositBalanceAfter: balanceAfter,
+            depositExhausted: nowExhausted,
+        },
+        reason: `Monthly rent ₹${deductAmount} deducted from deposit for ${payment.billingMonth}. Remaining balance: ₹${balanceAfter}`,
+    });
+    // If deposit just got exhausted, send automatic exhaustion notice email (fire-and-forget)
+    if (nowExhausted && usage.customerEmail && usage.customerEmail.includes('@')) {
+        const prodName = usage.items[0]?.product?.name || 'Musical Instrument';
+        setImmediate(async () => {
+            try {
+                await sendDepositExhaustionEmail({
+                    recipientEmail: usage.customerEmail,
+                    customerName: usage.assignedPerson,
+                    customerContact: usage.assignedPersonContact,
+                    issueReference: usage.issueReference,
+                    productName: prodName,
+                    monthlyRent: usage.monthlyRent || deductAmount,
+                    lastBillingMonth: payment.billingMonth,
+                    sentBy: { name: actor.name, email: actor.email, role: actor.role },
+                });
+            }
+            catch (emailErr) {
+                console.error('[EMAIL_EXHAUSTION_ERROR] Failed to send deposit exhaustion email:', emailErr);
+            }
+        });
+    }
+    return usage;
+}
+/**
+ * Marks a deposit deduction's notice as sent and dispatches the email to the customer.
+ * Called when manager/admin clicks "Send Notice Email" from the notification bell.
+ */
+export async function sendDepositDeductionNotice(usageId, deductionId, actor, options) {
+    const usage = await InternalUsage.findById(usageId)
+        .populate('items.product', 'name sku brand')
+        .populate('items.serializedItemId', 'assetId manufacturerSerial');
+    if (!usage)
+        throw new AppError('Rental record not found.', 404, 'RENTAL_NOT_FOUND');
+    const deductions = usage.depositDeductions;
+    const deduction = deductions.find((d) => d._id?.toString() === deductionId);
+    if (!deduction)
+        throw new AppError('Deposit deduction record not found.', 404, 'DEDUCTION_NOT_FOUND');
+    const recipient = options?.recipientEmail || usage.customerEmail || '';
+    if (!recipient || !recipient.includes('@')) {
+        throw new AppError('No valid customer email address on file. Please add the customer email to send a notice.', 400, 'NO_EMAIL');
+    }
+    const prodName = usage.items[0]?.product?.name || 'Musical Instrument';
+    const assetId = usage.items[0]?.serializedItemId?.assetId ||
+        usage.items[0]?.serializedItemId?.manufacturerSerial;
+    await sendDepositDeductionNoticeEmail({
+        recipientEmail: recipient,
+        customerName: usage.assignedPerson,
+        customerContact: usage.assignedPersonContact,
+        issueReference: usage.issueReference,
+        productName: prodName,
+        assetId,
+        billingMonth: deduction.billingMonth,
+        deductedAmount: deduction.deductedAmount,
+        depositBalanceBefore: deduction.depositBalanceBefore,
+        depositBalanceAfter: deduction.depositBalanceAfter,
+        depositExhausted: usage.depositExhausted ?? false,
+        deductedAt: deduction.deductedAt,
+        sentBy: { name: actor.name, email: actor.email, role: actor.role },
+        notes: options?.customNote,
+    });
+    // Mark notice as sent
+    deduction.noticeSent = true;
+    deduction.noticeSentAt = new Date();
+    deduction.noticeSentBy = new Types.ObjectId(actor.id);
+    // Also add to remindersSent for full audit trail
+    usage.remindersSent.push({
+        sentAt: new Date(),
+        sentTo: recipient,
+        channel: 'EMAIL',
+        message: `Deposit deduction notice sent for ${deduction.billingMonth} (₹${deduction.deductedAmount}). Remaining balance: ₹${deduction.depositBalanceAfter}`,
+        sentBy: new Types.ObjectId(actor.id),
+    });
+    await usage.save();
+    await logAudit({
+        actor,
+        action: 'DEPOSIT_DEDUCTION_NOTICE_SENT',
+        entityType: 'InternalUsage',
+        entityId: usage._id.toString(),
+        afterState: { deductionId, billingMonth: deduction.billingMonth, sentTo: recipient },
+        reason: `Deposit deduction notice email sent to ${recipient} for ${deduction.billingMonth}`,
+    });
+    return {
+        success: true,
+        sentTo: recipient,
+        billingMonth: deduction.billingMonth,
+        deductedAmount: deduction.deductedAmount,
+        depositBalanceAfter: deduction.depositBalanceAfter,
+        usage,
     };
 }

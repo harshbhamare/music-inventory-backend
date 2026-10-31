@@ -285,21 +285,32 @@ export async function sendInvoicePdfEmail(params: SendInvoiceEmailParams) {
 
   const itemsHtml = (sale.lineItems || [])
     .map(
-      (li: any) => `
+      (li: any) => {
+        const itemDiscount = (li.discount || 0) * (li.quantity || 1);
+        const itemTotal = li.total ?? Math.max(0, li.quantity * li.unitPrice - itemDiscount);
+        return `
       <tr>
         <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-weight: 600;">
           ${li.product?.name || 'Musical Instrument'}
           ${li.product?.color ? `<span style="color:#64748b; font-size:11px;"> (${li.product.color})</span>` : ''}
+          ${itemDiscount > 0 ? `<div style="color: #059669; font-size: 11px; font-weight: 600; margin-top: 2px;">Discount Offered: -${org.currencySymbol}${formatIndianCurrency(itemDiscount)} (${org.currencySymbol}${formatIndianCurrency(li.discount || 0)}/unit)</div>` : ''}
         </td>
         <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; font-family: monospace; text-align: center;">${li.hsnCode || '92029000'}</td>
         <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; text-align: center; font-weight: 700;">${li.quantity} Nos.</td>
         <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; text-align: right;">${org.currencySymbol}${formatIndianCurrency(li.unitPrice)}</td>
-        <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; text-align: right; font-weight: 700;">${org.currencySymbol}${formatIndianCurrency(li.total || (li.quantity * li.unitPrice))}</td>
-      </tr>`
+        <td style="padding: 10px; border-bottom: 1px solid #e2e8f0; text-align: right; font-weight: 700;">${org.currencySymbol}${formatIndianCurrency(itemTotal)}</td>
+      </tr>`;
+      }
     )
     .join('');
 
-  const html = `
+      const grossSubtotal = sale.subtotal || (sale.lineItems || []).reduce((acc: number, li: any) => acc + (li.unitPrice || 0) * (li.quantity || 1), 0);
+      const discountTotal = sale.discountTotal ?? (sale.lineItems || []).reduce((acc: number, li: any) => acc + (li.discount || 0) * (li.quantity || 1), 0);
+      const taxableAmount = sale.taxableAmount ?? Math.max(0, grossSubtotal - discountTotal);
+      const cgstAmount = sale.cgstAmount ?? Math.round(taxableAmount * 0.09 * 100) / 100;
+      const sgstAmount = sale.sgstAmount ?? Math.round(taxableAmount * 0.09 * 100) / 100;
+
+      const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 650px; margin: auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
       <div style="border-bottom: 2px solid #f59e0b; padding-bottom: 16px; margin-bottom: 20px;">
         <h2 style="color: #0f172a; margin: 0; font-size: 22px; font-weight: 800; letter-spacing: 0.5px;">${org.companyName.toUpperCase()}</h2>
@@ -369,9 +380,32 @@ export async function sendInvoicePdfEmail(params: SendInvoiceEmailParams) {
         </tbody>
       </table>
 
-      <div style="margin-top: 16px; padding-top: 12px; border-top: 2px solid #e2e8f0; text-align: right; font-size: 14px;">
-        <span style="color: #64748b; font-weight: 600;">Grand Total: </span>
-        <strong style="color: #0f172a; font-size: 18px; margin-left: 8px;">${org.currencySymbol}${formatIndianCurrency(sale.grandTotal)}</strong>
+      <div style="margin-top: 16px; padding-top: 12px; border-top: 2px solid #e2e8f0; text-align: right; font-size: 13px;">
+        <div style="margin-bottom: 4px; color: #64748b;">
+          <span>Subtotal: </span>
+          <strong style="color: #0f172a;">${org.currencySymbol}${formatIndianCurrency(discountTotal > 0 ? grossSubtotal : taxableAmount)}</strong>
+        </div>
+        ${
+          discountTotal > 0
+            ? `
+        <div style="margin-bottom: 4px; color: #059669; font-weight: 600;">
+          <span>Less: Discount Offered: </span>
+          <strong>(-) ${org.currencySymbol}${formatIndianCurrency(discountTotal)}</strong>
+        </div>
+        <div style="margin-bottom: 4px; color: #64748b;">
+          <span>Taxable Amount: </span>
+          <strong style="color: #0f172a;">${org.currencySymbol}${formatIndianCurrency(taxableAmount)}</strong>
+        </div>`
+            : ''
+        }
+        <div style="margin-bottom: 4px; color: #64748b;">
+          <span>CGST (9%) + SGST (9%): </span>
+          <strong style="color: #0f172a;">${org.currencySymbol}${formatIndianCurrency(cgstAmount + sgstAmount)}</strong>
+        </div>
+        <div style="margin-top: 8px; padding-top: 6px; border-top: 1px solid #e2e8f0;">
+          <span style="color: #64748b; font-weight: 600; font-size: 14px;">Grand Total: </span>
+          <strong style="color: #0f172a; font-size: 18px; margin-left: 8px;">${org.currencySymbol}${formatIndianCurrency(sale.grandTotal)}</strong>
+        </div>
         ${
           sale.isEmi
             ? `

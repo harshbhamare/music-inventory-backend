@@ -183,6 +183,9 @@ export const issueInternalUsageSchema = z.object({
         isRental: z.boolean().optional().default(true),
         lockInPeriodMonths: z.number().int().min(1).max(36).optional().default(3),
         securityDeposit: z.number().min(0).optional().default(0),
+        depositTransactionRef: z.string().optional(),
+        depositMode: z.boolean().optional().default(false),
+        depositPaymentMethod: z.enum(Object.values(PAYMENT_METHODS)).optional().default(PAYMENT_METHODS.CASH),
         monthlyRent: z.number().min(0).optional().default(0),
         includedAccessories: z.array(z.string()).optional().default([]),
         items: z
@@ -202,7 +205,7 @@ export const recordRentalPaymentSchema = z.object({
         paymentId: z.string().optional(),
         monthIndex: z.number().optional(),
         paymentMethod: z.enum(Object.values(PAYMENT_METHODS)).default(PAYMENT_METHODS.UPI),
-        transactionRef: z.string().optional(),
+        transactionRef: z.string().min(1, 'Transaction reference number is mandatory for all rent payments'),
         notes: z.string().optional(),
         adjustNextMonth: z.boolean().optional(),
     }),
@@ -294,5 +297,18 @@ export const releaseMaintenanceSchema = z.object({
         repairDetails: z.string().min(3, 'Repair details required'),
         cost: z.number().min(0).default(0),
         notes: z.string().optional(),
+    }),
+});
+export const recordDepositDeductionSchema = z.object({
+    body: z.object({
+        monthIndex: z.number().int().min(1, 'Month index is required'),
+        billingMonth: z.string().min(1, 'Billing month label is required'),
+        notes: z.string().optional(),
+    }),
+});
+export const sendDepositDeductionNoticeSchema = z.object({
+    body: z.object({
+        recipientEmail: z.string().email('Valid recipient email is required').optional(),
+        customNote: z.string().optional(),
     }),
 });

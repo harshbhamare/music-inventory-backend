@@ -15,6 +15,7 @@ import adjustmentRoutes from './routes/adjustmentRoutes.js';
 import movementRoutes from './routes/movementRoutes.js';
 import reportRoutes from './routes/reportRoutes.js';
 import metaRoutes from './routes/metaRoutes.js';
+import importRoutes from './routes/importRoutes.js';
 export function createApp() {
     const app = express();
     // Security & utilities
@@ -70,6 +71,7 @@ export function createApp() {
     v1.use('/movements', movementRoutes);
     v1.use('/reports', reportRoutes);
     v1.use('/meta', metaRoutes);
+    v1.use('/import', importRoutes);
     app.use('/api/v1', v1);
     app.use('/v1', v1);
     // 404 handler

@@ -214,15 +214,13 @@ export async function issueInstruments(input: IssueInternalUsageInput, actor: Au
     if (monthlyRent > 0) {
       const now = new Date();
       for (let m = 1; m <= lockInPeriodMonths; m++) {
-        const dueDate = new Date(now);
-        dueDate.setMonth(now.getMonth() + (m - 1));
-        const monthName = dueDate.toLocaleString('default', { month: 'short', year: 'numeric' });
+        const dueDate = new Date(now.getFullYear(), now.getMonth() + m, 1);
+        const monthName = dueDate.toLocaleString('en-US', { month: 'short', year: 'numeric' });
         monthlyPayments.push({
           monthIndex: m,
           billingMonth: `Month ${m} (${monthName})`,
           dueDate,
-          // In deposit mode, each month's rent will be deducted from deposit — not "due" from customer
-          amountDue: depositMode ? monthlyRent : monthlyRent,
+          amountDue: monthlyRent,
           amountPaid: 0,
           status: 'DUE',
           notes: depositMode ? 'Covered by security deposit — awaiting monthly deduction' : undefined,
@@ -586,13 +584,32 @@ export async function recordRentalPayment(
       );
     }
 
-    // Set the amount paid directly (prevent accidental compound multiplication on rapid duplicate requests)
-    payment.amountPaid = input.amount;
-    payment.paidAt = new Date();
-    payment.paymentMethod = input.paymentMethod || 'UPI';
-    payment.transactionRef = input.transactionRef?.trim() || payment.transactionRef;
-    payment.notes = input.notes?.trim() || payment.notes;
-    payment.status = payment.amountPaid >= payment.amountDue ? 'PAID' : 'DUE';
+    // Allocate payment sequentially across unpaid months (allows paying multiple months or directly at once)
+    let remainingPaymentToAllocate = input.amount;
+    const unpaidPayments = usage.monthlyPayments.filter((p) => p.status !== 'PAID');
+    const targetList = payment && !unpaidPayments.includes(payment)
+      ? [payment, ...unpaidPayments]
+      : (payment ? [payment, ...unpaidPayments.filter((p) => p !== payment)] : unpaidPayments);
+
+    for (const p of targetList) {
+      if (remainingPaymentToAllocate <= 0) break;
+      const currentUnpaidOnMonth = Math.max(0, p.amountDue - (p.amountPaid || 0));
+      const payThisMonth = Math.min(remainingPaymentToAllocate, currentUnpaidOnMonth);
+      p.amountPaid = (p.amountPaid || 0) + payThisMonth;
+      p.paidAt = new Date();
+      p.paymentMethod = input.paymentMethod || 'UPI';
+      p.transactionRef = input.transactionRef?.trim() || p.transactionRef;
+      p.notes = input.notes?.trim() || p.notes;
+      if (p.amountPaid >= p.amountDue) {
+        p.status = 'PAID';
+      }
+      remainingPaymentToAllocate -= payThisMonth;
+    }
+
+    // If extra amount remains beyond all scheduled dues, credit it to the target payment
+    if (remainingPaymentToAllocate > 0 && payment) {
+      payment.amountPaid = (payment.amountPaid || 0) + remainingPaymentToAllocate;
+    }
   } else {
     // No target month was found. If no month was specified and all months are paid, DO NOT silently append duplicate months!
     if (!input.billingMonth && !input.monthIndex && !input.paymentId) {
@@ -1585,3 +1602,134 @@ export async function sendDepositDeductionNotice(
     usage,
   };
 }
+
+export async function updateRentalAgreement(
+  usageId: string,
+  input: {
+    assignedPerson?: string;
+    assignedPersonContact?: string;
+    customerEmail?: string;
+    lockInPeriodMonths?: number;
+    monthlyRent?: number;
+    securityDeposit?: number;
+    depositMode?: boolean;
+    notes?: string;
+    payAllRemainingNow?: boolean;
+    paymentMethod?: string;
+    transactionRef?: string;
+  },
+  actor: AuthenticatedUser
+) {
+  const usage = await InternalUsage.findById(usageId)
+    .populate('location', 'name code')
+    .populate('items.product', 'name sku brand trackingMode color')
+    .populate('items.serializedItemId', 'assetId manufacturerSerial condition status');
+
+  if (!usage) {
+    throw new AppError('Rental record not found.', 404, 'RENTAL_NOT_FOUND');
+  }
+
+  if (input.assignedPerson) usage.assignedPerson = input.assignedPerson.trim();
+  if (input.assignedPersonContact !== undefined) usage.assignedPersonContact = input.assignedPersonContact.trim();
+  if (input.customerEmail !== undefined) usage.customerEmail = input.customerEmail.trim().toLowerCase() || undefined;
+  if (input.notes !== undefined) usage.notes = input.notes.trim();
+
+  if (input.monthlyRent !== undefined && input.monthlyRent >= 0) {
+    usage.monthlyRent = Math.round(input.monthlyRent);
+  }
+  if (input.securityDeposit !== undefined && input.securityDeposit >= 0) {
+    usage.securityDeposit = Math.round(input.securityDeposit);
+  }
+  if (input.depositMode !== undefined) {
+    usage.depositMode = input.depositMode;
+  }
+
+  const baseDate = usage.issueDate ? new Date(usage.issueDate) : new Date();
+
+  // If tenure is updated, restructure scheduled months
+  if (input.lockInPeriodMonths !== undefined && input.lockInPeriodMonths > 0) {
+    const targetTenure = Math.max(1, input.lockInPeriodMonths);
+    usage.lockInPeriodMonths = targetTenure;
+
+    // Preserve paid months
+    const paidMonths = (usage.monthlyPayments || []).filter((p) => p.status === 'PAID');
+    const paidCount = paidMonths.length;
+    const remainingCount = Math.max(0, targetTenure - paidCount);
+
+    const newUnpaidMonths: any[] = [];
+    for (let i = 1; i <= remainingCount; i++) {
+      const m = paidCount + i;
+      const dueDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + m, 1);
+      const monthName = dueDate.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+      newUnpaidMonths.push({
+        monthIndex: m,
+        billingMonth: `Month ${m} (${monthName})`,
+        dueDate,
+        amountDue: usage.monthlyRent || 0,
+        amountPaid: 0,
+        status: 'DUE',
+      });
+    }
+
+    usage.monthlyPayments = [...paidMonths, ...newUnpaidMonths];
+    usage.expectedReturnDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + targetTenure, 1);
+  }
+
+  // If user selected "Pay All Remaining Now"
+  if (input.payAllRemainingNow) {
+    const txnRef = (input.transactionRef || '').trim() || `SETTLE-${usage.issueReference}`;
+    const pMethod = input.paymentMethod || 'UPI';
+    const now = new Date();
+
+    for (const p of usage.monthlyPayments) {
+      if (p.status !== 'PAID') {
+        const remainingDue = Math.max(0, p.amountDue - (p.amountPaid || 0));
+        p.amountPaid = p.amountDue;
+        p.status = 'PAID';
+        p.paidAt = now;
+        p.paymentMethod = pMethod;
+        p.transactionRef = txnRef;
+        p.notes = (p.notes ? p.notes + ' | ' : '') + 'Paid in full via agreement settlement';
+
+        if (!usage.paymentLogs) usage.paymentLogs = [];
+        usage.paymentLogs.push({
+          paymentType: 'MONTHLY_RENT',
+          amount: remainingDue,
+          paymentMethod: pMethod,
+          transactionRef: txnRef,
+          billingMonth: p.billingMonth,
+          notes: 'Full rental buyout/settlement',
+          recordedBy: new Types.ObjectId(actor.id),
+          recordedAt: now,
+        } as any);
+      }
+    }
+  }
+
+  // Recalculate totals
+  usage.totalRentPaid = (usage.monthlyPayments || []).reduce((acc, p) => acc + (p.amountPaid || 0), 0);
+  usage.totalRentDue = (usage.monthlyPayments || []).reduce(
+    (acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)),
+    0
+  );
+
+  await usage.save();
+
+  await logAudit({
+    actor,
+    action: 'UPDATE_RENTAL_AGREEMENT',
+    entityType: 'InternalUsage',
+    entityId: usage._id.toString(),
+    afterState: {
+      issueReference: usage.issueReference,
+      lockInPeriodMonths: usage.lockInPeriodMonths,
+      monthlyRent: usage.monthlyRent,
+      totalRentDue: usage.totalRentDue,
+      totalRentPaid: usage.totalRentPaid,
+    },
+    reason: `Updated rental agreement terms / settlement for ${usage.issueReference}`,
+  });
+
+  return usage;
+}
+

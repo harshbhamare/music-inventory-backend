@@ -265,9 +265,12 @@ export async function generateTaxInvoicePdf(sale) {
                 const hsn = li.hsnCode || li.product?.hsnCode || '92029000';
                 const qty = li.quantity || 1;
                 const unitPrice = li.unitPrice || 0;
-                const totalAmount = li.total || (qty * unitPrice);
+                const discountPerUnit = li.discount || 0;
+                const itemDiscount = discountPerUnit * qty;
+                const totalAmount = li.total ?? Math.max(0, (qty * unitPrice) - itemDiscount);
                 const hasSerials = li.serializedItemIds && li.serializedItemIds.length > 0;
-                const rowHeight = hasSerials ? 42 : 36;
+                const hasDiscount = itemDiscount > 0;
+                const rowHeight = hasSerials || hasDiscount ? 42 : 36;
                 // Row background
                 doc.rect(leftMargin, currentY, contentWidth, rowHeight).fill('#ffffff');
                 // Draw vertical cell border lines in light gray
@@ -282,11 +285,14 @@ export async function generateTaxInvoicePdf(sale) {
                 doc.font(fonts.bold).fontSize(8.5).fillColor('#0f172a');
                 doc.text(`${prodName}${brand}${color}`, cols.desc.x + 8, currentY + 7, { width: cols.desc.w - 12 });
                 let subLine = `HSN/SAC- ${hsn}`;
+                if (hasDiscount) {
+                    subLine += ` | Discount: -${fonts.symbolPrefix}${formatIndianCurrency(itemDiscount)}`;
+                }
                 if (hasSerials) {
                     const serials = li.serializedItemIds.map((s) => s.assetId || s.manufacturerSerial || s).join(', ');
                     subLine += ` | SN: ${serials}`;
                 }
-                doc.font(fonts.regular).fontSize(7.5).fillColor('#64748b');
+                doc.font(fonts.regular).fontSize(7.5).fillColor(hasDiscount ? '#059669' : '#64748b');
                 doc.text(subLine, cols.desc.x + 8, currentY + 20, { width: cols.desc.w - 12 });
                 // 3. HSN/SAC
                 doc.font(fonts.regular).fontSize(8.5).fillColor('#334155');
@@ -305,7 +311,9 @@ export async function generateTaxInvoicePdf(sale) {
             // 6. Payment Method & Totals Section
             const summaryStartY = currentY + 16;
             const isEmiSale = sale.isEmi === true || sale.saleType === 'EMI';
-            const taxableAmount = sale.taxableAmount || (sale.subtotal - (sale.discountTotal || 0));
+            const grossSubtotal = sale.subtotal || lineItems.reduce((acc, li) => acc + (li.unitPrice || 0) * (li.quantity || 1), 0);
+            const discountTotal = sale.discountTotal ?? lineItems.reduce((acc, li) => acc + (li.discount || 0) * (li.quantity || 1), 0);
+            const taxableAmount = sale.taxableAmount ?? Math.max(0, grossSubtotal - discountTotal);
             const cgstAmount = sale.cgstAmount || Math.round(taxableAmount * 0.09 * 100) / 100;
             const sgstAmount = sale.sgstAmount || Math.round(taxableAmount * 0.09 * 100) / 100;
             const grandTotal = Math.round(sale.grandTotal || (taxableAmount + cgstAmount + sgstAmount));
@@ -345,12 +353,19 @@ export async function generateTaxInvoicePdf(sale) {
                 doc.font(fonts.regular).fontSize(8.5).fillColor('#334155').text(paymentMethod, leftMargin, summaryStartY + 14);
             }
             // Right: Totals
-            const renderTotalLine = (label, amount) => {
-                doc.font(fonts.regular).fontSize(8.5).fillColor('#334155').text(label, totalsBoxX, totY);
-                doc.font(fonts.regular).fontSize(8.5).fillColor('#0f172a').text(`${fonts.symbolPrefix}${formatIndianCurrency(amount)}`, totalsBoxX, totY, { width: totalsWidth, align: 'right' });
-                totY += 15;
+            const renderTotalLine = (label, amount, isDiscount = false) => {
+                doc.font(fonts.regular).fontSize(8.5).fillColor(isDiscount ? '#059669' : '#334155').text(label, totalsBoxX, totY);
+                doc.font(fonts.regular).fontSize(8.5).fillColor(isDiscount ? '#059669' : '#0f172a').text(`${isDiscount ? '(-) ' : ''}${fonts.symbolPrefix}${formatIndianCurrency(amount)}`, totalsBoxX, totY, { width: totalsWidth, align: 'right' });
+                totY += 14;
             };
-            renderTotalLine('Subtotal', taxableAmount);
+            if (discountTotal > 0) {
+                renderTotalLine('Subtotal', grossSubtotal);
+                renderTotalLine('Less: Discount Offered', discountTotal, true);
+                renderTotalLine('Taxable Amount', taxableAmount);
+            }
+            else {
+                renderTotalLine('Subtotal', taxableAmount);
+            }
             renderTotalLine('CGST (9%)', cgstAmount);
             renderTotalLine('SGST (9%)', sgstAmount);
             if (isEmiSale) {

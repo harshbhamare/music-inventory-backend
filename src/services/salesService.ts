@@ -298,9 +298,8 @@ export async function createSale(input: CreateSaleInput, actor: AuthenticatedUse
         const now = new Date();
         let runningAllocated = 0;
         for (let m = 1; m <= emiTenureMonths; m++) {
-          const dueDate = new Date(now);
-          dueDate.setMonth(now.getMonth() + m);
-          const monthName = dueDate.toLocaleString('default', { month: 'short', year: 'numeric' });
+          const dueDate = new Date(now.getFullYear(), now.getMonth() + m, 1);
+          const monthName = dueDate.toLocaleString('en-US', { month: 'short', year: 'numeric' });
           let amountDue = monthlyEmiAmount;
           if (m === emiTenureMonths) {
             amountDue = Math.max(0, financedAmount - runningAllocated);
@@ -422,6 +421,9 @@ export async function createSale(input: CreateSaleInput, actor: AuthenticatedUse
         reason: `Payment of ₹${paymentLogs[0].amount} recorded for invoice ${invoiceNumber}`,
       });
     }
+
+    await sale.populate('lineItems.product', 'name sku brand color modelName defaultSellingPrice hsnCode');
+    await sale.populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition');
 
     return sale;
   });
@@ -621,12 +623,32 @@ export async function recordEmiPayment(
     throw new AppError('No eligible unpaid EMI installment found for this sale.', 400, 'NO_UNPAID_EMI');
   }
 
-  payment.amountPaid = Math.round(input.amount);
-  payment.paidAt = new Date();
-  payment.paymentMethod = input.paymentMethod || 'UPI';
-  payment.transactionRef = txnRef;
-  payment.notes = input.notes?.trim() || payment.notes;
-  payment.status = payment.amountPaid >= payment.amountDue ? 'PAID' : 'DUE';
+  // Multi-installment sequential allocation: allows paying directly at once or settling multiple months
+  let remainingPaymentToAllocate = Math.round(input.amount);
+  const unpaidInstallments = sale.emiPayments.filter((p) => p.status !== 'PAID');
+  const targetList = payment && !unpaidInstallments.includes(payment)
+    ? [payment, ...unpaidInstallments]
+    : (payment ? [payment, ...unpaidInstallments.filter((p) => p !== payment)] : unpaidInstallments);
+
+  for (const p of targetList) {
+    if (remainingPaymentToAllocate <= 0) break;
+    const currentUnpaidOnMonth = Math.max(0, p.amountDue - (p.amountPaid || 0));
+    const payThisMonth = Math.min(remainingPaymentToAllocate, currentUnpaidOnMonth);
+    p.amountPaid = (p.amountPaid || 0) + payThisMonth;
+    p.paidAt = new Date();
+    p.paymentMethod = input.paymentMethod || 'UPI';
+    p.transactionRef = txnRef;
+    p.notes = input.notes?.trim() || p.notes;
+    if (p.amountPaid >= p.amountDue) {
+      p.status = 'PAID';
+    }
+    remainingPaymentToAllocate -= payThisMonth;
+  }
+
+  // If there is still extra amount remaining beyond all scheduled dues, credit it to the target payment
+  if (remainingPaymentToAllocate > 0 && payment) {
+    payment.amountPaid = (payment.amountPaid || 0) + remainingPaymentToAllocate;
+  }
 
   // Recalculate totals with clean whole-rupee rounding
   sale.totalEmiPaid = Math.round((sale.downPayment || 0) + sale.emiPayments.reduce((acc, p) => acc + (p.amountPaid || 0), 0));
@@ -875,7 +897,7 @@ export async function updateSale(saleId: string, input: UpdateSaleInput, actor: 
     sale.grandTotal = Math.round(sale.taxableAmount + sale.taxTotal);
   }
 
-  // If EMI sale, recalculate financing cleanly without points
+  // If EMI sale, recalculate financing cleanly without points and restructure schedule
   if (sale.isEmi) {
     if (input.downPayment !== undefined) {
       sale.downPayment = Math.round(Math.min(sale.grandTotal, Math.max(0, input.downPayment)));
@@ -884,38 +906,54 @@ export async function updateSale(saleId: string, input: UpdateSaleInput, actor: 
       sale.emiTenureMonths = input.emiTenureMonths;
     }
     const financedAmount = Math.max(0, sale.grandTotal - (sale.downPayment || 0));
-    sale.monthlyEmiAmount = sale.emiTenureMonths > 0 ? Math.round(financedAmount / sale.emiTenureMonths) : 0;
+    const targetTenure = Math.max(1, sale.emiTenureMonths || 1);
+    sale.emiTenureMonths = targetTenure;
+    sale.monthlyEmiAmount = targetTenure > 0 ? Math.round(financedAmount / targetTenure) : 0;
 
-    // Recalculate unpaid installments while keeping already paid installments
+    // Preserve already paid installments
     const paidInstallments = (sale.emiPayments || []).filter((p) => p.status === 'PAID');
     const alreadyPaidAmount = paidInstallments.reduce((sum, p) => sum + (p.amountPaid || 0), 0);
     const remainingToSchedule = Math.max(0, financedAmount - alreadyPaidAmount);
-    const unpaidList = (sale.emiPayments || []).filter((p) => p.status !== 'PAID');
-    const unpaidCount = unpaidList.length || 1;
-    const newMonthlyDue = Math.round(remainingToSchedule / unpaidCount);
+    const paidCount = paidInstallments.length;
 
-    let runningRemaining = remainingToSchedule;
-    let unpaidIdx = 0;
-    for (const p of sale.emiPayments || []) {
-      if (p.status !== 'PAID') {
-        unpaidIdx++;
-        if (unpaidIdx === unpaidCount) {
-          p.amountDue = Math.max(0, runningRemaining);
-        } else {
-          p.amountDue = newMonthlyDue;
-          runningRemaining = Math.max(0, runningRemaining - newMonthlyDue);
-        }
-      }
-    }
-
-    sale.totalEmiPaid = Math.round((sale.downPayment || 0) + (sale.emiPayments || []).reduce((acc, p) => acc + (p.amountPaid || 0), 0));
-    sale.totalEmiDue = Math.round((sale.emiPayments || []).reduce((acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)), 0));
-    if (sale.totalEmiDue <= 0) {
+    if (remainingToSchedule <= 0) {
+      // Financed amount fully settled: remove pending unpaid installments so old EMIs do not linger
+      sale.emiPayments = paidInstallments;
+      sale.totalEmiPaid = Math.round((sale.downPayment || 0) + alreadyPaidAmount);
+      sale.totalEmiDue = 0;
       sale.paymentStatus = PAYMENT_STATUSES.PAID;
-    } else if (sale.totalEmiPaid > 0) {
-      sale.paymentStatus = PAYMENT_STATUSES.PARTIAL;
     } else {
-      sale.paymentStatus = PAYMENT_STATUSES.PENDING;
+      // Restructure remaining unpaid installments to exactly match (targetTenure - paidCount)
+      const remainingTenure = Math.max(1, targetTenure - paidCount);
+      const newMonthlyDue = Math.round(remainingToSchedule / remainingTenure);
+      const baseDate = sale.createdAt ? new Date(sale.createdAt) : new Date();
+
+      const newUnpaidInstallments: any[] = [];
+      let runningRemaining = remainingToSchedule;
+
+      for (let i = 1; i <= remainingTenure; i++) {
+        const m = paidCount + i;
+        const dueDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + m, 1);
+        const monthName = dueDate.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+        const isLast = i === remainingTenure;
+        const due = isLast ? Math.max(0, runningRemaining) : newMonthlyDue;
+        runningRemaining = Math.max(0, runningRemaining - due);
+
+        newUnpaidInstallments.push({
+          monthIndex: m,
+          billingMonth: `Month ${m} (${monthName})`,
+          dueDate,
+          amountDue: due,
+          amountPaid: 0,
+          status: 'DUE',
+        });
+      }
+
+      // Overwrite with clean restructured array containing only paid + current tenure months
+      sale.emiPayments = [...paidInstallments, ...newUnpaidInstallments];
+      sale.totalEmiPaid = Math.round((sale.downPayment || 0) + alreadyPaidAmount);
+      sale.totalEmiDue = remainingToSchedule;
+      sale.paymentStatus = sale.totalEmiPaid > 0 ? PAYMENT_STATUSES.PARTIAL : PAYMENT_STATUSES.PENDING;
     }
   }
 
@@ -937,6 +975,9 @@ export async function updateSale(saleId: string, input: UpdateSaleInput, actor: 
     },
     reason: input.reason || `Manager/SuperAdmin updated bill/invoice details for ${sale.invoiceNumber}`,
   });
+
+  await sale.populate('lineItems.product', 'name sku brand color modelName defaultSellingPrice hsnCode');
+  await sale.populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition');
 
   return sale;
 }

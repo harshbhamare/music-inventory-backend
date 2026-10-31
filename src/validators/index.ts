@@ -228,6 +228,22 @@ export const issueInternalUsageSchema = z.object({
   }),
 });
 
+export const updateRentalAgreementSchema = z.object({
+  body: z.object({
+    assignedPerson: z.string().min(1, 'Customer name is required').optional(),
+    assignedPersonContact: z.string().optional(),
+    customerEmail: z.string().email('Valid email required').optional().or(z.literal('')),
+    lockInPeriodMonths: z.number().int().min(1).max(36).optional(),
+    monthlyRent: z.number().min(0).optional(),
+    securityDeposit: z.number().min(0).optional(),
+    depositMode: z.boolean().optional(),
+    notes: z.string().optional(),
+    payAllRemainingNow: z.boolean().optional(),
+    paymentMethod: z.string().optional(),
+    transactionRef: z.string().optional(),
+  }),
+});
+
 export const recordRentalPaymentSchema = z.object({
   body: z.object({
     amount: z.number().min(1, 'Payment amount must be greater than 0'),

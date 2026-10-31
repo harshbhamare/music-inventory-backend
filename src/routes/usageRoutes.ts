@@ -14,12 +14,14 @@ import {
   sendBulkRentalReminders,
   recordDepositDeduction,
   sendDepositDeductionNotice,
+  updateRentalAgreement,
 } from '../services/internalUsageService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { validate } from '../middleware/validate.js';
 import {
   issueInternalUsageSchema,
+  updateRentalAgreementSchema,
   returnInternalUsageSchema,
   extendUsageSchema,
   recordRentalPaymentSchema,
@@ -134,6 +136,22 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
     next(err);
   }
 });
+
+// Update rental agreement terms (tenure, rent, customer info, or settle remaining rent)
+router.put(
+  '/:id',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  validate(updateRentalAgreementSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const usage = await updateRentalAgreement(req.params.id as string, req.body, req.user!);
+      res.json({ success: true, data: { usage } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 // Issue equipment for classes / practice / rehearsal
 router.post(

@@ -34,7 +34,7 @@ const RentalReminderSchema = new Schema({
 const RentalPaymentLogSchema = new Schema({
     paymentType: {
         type: String,
-        enum: ['SECURITY_DEPOSIT', 'RENTAL_PAYMENT'],
+        enum: ['SECURITY_DEPOSIT', 'RENTAL_PAYMENT', 'DEPOSIT_DEDUCTION'],
         required: true,
     },
     amount: { type: Number, required: true, min: 0 },
@@ -45,6 +45,19 @@ const RentalPaymentLogSchema = new Schema({
     recordedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     paidAt: { type: Date, default: Date.now },
 }, { _id: true, timestamps: true });
+const DepositDeductionSchema = new Schema({
+    monthIndex: { type: Number, required: true },
+    billingMonth: { type: String, required: true },
+    deductedAmount: { type: Number, required: true, min: 0 },
+    depositBalanceBefore: { type: Number, required: true, min: 0 },
+    depositBalanceAfter: { type: Number, required: true, min: 0 },
+    deductedAt: { type: Date, default: Date.now },
+    deductedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    noticeSent: { type: Boolean, default: false },
+    noticeSentAt: { type: Date },
+    noticeSentBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    notes: { type: String, trim: true },
+}, { _id: true });
 const InternalUsageSchema = new Schema({
     issueReference: { type: String, required: true, unique: true, uppercase: true, trim: true },
     purpose: {
@@ -72,6 +85,12 @@ const InternalUsageSchema = new Schema({
     isRental: { type: Boolean, default: true },
     lockInPeriodMonths: { type: Number, default: 3, min: 1 },
     securityDeposit: { type: Number, default: 0, min: 0 },
+    depositTransactionRef: { type: String, trim: true, default: '' },
+    depositMode: { type: Boolean, default: false },
+    depositBalance: { type: Number, default: 0, min: 0 },
+    depositExhausted: { type: Boolean, default: false },
+    depositDeductions: [DepositDeductionSchema],
+    continuationStartedAt: { type: Date },
     monthlyRent: { type: Number, default: 0, min: 0 },
     includedAccessories: [{ type: String, trim: true }],
     monthlyPayments: [RentalMonthlyPaymentSchema],
