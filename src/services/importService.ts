@@ -140,13 +140,213 @@ function sheetToRows(ws: XLSX.WorkSheet): Record<string, string>[] {
 
 // ─── Column definitions for the template ─────────────────────────────────────
 
-interface ColDef { header: string; key: string; width: number; note?: string }
+interface ColDef { header: string; key: string; width: number; required?: boolean; hint?: string; example?: string | number }
 
+// Simplified column sets — plain English, only essential columns, with examples
 const SHEET_COLS: Record<string, ColDef[]> = {
   Categories: [
-    { header: 'name *',          key: 'name',        width: 28, note: 'Category name, e.g. Guitars, Keyboards' },
-    { header: 'description',     key: 'description', width: 44 },
+    { header: 'Category Name',  key: 'name',        width: 28, required: true,  example: 'Guitars' },
+    { header: 'Description',    key: 'description', width: 44, required: false, example: 'Acoustic and electric guitars' },
   ],
+  Suppliers: [
+    { header: 'Supplier Name',  key: 'name',          width: 30, required: true,  example: 'Furtados Music' },
+    { header: 'Contact Person', key: 'contactPerson', width: 25, required: false, example: 'Raj Kumar' },
+    { header: 'Email',          key: 'email',         width: 30, required: false, example: 'raj@furtados.com' },
+    { header: 'Phone',          key: 'phone',         width: 18, required: false, example: '9820012345' },
+  ],
+  Locations: [
+    { header: 'Location Name',  key: 'name',      width: 28, required: true,  example: 'Main Store' },
+    { header: 'Short Code',     key: 'code',      width: 14, required: true,  hint: 'e.g. MAIN',      example: 'MAIN' },
+    { header: 'Is Default?',    key: 'isDefault', width: 14, required: false, hint: 'TRUE or FALSE',   example: 'TRUE' },
+  ],
+  Products: [
+    { header: 'Product Name',    key: 'name',             width: 32, required: true,  example: 'Yamaha F310 Acoustic Guitar' },
+    { header: 'SKU Code',        key: 'sku',              width: 16, required: false, hint: 'Leave blank to auto-generate', example: 'SKU-0001' },
+    { header: 'Category',        key: 'category',         width: 22, required: true,  hint: 'Must match Category Name', example: 'Guitars' },
+    { header: 'Brand',           key: 'brand',            width: 20, required: false, example: 'Yamaha' },
+    { header: 'Color / Finish',  key: 'color',            width: 18, required: false, example: 'Natural' },
+    { header: 'Tracking Mode',   key: 'trackingMode',     width: 18, required: false, hint: 'QUANTITY or SERIALIZED', example: 'SERIALIZED' },
+    { header: 'Purchase Cost',   key: 'purchaseCost',     width: 16, required: true,  hint: 'Number only, no symbol',  example: 6000 },
+    { header: 'Selling Price',   key: 'sellingPrice',     width: 16, required: true,  hint: 'Number only, no symbol',  example: 8500 },
+    { header: 'Opening Stock',   key: 'openingStock',     width: 16, required: false, hint: 'For QUANTITY mode only',  example: 4 },
+    { header: 'Location Code',   key: 'location',         width: 18, required: false, hint: 'Where stock lives',       example: 'MAIN' },
+    { header: 'Supplier',        key: 'supplier',         width: 24, required: false, hint: 'Must match Supplier Name', example: 'Furtados Music' },
+  ],
+  SerializedItems: [
+    { header: 'Asset ID',         key: 'assetId',           width: 20, required: true,  hint: 'Unique tag e.g. F310-001', example: 'F310-001' },
+    { header: 'Product SKU',      key: 'productSku',        width: 18, required: true,  hint: 'Must match SKU Code',      example: 'SKU-0001' },
+    { header: 'Mfr Serial No.',   key: 'manufacturerSerial',width: 22, required: false, example: 'YMH123456' },
+    { header: 'Purchase Cost',    key: 'unitCost',          width: 14, required: true,  example: 6000 },
+    { header: 'Location',         key: 'location',          width: 18, required: true,  example: 'MAIN' },
+    { header: 'Status',           key: 'status',            width: 18, required: false, hint: 'AVAILABLE or SOLD',        example: 'AVAILABLE' },
+    { header: 'Condition',        key: 'condition',         width: 14, required: false, hint: 'NEW / GOOD / FAIR / POOR', example: 'NEW' },
+    { header: 'Warranty Expiry',  key: 'warrantyExpiry',    width: 18, required: false, hint: 'YYYY-MM-DD',               example: '2026-12-31' },
+  ],
+  DirectSales: [
+    { header: 'Invoice No.',     key: 'invoiceNumber',  width: 20, required: true,  hint: 'Same No. for multi-item sale', example: 'INV-2024-0001' },
+    { header: 'Sale Date',       key: 'date',           width: 14, required: true,  hint: 'YYYY-MM-DD',                  example: '2024-01-15' },
+    { header: 'Customer Name',   key: 'customerName',   width: 26, required: true,  example: 'Rahul Sharma' },
+    { header: 'Customer Email',  key: 'customerEmail',  width: 30, required: true,  example: 'rahul@gmail.com' },
+    { header: 'Customer Phone',  key: 'customerPhone',  width: 16, required: true,  example: '9876543210' },
+    { header: 'Product SKU',     key: 'productSku',     width: 18, required: true,  example: 'SKU-0001' },
+    { header: 'Qty',             key: 'quantity',       width: 8,  required: true,  example: 1 },
+    { header: 'Unit Price',      key: 'unitPrice',      width: 14, required: true,  hint: 'Number only',                 example: 8500 },
+    { header: 'Discount',        key: 'discount',       width: 12, required: false, hint: 'Per-unit discount, default 0', example: 0 },
+    { header: 'Asset ID',        key: 'assetId',        width: 16, required: false, hint: 'For serialized products',     example: 'F310-001' },
+    { header: 'Payment Method',  key: 'paymentMethod',  width: 18, required: true,  hint: 'CASH / UPI / CARD / BANK_TRANSFER', example: 'UPI' },
+  ],
+  EMISales: [
+    { header: 'Invoice No.',      key: 'invoiceNumber',    width: 20, required: true,  hint: 'Same No. for multi-item sale',    example: 'INV-2024-0010' },
+    { header: 'Sale Date',        key: 'date',             width: 14, required: true,  hint: 'YYYY-MM-DD',                     example: '2024-02-01' },
+    { header: 'Customer Name',    key: 'customerName',     width: 26, required: true,  example: 'Priya Desai' },
+    { header: 'Customer Email',   key: 'customerEmail',    width: 30, required: true,  example: 'priya@gmail.com' },
+    { header: 'Customer Phone',   key: 'customerPhone',    width: 16, required: true,  example: '9988776655' },
+    { header: 'Product SKU',      key: 'productSku',       width: 18, required: true,  example: 'SKU-0002' },
+    { header: 'Qty',              key: 'quantity',         width: 8,  required: true,  example: 1 },
+    { header: 'Unit Price',       key: 'unitPrice',        width: 14, required: true,  example: 7200 },
+    { header: 'Down Payment',     key: 'downPayment',      width: 16, required: true,  hint: 'Amount paid upfront',             example: 1200 },
+    { header: 'No. of Months',    key: 'emiTenureMonths',  width: 16, required: true,  hint: 'Total EMI instalments',           example: 6 },
+  ],
+  EMIPayments: [
+    { header: 'Invoice No.',     key: 'invoiceNumber', width: 20, required: true,  hint: 'Must match EMI Sales Invoice No.',  example: 'INV-2024-0010' },
+    { header: 'Month No.',       key: 'monthIndex',    width: 12, required: true,  hint: '1 for first instalment',            example: 1 },
+    { header: 'Month Label',     key: 'billingMonth',  width: 24, required: true,  hint: 'e.g. Month 1 (Jan 2024)',           example: 'Month 1 (Mar 2024)' },
+    { header: 'Due Date',        key: 'dueDate',       width: 14, required: true,  hint: 'YYYY-MM-DD',                       example: '2024-03-01' },
+    { header: 'Amount Due',      key: 'amountDue',     width: 14, required: true,  example: 1000 },
+    { header: 'Amount Paid',     key: 'amountPaid',    width: 14, required: false, hint: '0 if unpaid',                      example: 1000 },
+    { header: 'Date Paid',       key: 'paidDate',      width: 14, required: false, hint: 'YYYY-MM-DD, blank if unpaid',      example: '2024-03-05' },
+    { header: 'Payment Method',  key: 'paymentMethod', width: 18, required: false, example: 'UPI' },
+    { header: 'Transaction Ref', key: 'transactionRef',width: 26, required: false, example: 'UPI-998001' },
+    { header: 'Status',          key: 'status',        width: 12, required: true,  hint: 'PAID / DUE / OVERDUE',             example: 'PAID' },
+  ],
+  Rentals: [
+    { header: 'Reference No.',       key: 'issueReference',       width: 22, required: true,  hint: 'e.g. USE-2024-00001',          example: 'USE-2024-00001' },
+    { header: 'Issue Date',          key: 'issueDate',            width: 14, required: true,  hint: 'YYYY-MM-DD',                   example: '2024-03-01' },
+    { header: 'Return By Date',      key: 'expectedReturnDate',   width: 18, required: true,  hint: 'YYYY-MM-DD',                   example: '2024-06-01' },
+    { header: 'Customer Name',       key: 'assignedPerson',       width: 26, required: true,  example: 'Amit Joshi' },
+    { header: 'Customer Phone',      key: 'assignedPersonContact',width: 18, required: false, example: '9123456780' },
+    { header: 'Customer Email',      key: 'customerEmail',        width: 30, required: false, example: 'amit@gmail.com' },
+    { header: 'Product SKU',         key: 'productSku',           width: 18, required: true,  example: 'SKU-0001' },
+    { header: 'Asset ID',            key: 'assetId',              width: 16, required: false, example: 'F310-001' },
+    { header: 'Monthly Rent',        key: 'monthlyRent',          width: 14, required: true,  hint: 'Number only',                  example: 1500 },
+    { header: 'Security Deposit',    key: 'securityDeposit',      width: 18, required: false, hint: 'Number only, 0 if none',       example: 5000 },
+    { header: 'Deposit Txn Ref',     key: 'depositTransactionRef',width: 20, required: false, example: 'CASH-001' },
+    { header: 'Status',              key: 'status',               width: 20, required: false, hint: 'ACTIVE / RETURNED / OVERDUE',  example: 'ACTIVE' },
+    { header: 'Accessories',         key: 'includedAccessories',  width: 36, required: false, hint: 'Comma-separated',              example: 'Stand, Power Adapter' },
+  ],
+  RentalPayments: [
+    { header: 'Reference No.',   key: 'issueReference', width: 22, required: true,  hint: 'Must match Rental Reference No.', example: 'USE-2024-00001' },
+    { header: 'Month No.',       key: 'monthIndex',     width: 12, required: true,  example: 1 },
+    { header: 'Month Label',     key: 'billingMonth',   width: 24, required: true,  example: 'Month 1 (Mar 2024)' },
+    { header: 'Due Date',        key: 'dueDate',        width: 14, required: true,  hint: 'YYYY-MM-DD', example: '2024-03-01' },
+    { header: 'Amount Due',      key: 'amountDue',      width: 14, required: true,  example: 1500 },
+    { header: 'Amount Paid',     key: 'amountPaid',     width: 14, required: false, example: 1500 },
+    { header: 'Date Paid',       key: 'paidDate',       width: 14, required: false, hint: 'YYYY-MM-DD', example: '2024-03-03' },
+    { header: 'Payment Method',  key: 'paymentMethod',  width: 18, required: false, example: 'CASH' },
+    { header: 'Transaction Ref', key: 'transactionRef', width: 26, required: false, example: 'CASH-R001' },
+    { header: 'Status',          key: 'status',         width: 12, required: true,  hint: 'PAID / DUE / OVERDUE', example: 'PAID' },
+  ],
+  PurchaseOrders: [
+    { header: 'PO Number',         key: 'purchaseOrderNumber', width: 20, required: true,  hint: 'Same No. for multi-item PO', example: 'PO-2024-0001' },
+    { header: 'Order Date',        key: 'orderDate',           width: 14, required: true,  hint: 'YYYY-MM-DD',                example: '2024-01-05' },
+    { header: 'Supplier',          key: 'supplier',            width: 26, required: true,  hint: 'Must match Supplier Name',  example: 'Furtados Music' },
+    { header: 'Product SKU',       key: 'productSku',          width: 18, required: true,  example: 'SKU-0001' },
+    { header: 'Qty Ordered',       key: 'quantityOrdered',     width: 14, required: true,  example: 3 },
+    { header: 'Qty Received',      key: 'quantityReceived',    width: 14, required: false, hint: 'Defaults to Qty Ordered',   example: 3 },
+    { header: 'Unit Cost',         key: 'unitCost',            width: 14, required: true,  hint: 'Number only',               example: 6000 },
+    { header: 'Invoice Reference', key: 'invoiceReference',    width: 24, required: false, example: 'FURT-INV-001' },
+    { header: 'Status',            key: 'status',              width: 22, required: false, hint: 'COMPLETED / DRAFT',         example: 'COMPLETED' },
+    { header: 'Location',          key: 'location',            width: 18, required: false, example: 'MAIN' },
+  ],
+};
+
+// ─── 1. Template generation ───────────────────────────────────────────────────
+
+export function generateImportTemplate(): Buffer {
+  const wb = XLSX.utils.book_new();
+
+  // ── HOW TO USE sheet ─────────────────────────────────────────────────────────
+  const howToUse = [
+    ['STEREOBLISS — Historical Data Import', '', '', ''],
+    [''],
+    ['STEP 1', 'Fill the sheets below IN ORDER (left to right tabs):', '', ''],
+    ['', '  1. Categories  2. Suppliers  3. Locations  4. Products  5. Serialized Items', '', ''],
+    ['', '  6. Direct Sales  7. EMI Sales  8. EMI Payments  9. Rentals  10. Rental Payments  11. Purchase Orders', '', ''],
+    [''],
+    ['STEP 2', 'Each sheet has three rows at the top:', '', ''],
+    ['', '  Row 1 = Column name (bold). Columns marked REQUIRED must be filled.', '', ''],
+    ['', '  Row 2 = Hint / valid values for that column.', '', ''],
+    ['', '  Row 3+ = Your data (the sample row shown can be deleted)', '', ''],
+    [''],
+    ['STEP 3', 'Upload the file. You will see a preview of all data before anything is saved.', '', ''],
+    ['', 'You can edit cells directly in the preview screen.', '', ''],
+    [''],
+    ['KEY RULES', '', '', ''],
+    ['', '• Date format:  YYYY-MM-DD  (e.g. 2024-03-15)', '', ''],
+    ['', '• Prices / amounts: numbers only — no commas, no Rs symbol (e.g. 8500, not Rs 8,500)', '', ''],
+    ['', '• For a sale with multiple products: use the same Invoice No. on multiple rows', '', ''],
+    ['', '• Product SKU must match exactly what is on the Products sheet', '', ''],
+    ['', '• Already-existing records (same Invoice No., SKU, etc.) are skipped — safe to re-upload', '', ''],
+    [''],
+    ['ALLOWED VALUES', '', '', ''],
+    ['', 'Payment Method:', 'CASH  |  UPI  |  CARD  |  BANK_TRANSFER  |  OTHER', ''],
+    ['', 'Tracking Mode:', 'QUANTITY  |  SERIALIZED', ''],
+    ['', 'Item Condition:', 'NEW  |  MINT  |  GOOD  |  FAIR  |  POOR  |  DAMAGED', ''],
+    ['', 'Rental Status:', 'ACTIVE  |  RETURNED  |  PARTIALLY_RETURNED  |  OVERDUE', ''],
+    ['', 'EMI / Rental Payment Status:', 'PAID  |  DUE  |  OVERDUE', ''],
+    ['', 'PO Status:', 'COMPLETED  |  PARTIALLY_RECEIVED  |  CONFIRMED  |  DRAFT  |  CANCELLED', ''],
+  ];
+
+  const wsHow = XLSX.utils.aoa_to_sheet(howToUse);
+  wsHow['!cols'] = [{ wch: 14 }, { wch: 80 }, { wch: 60 }, { wch: 20 }];
+  // Bold the headings
+  ['A1','A3','A7','A11','A14','A21'].forEach(cell => {
+    if (wsHow[cell]) wsHow[cell].s = { font: { bold: true, sz: 12 } };
+  });
+  XLSX.utils.book_append_sheet(wb, wsHow, 'HOW TO USE');
+
+  // ── Data sheets ───────────────────────────────────────────────────────────────
+  for (const [sheetName, cols] of Object.entries(SHEET_COLS)) {
+    // Row 1: column headers (plain English, no * suffix)
+    const headerRow = cols.map(c => c.header);
+    // Row 2: hints
+    const hintRow   = cols.map(c => {
+      const parts: string[] = [];
+      if (c.required) parts.push('REQUIRED');
+      if (c.hint)     parts.push(c.hint);
+      return parts.join(' — ');
+    });
+    // Row 3: one example row
+    const exampleRow = cols.map(c => c.example !== undefined ? c.example : '');
+
+    const ws = XLSX.utils.aoa_to_sheet([headerRow, hintRow, exampleRow]);
+    ws['!cols'] = cols.map(c => ({ wch: c.width }));
+
+    // Style header row (bold + background colour for required cols)
+    cols.forEach((col, ci) => {
+      const cellAddr = XLSX.utils.encode_cell({ r: 0, c: ci });
+      if (!ws[cellAddr]) ws[cellAddr] = { v: col.header, t: 's' };
+      ws[cellAddr].s = {
+        font: { bold: true, color: { rgb: 'FFFFFF' } },
+        fill: { fgColor: { rgb: col.required ? '1a6eb7' : '4a5568' } },
+        alignment: { horizontal: 'left' },
+        border: { bottom: { style: 'thin', color: { rgb: 'CCCCCC' } } },
+      };
+      // Style hint row
+      const hintAddr = XLSX.utils.encode_cell({ r: 1, c: ci });
+      if (!ws[hintAddr]) ws[hintAddr] = { v: hintRow[ci], t: 's' };
+      ws[hintAddr].s = {
+        font: { italic: true, color: { rgb: '718096' }, sz: 9 },
+        fill: { fgColor: { rgb: 'F7FAFC' } },
+      };
+    });
+
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  }
+
+  return Buffer.from(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }));
+}
+
   Suppliers: [
     { header: 'name *',          key: 'name',          width: 30 },
     { header: 'contactPerson',   key: 'contactPerson', width: 25 },
