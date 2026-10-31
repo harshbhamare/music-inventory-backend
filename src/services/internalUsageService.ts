@@ -1823,7 +1823,7 @@ export async function updateRentalAgreement(
 
         if (!usage.paymentLogs) usage.paymentLogs = [];
         usage.paymentLogs.push({
-          paymentType: 'MONTHLY_RENT',
+          paymentType: 'RENTAL_PAYMENT',
           amount: remainingDue,
           paymentMethod: pMethod,
           transactionRef: txnRef,

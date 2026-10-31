@@ -34,7 +34,7 @@ const RentalReminderSchema = new Schema({
 const RentalPaymentLogSchema = new Schema({
     paymentType: {
         type: String,
-        enum: ['SECURITY_DEPOSIT', 'RENTAL_PAYMENT', 'DEPOSIT_DEDUCTION'],
+        enum: ['SECURITY_DEPOSIT', 'RENTAL_PAYMENT', 'DEPOSIT_DEDUCTION', 'MONTHLY_RENT', 'BUYOUT'],
         required: true,
     },
     amount: { type: Number, required: true, min: 0 },

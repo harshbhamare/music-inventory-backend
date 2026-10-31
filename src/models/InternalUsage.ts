@@ -40,7 +40,7 @@ export interface IRentalReminder {
 
 export interface IRentalPaymentLog {
   _id?: Types.ObjectId;
-  paymentType: 'SECURITY_DEPOSIT' | 'RENTAL_PAYMENT' | 'DEPOSIT_DEDUCTION';
+  paymentType: 'SECURITY_DEPOSIT' | 'RENTAL_PAYMENT' | 'DEPOSIT_DEDUCTION' | 'MONTHLY_RENT' | 'BUYOUT';
   amount: number;
   paymentMethod: string;
   transactionRef: string;
@@ -156,7 +156,7 @@ const RentalPaymentLogSchema = new Schema<IRentalPaymentLog>(
   {
     paymentType: {
       type: String,
-      enum: ['SECURITY_DEPOSIT', 'RENTAL_PAYMENT', 'DEPOSIT_DEDUCTION'],
+      enum: ['SECURITY_DEPOSIT', 'RENTAL_PAYMENT', 'DEPOSIT_DEDUCTION', 'MONTHLY_RENT', 'BUYOUT'],
       required: true,
     },
     amount: { type: Number, required: true, min: 0 },
