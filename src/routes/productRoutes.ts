@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import multer from 'multer';
 import {
   listProducts,
   getProductById,
@@ -9,6 +10,10 @@ import {
   getSerializedItemHistory,
   createStockMovement,
 } from '../services/inventoryService.js';
+import {
+  generateProductCatalogTemplate,
+  importProductCatalogFromExcel,
+} from '../services/productExcelService.js';
 import { Product } from '../models/Product.js';
 import { StockLocation } from '../models/StockLocation.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -19,6 +24,73 @@ import { ROLES, MOVEMENT_TYPES } from '../config/constants.js';
 import { logAudit } from '../services/auditService.js';
 
 const router = Router();
+
+// In-memory Multer for Excel file upload (up to 25 MB)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ok =
+      file.mimetype ===
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+      file.mimetype === 'application/vnd.ms-excel' ||
+      file.mimetype === 'text/csv' ||
+      file.originalname.endsWith('.xlsx') ||
+      file.originalname.endsWith('.xls') ||
+      file.originalname.endsWith('.csv');
+    if (!ok) {
+      return cb(new Error('Only Excel (.xlsx, .xls) and CSV files are accepted.'));
+    }
+    cb(null, true);
+  },
+});
+
+// ── Download Product Catalog Excel Template (SUPER_ADMIN and MANAGER) ──
+router.get(
+  '/bulk/template',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const buf = generateProductCatalogTemplate();
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      );
+      res.setHeader(
+        'Content-Disposition',
+        'attachment; filename="stereobliss-product-catalog-template.xlsx"'
+      );
+      res.setHeader('Content-Length', buf.length);
+      res.send(buf);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ── Bulk Import Products from Excel Sheet (SUPER_ADMIN and MANAGER) ──
+router.post(
+  '/bulk/import',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  upload.single('file'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          error: { message: 'No file uploaded. Please attach your Excel (.xlsx) spreadsheet.' },
+        });
+      }
+
+      const result = await importProductCatalogFromExcel(req.file.buffer, req.user!);
+      res.json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 // List products
 router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
