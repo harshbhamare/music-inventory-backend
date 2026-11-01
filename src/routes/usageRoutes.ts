@@ -14,6 +14,7 @@ import {
   sendBulkRentalReminders,
   recordDepositDeduction,
   sendDepositDeductionNotice,
+  activateContinuationMode,
   updateRentalAgreement,
 } from '../services/internalUsageService.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -360,6 +361,21 @@ router.post(
         { recipientEmail: req.body.recipientEmail, customNote: req.body.customNote }
       );
       res.json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Explicitly activate continuation mode (e.g. when deposit is low/insufficient or customer chooses direct payments)
+router.post(
+  '/:id/activate-continuation',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const usage = await activateContinuationMode(req.params.id as string, req.body, req.user!);
+      res.json({ success: true, data: { usage } });
     } catch (err) {
       next(err);
     }

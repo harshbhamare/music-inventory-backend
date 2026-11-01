@@ -1123,8 +1123,14 @@ export async function recordDepositDeduction(usageId, input, actor) {
     if (!usage.depositMode) {
         throw new AppError('This rental is not in deposit-deduction mode.', 400, 'NOT_DEPOSIT_MODE');
     }
-    if (usage.depositExhausted) {
-        throw new AppError('Security deposit is fully exhausted. Customer must now pay rent directly.', 400, 'DEPOSIT_EXHAUSTED');
+    const balanceBefore = typeof usage.depositBalance === 'number' ? usage.depositBalance : 0;
+    if (usage.depositExhausted || balanceBefore <= 0) {
+        usage.depositExhausted = true;
+        if (!usage.continuationStartedAt) {
+            usage.continuationStartedAt = new Date();
+        }
+        await usage.save();
+        throw new AppError('Security deposit is fully exhausted (₹0 balance). Customer must now pay rent directly via continuation mode.', 400, 'DEPOSIT_EXHAUSTED');
     }
     const payment = usage.monthlyPayments.find((p) => p.monthIndex === input.monthIndex);
     if (!payment) {
@@ -1133,20 +1139,36 @@ export async function recordDepositDeduction(usageId, input, actor) {
     if (payment.status === 'PAID') {
         throw new AppError(`Month ${input.monthIndex} (${payment.billingMonth}) is already marked as PAID.`, 400, 'ALREADY_PAID');
     }
-    const deductAmount = payment.amountDue;
-    const balanceBefore = usage.depositBalance;
-    if (balanceBefore < deductAmount) {
-        throw new AppError(`Insufficient deposit balance (₹${balanceBefore}) to cover rent of ₹${deductAmount}. Mark deposit as exhausted and switch to continuation mode.`, 400, 'INSUFFICIENT_DEPOSIT');
+    const unpaidOnMonth = Math.max(0, payment.amountDue - (payment.amountPaid || 0));
+    // Determine deductAmount: allow user-specified amount, or auto-partial deduction if balance < unpaidOnMonth
+    let deductAmount;
+    if (typeof input.amount === 'number' && input.amount > 0) {
+        deductAmount = Math.min(input.amount, balanceBefore, unpaidOnMonth);
     }
-    const balanceAfter = balanceBefore - deductAmount;
+    else if (input.allowPartial || balanceBefore < unpaidOnMonth) {
+        deductAmount = Math.min(balanceBefore, unpaidOnMonth);
+    }
+    else {
+        deductAmount = unpaidOnMonth;
+    }
+    if (deductAmount <= 0) {
+        throw new AppError(`No remaining balance to deduct. Available deposit: ₹${balanceBefore}, Month unpaid due: ₹${unpaidOnMonth}.`, 400, 'INVALID_DEDUCT_AMOUNT');
+    }
+    const balanceAfter = Math.max(0, balanceBefore - deductAmount);
     const nowExhausted = balanceAfter <= 0;
-    // Mark this month as paid via deposit
-    payment.amountPaid = deductAmount;
+    // Mark/update this month payment
+    payment.amountPaid = (payment.amountPaid || 0) + deductAmount;
     payment.paidAt = new Date();
     payment.paymentMethod = 'DEPOSIT';
     payment.transactionRef = `DEP-DEDUCT-M${input.monthIndex}-${usage.issueReference}`;
-    payment.status = 'PAID';
-    payment.notes = (payment.notes ? payment.notes + ' | ' : '') + `Rent deducted from security deposit by ${actor.name}`;
+    if (payment.amountPaid >= payment.amountDue) {
+        payment.status = 'PAID';
+        payment.notes = (payment.notes ? payment.notes + ' | ' : '') + `Rent deducted from security deposit by ${actor.name}`;
+    }
+    else {
+        payment.status = 'DUE';
+        payment.notes = (payment.notes ? payment.notes + ' | ' : '') + `Partial rent ₹${deductAmount} deducted from deposit. Remaining ₹${payment.amountDue - payment.amountPaid} carried to direct continuation payment.`;
+    }
     // Update deposit balance
     usage.depositBalance = balanceAfter;
     usage.depositExhausted = nowExhausted;
@@ -1163,7 +1185,7 @@ export async function recordDepositDeduction(usageId, input, actor) {
         deductedAt: new Date(),
         deductedBy: new Types.ObjectId(actor.id),
         noticeSent: false,
-        notes: input.notes?.trim(),
+        notes: input.notes?.trim() || (nowExhausted && balanceAfter === 0 ? 'Remaining deposit exhausted — switched to continuation mode' : undefined),
     });
     // If deposit is now exhausted, auto-generate continuation monthly payment rows
     // so the manager can track ongoing rent payments from the customer directly.
@@ -1243,6 +1265,62 @@ export async function recordDepositDeduction(usageId, input, actor) {
             }
         });
     }
+    return usage;
+}
+/**
+ * Explicitly activates continuation mode on a rental agreement.
+ * Useful when remaining deposit is insufficient for full rent, or when customer/manager
+ * chooses to start direct monthly rent collection.
+ */
+export async function activateContinuationMode(usageId, input, actor) {
+    const usage = await InternalUsage.findById(usageId)
+        .populate('items.product', 'name sku brand defaultSellingPrice purchaseCost')
+        .populate('items.serializedItemId', 'assetId manufacturerSerial');
+    if (!usage)
+        throw new AppError('Rental record not found.', 404, 'RENTAL_NOT_FOUND');
+    usage.depositExhausted = true;
+    if (!usage.continuationStartedAt) {
+        usage.continuationStartedAt = new Date();
+    }
+    // Auto-generate continuation months up to lockInPeriodMonths
+    const lastMonthIndex = Math.max(...(usage.monthlyPayments || []).map((p) => p.monthIndex), 0);
+    const existingIndices = new Set((usage.monthlyPayments || []).map((p) => p.monthIndex));
+    const totalExpected = usage.lockInPeriodMonths || 3;
+    const lastDueDate = usage.monthlyPayments && usage.monthlyPayments.length > 0
+        ? new Date(usage.monthlyPayments[usage.monthlyPayments.length - 1].dueDate)
+        : new Date();
+    for (let m = lastMonthIndex + 1; m <= totalExpected; m++) {
+        if (!existingIndices.has(m)) {
+            const dueDate = new Date(lastDueDate);
+            dueDate.setMonth(dueDate.getMonth() + (m - lastMonthIndex));
+            const monthName = dueDate.toLocaleString('default', { month: 'short', year: 'numeric' });
+            usage.monthlyPayments.push({
+                monthIndex: m,
+                billingMonth: `Month ${m} (${monthName}) — Continuation`,
+                dueDate,
+                amountDue: usage.monthlyRent || 0,
+                amountPaid: 0,
+                status: 'DUE',
+                notes: 'Continuation mode active — customer pays rent directly',
+            });
+        }
+    }
+    // Recalculate rent totals
+    usage.totalRentPaid = (usage.monthlyPayments || []).reduce((acc, p) => acc + (p.amountPaid || 0), 0);
+    usage.totalRentDue = (usage.monthlyPayments || []).reduce((acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)), 0);
+    await usage.save();
+    await logAudit({
+        actor,
+        action: 'RENTAL_CONTINUATION_ACTIVATED',
+        entityType: 'InternalUsage',
+        entityId: usage._id.toString(),
+        afterState: {
+            depositExhausted: true,
+            depositBalance: usage.depositBalance,
+            notes: input?.notes,
+        },
+        reason: input?.notes || 'Continuation mode explicitly activated by manager',
+    });
     return usage;
 }
 /**

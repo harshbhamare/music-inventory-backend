@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { InternalUsage } from '../models/InternalUsage.js';
 import { UsageReturn } from '../models/UsageReturn.js';
-import { issueInstruments, returnInstruments, extendExpectedReturnDate, recordRentalPayment, updateRentalPayment, adjustRentalMonthDue, addRentalMonth, sendRentalReminder, getRentalDuesSummary, sendBulkRentalReminders, recordDepositDeduction, sendDepositDeductionNotice, updateRentalAgreement, } from '../services/internalUsageService.js';
+import { issueInstruments, returnInstruments, extendExpectedReturnDate, recordRentalPayment, updateRentalPayment, adjustRentalMonthDue, addRentalMonth, sendRentalReminder, getRentalDuesSummary, sendBulkRentalReminders, recordDepositDeduction, sendDepositDeductionNotice, activateContinuationMode, updateRentalAgreement, } from '../services/internalUsageService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { validate } from '../middleware/validate.js';
@@ -234,6 +234,16 @@ router.post('/:id/deposit-deductions/:deductionId/send-notice', requireAuth, req
     try {
         const result = await sendDepositDeductionNotice(req.params.id, req.params.deductionId, req.user, { recipientEmail: req.body.recipientEmail, customNote: req.body.customNote });
         res.json({ success: true, data: result });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Explicitly activate continuation mode (e.g. when deposit is low/insufficient or customer chooses direct payments)
+router.post('/:id/activate-continuation', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
+    try {
+        const usage = await activateContinuationMode(req.params.id, req.body, req.user);
+        res.json({ success: true, data: { usage } });
     }
     catch (err) {
         next(err);

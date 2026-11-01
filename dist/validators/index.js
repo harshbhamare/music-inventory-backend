@@ -321,6 +321,8 @@ export const recordDepositDeductionSchema = z.object({
     body: z.object({
         monthIndex: z.number().int().min(1, 'Month index is required'),
         billingMonth: z.string().min(1, 'Billing month label is required'),
+        amount: z.number().min(0).optional(),
+        allowPartial: z.boolean().optional(),
         notes: z.string().optional(),
     }),
 });
