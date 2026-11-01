@@ -2,7 +2,9 @@ import * as XLSX from 'xlsx';
 import { Product } from '../models/Product.js';
 import { Category } from '../models/Category.js';
 import { StockLocation } from '../models/StockLocation.js';
-import { TRACKING_MODES } from '../config/constants.js';
+import { SerializedItem } from '../models/SerializedItem.js';
+import { StockMovement } from '../models/StockMovement.js';
+import { TRACKING_MODES, SERIALIZED_STATUSES, ITEM_CONDITIONS, MOVEMENT_TYPES, } from '../config/constants.js';
 import { logAudit } from './auditService.js';
 import { getNextSku } from './inventoryService.js';
 /**
@@ -23,6 +25,9 @@ export function generateProductCatalogTemplate() {
         'Purchase Cost',
         'Selling Price',
         'Tracking Mode',
+        'Opening Stock',
+        'Serial Numbers (if Serialized)',
+        'Location Code',
         'SKU (Optional)',
         'Description',
     ];
@@ -38,6 +43,9 @@ export function generateProductCatalogTemplate() {
         'Wholesale / buying cost (₹)',
         'Retail MRP / selling price (₹)',
         'SERIALIZED (Asset barcode tracking) or QUANTITY',
+        'Initial stock count to populate on hand (Default: 0)',
+        'Comma-separated manufacturer serials / barcodes',
+        'Outlet code (Default: CENTRAL)',
         'Leave blank for auto-generated sequential SKU',
         'Optional specifications or product notes',
     ];
@@ -54,6 +62,9 @@ export function generateProductCatalogTemplate() {
             7200,
             9800,
             'SERIALIZED',
+            3,
+            'YMH-F310-001, YMH-F310-002, YMH-F310-003',
+            'CENTRAL',
             '',
             'Traditional western body with spruce top and rosewood fretboard',
         ],
@@ -69,6 +80,9 @@ export function generateProductCatalogTemplate() {
             45000,
             62000,
             'SERIALIZED',
+            2,
+            'FND-STRAT-901, FND-STRAT-902',
+            'CENTRAL',
             '',
             'Alder body with modern C neck profile and 3 single-coil pickups',
         ],
@@ -84,6 +98,9 @@ export function generateProductCatalogTemplate() {
             52000,
             69000,
             'SERIALIZED',
+            2,
+            'ROL-FP30-401, ROL-FP30-402',
+            'CENTRAL',
             '',
             'SuperNATURAL piano sound engine with 88-note PHA-4 standard keyboard',
         ],
@@ -99,6 +116,9 @@ export function generateProductCatalogTemplate() {
             450,
             750,
             'QUANTITY',
+            50,
+            '',
+            'CENTRAL',
             '',
             'Corrosion resistant packaging, warm bright acoustic tone',
         ],
@@ -114,6 +134,9 @@ export function generateProductCatalogTemplate() {
             7400,
             9900,
             'SERIALIZED',
+            4,
+            'SHR-SM58-101, SHR-SM58-102, SHR-SM58-103, SHR-SM58-104',
+            'CENTRAL',
             '',
             'Legendary cardioid dynamic vocal microphone for live stage performance',
         ],
@@ -133,6 +156,9 @@ export function generateProductCatalogTemplate() {
         { wch: 16 }, // Purchase Cost
         { wch: 16 }, // Selling Price
         { wch: 16 }, // Tracking Mode
+        { wch: 15 }, // Opening Stock
+        { wch: 35 }, // Serial Numbers
+        { wch: 15 }, // Location Code
         { wch: 18 }, // SKU
         { wch: 40 }, // Description
     ];
@@ -148,7 +174,9 @@ export function generateProductCatalogTemplate() {
         ['4. Categories are created automatically if they do not already exist in the system.'],
         ['5. SKUs will be automatically generated sequentially (e.g. SKU-0001, SKU-0002) if left blank.'],
         ['6. "Tracking Mode" supports either SERIALIZED (for instruments with individual asset IDs/serials) or QUANTITY (for strings, picks, cables).'],
-        ['7. Upload the completed .xlsx file via Settings or Product Catalog page.'],
+        ['7. "Opening Stock": Enter your existing inventory count. The system will automatically create initial on-hand stock and balance movements.'],
+        ['8. "Serial Numbers": For SERIALIZED items, you can provide comma-separated serials or barcodes (e.g. SN1, SN2). If omitted but Opening Stock > 0, sequential asset IDs (e.g. SKU-0001-01) are auto-generated.'],
+        ['9. Upload the completed .xlsx file via Settings or Product Catalog page.'],
         [''],
         ['COLUMN DEFINITIONS:'],
         ['• Brand: Manufacturer or brand name (e.g. Yamaha, Fender, Gibson, Stereobliss). Defaults to Stereobliss if omitted.'],
@@ -161,6 +189,9 @@ export function generateProductCatalogTemplate() {
         ['• Unit of Measure: Stock unit (e.g. pcs, set, pair, unit). Defaults to pcs.'],
         ['• Purchase Cost: Standard cost price in INR (defaults to 0 if unknown; can be updated during delivery intake).'],
         ['• Selling Price: Standard retail selling price in INR.'],
+        ['• Opening Stock: Initial stock quantity to populate into the system directly.'],
+        ['• Serial Numbers: Comma-separated manufacturer serial numbers or barcodes.'],
+        ['• Location Code: Outlet code where inventory is placed (e.g. CENTRAL).'],
     ];
     const wsInstructions = XLSX.utils.aoa_to_sheet(instructions);
     wsInstructions['!cols'] = [{ wch: 90 }];
@@ -184,19 +215,25 @@ function normalizeKey(header) {
         return 'color';
     if (/^(hsn|hsncode|hsnsac|hsnno)$/.test(clean))
         return 'hsnCode';
-    if (/^(lowstock|lowstockalert|minstock|minstockthreshold|threshold|reorderlevel)$/.test(clean))
+    if (/^(lowstock|lowstockalert|minstock|minstockthreshold|threshold|reorderlevel|alert)$/.test(clean))
         return 'minStockThreshold';
     if (/^(unitofmeasure|unit|uom|unitofmeasurement|measure)$/.test(clean))
         return 'unitOfMeasure';
-    if (/^(purchasecost|cost|buyprice|costprice|purchaseprice)$/.test(clean))
+    if (/^(purchasecost|cost|buyprice|costprice|purchaseprice|buyingcost)$/.test(clean))
         return 'purchaseCost';
-    if (/^(sellingprice|price|mrp|retailprice|saleprice|defaultsellingprice)$/.test(clean))
+    if (/^(sellingprice|price|mrp|retailprice|saleprice|defaultsellingprice|retail)$/.test(clean))
         return 'defaultSellingPrice';
-    if (/^(trackingmode|tracking|serialized|serialtracking)$/.test(clean))
+    if (/^(trackingmode|tracking|serialized|serialtracking|isasset)$/.test(clean))
         return 'trackingMode';
+    if (/^(openingstock|stock|initialstock|quantity|qty|stockquantity|onhand|currentstock|pieces)$/.test(clean))
+        return 'openingStock';
+    if (/^(serialnumbers|serials|serialnumber|serialnos|serialno|assetids|assetid|barcodes|barcode)$/.test(clean))
+        return 'serialNumbers';
+    if (/^(location|locationcode|store|storecode|stocklocation)$/.test(clean))
+        return 'location';
     if (/^(sku|productcode|code|itemcode)$/.test(clean))
         return 'sku';
-    if (/^(description|desc|notes|details)$/.test(clean))
+    if (/^(description|desc|notes|details|specs)$/.test(clean))
         return 'description';
     return clean;
 }
@@ -239,6 +276,7 @@ export async function importProductCatalogFromExcel(fileBuffer, actor) {
     const errors = [];
     const importedProducts = [];
     let skippedCount = 0;
+    let totalInitialStockCreated = 0;
     // Track created SKUs during this batch to prevent internal collision
     const batchSkus = new Set();
     for (let rowIndex = dataStartIndex; rowIndex < aoa.length; rowIndex++) {
@@ -334,6 +372,18 @@ export async function importProductCatalogFromExcel(fileBuffer, actor) {
         const purchaseCost = Math.max(0, parseFloat(rowObj.purchaseCost) || 0);
         const defaultSellingPrice = Math.max(0, parseFloat(rowObj.defaultSellingPrice) || 0);
         const description = rowObj.description || undefined;
+        // Location resolution: Target outlet code or name (fallback to default CENTRAL location)
+        let targetLocId = defaultLocationId;
+        const locInput = (rowObj.location || '').trim();
+        if (locInput) {
+            const foundLoc = await StockLocation.findOne({
+                $or: [{ code: locInput.toUpperCase() }, { name: new RegExp(`^${locInput}$`, 'i') }],
+            });
+            if (foundLoc)
+                targetLocId = foundLoc._id;
+        }
+        const rawOpening = parseInt(rowObj.openingStock, 10);
+        const openingStock = isNaN(rawOpening) ? 0 : Math.max(0, rawOpening);
         try {
             const created = await Product.create({
                 name,
@@ -358,7 +408,7 @@ export async function importProductCatalogFromExcel(fileBuffer, actor) {
                 },
                 locationStock: [
                     {
-                        location: defaultLocationId,
+                        location: targetLocId,
                         onHand: 0,
                         reserved: 0,
                         issuedInternal: 0,
@@ -366,6 +416,92 @@ export async function importProductCatalogFromExcel(fileBuffer, actor) {
                     },
                 ],
             });
+            let initialStockAdded = 0;
+            // Handle opening stock for QUANTITY mode
+            if (trackingMode === TRACKING_MODES.QUANTITY && openingStock > 0) {
+                created.stockQuantity.onHand = openingStock;
+                created.locationStock = [
+                    {
+                        location: targetLocId,
+                        onHand: openingStock,
+                        reserved: 0,
+                        issuedInternal: 0,
+                        quarantined: 0,
+                    },
+                ];
+                await created.save();
+                await StockMovement.create({
+                    product: created._id,
+                    location: targetLocId,
+                    movementType: MOVEMENT_TYPES.MANUAL_ADJUSTMENT,
+                    quantityDelta: openingStock,
+                    transactionRef: `INITIAL-BALANCE-${created.sku}`,
+                    transactionModel: 'InitialBalance',
+                    reason: `Initial stock opening balance migrated from Excel catalog import (${created.name})`,
+                    performedBy: actor.id,
+                });
+                initialStockAdded = openingStock;
+                totalInitialStockCreated += openingStock;
+            }
+            // Handle opening stock and serial numbers for SERIALIZED mode
+            if (trackingMode === TRACKING_MODES.SERIALIZED) {
+                const rawSerials = rowObj.serialNumbers
+                    ? rowObj.serialNumbers
+                        .split(/[,;\n]+/)
+                        .map((s) => s.trim().toUpperCase())
+                        .filter(Boolean)
+                    : [];
+                const unitsToCreate = rawSerials.length > 0 ? rawSerials.length : openingStock;
+                if (unitsToCreate > 0) {
+                    for (let i = 0; i < unitsToCreate; i++) {
+                        const mfrSerial = rawSerials[i] || undefined;
+                        let assetId = mfrSerial;
+                        if (!assetId || (await SerializedItem.findOne({ assetId }))) {
+                            let sub = i + 1;
+                            assetId = `${created.sku}-${String(sub).padStart(2, '0')}`;
+                            while (await SerializedItem.findOne({ assetId })) {
+                                sub++;
+                                assetId = `${created.sku}-${String(sub).padStart(2, '0')}`;
+                            }
+                        }
+                        const serialDoc = await SerializedItem.create({
+                            assetId,
+                            manufacturerSerial: mfrSerial,
+                            product: created._id,
+                            location: targetLocId,
+                            status: SERIALIZED_STATUSES.AVAILABLE,
+                            condition: ITEM_CONDITIONS.NEW,
+                            unitCost: created.purchaseCost || 0,
+                            notes: 'Migrated via Excel Product Catalog import',
+                        });
+                        await StockMovement.create({
+                            product: created._id,
+                            serializedItem: serialDoc._id,
+                            location: targetLocId,
+                            movementType: MOVEMENT_TYPES.MANUAL_ADJUSTMENT,
+                            quantityDelta: 1,
+                            destinationStatus: SERIALIZED_STATUSES.AVAILABLE,
+                            transactionRef: `ASSET-INIT-${assetId}`,
+                            transactionModel: 'InitialBalance',
+                            reason: `Initial asset ${assetId} intake via Excel catalog import`,
+                            performedBy: actor.id,
+                        });
+                    }
+                    created.stockQuantity.onHand = unitsToCreate;
+                    created.locationStock = [
+                        {
+                            location: targetLocId,
+                            onHand: unitsToCreate,
+                            reserved: 0,
+                            issuedInternal: 0,
+                            quarantined: 0,
+                        },
+                    ];
+                    await created.save();
+                    initialStockAdded = unitsToCreate;
+                    totalInitialStockCreated += unitsToCreate;
+                }
+            }
             importedProducts.push({
                 _id: created._id.toString(),
                 name: created.name,
@@ -376,6 +512,7 @@ export async function importProductCatalogFromExcel(fileBuffer, actor) {
                 hsnCode: created.hsnCode,
                 unitOfMeasure: created.unitOfMeasure,
                 minStockThreshold: created.minStockThreshold,
+                initialStock: initialStockAdded,
             });
         }
         catch (err) {
@@ -392,9 +529,10 @@ export async function importProductCatalogFromExcel(fileBuffer, actor) {
             action: 'BULK_IMPORT_PRODUCTS',
             entityType: 'Product',
             entityId: importedProducts[0]._id,
-            reason: `Bulk imported ${importedProducts.length} product(s) via Excel catalog spreadsheet`,
+            reason: `Bulk imported ${importedProducts.length} product(s) with ${totalInitialStockCreated} initial stock units via Excel catalog spreadsheet`,
             afterState: {
                 count: importedProducts.length,
+                initialStockCreated: totalInitialStockCreated,
                 skus: importedProducts.slice(0, 10).map((p) => p.sku),
             },
         });
@@ -404,6 +542,7 @@ export async function importProductCatalogFromExcel(fileBuffer, actor) {
         totalRows: aoa.length - dataStartIndex,
         importedCount: importedProducts.length,
         skippedCount,
+        initialStockCreated: totalInitialStockCreated,
         products: importedProducts,
         errors,
     };
