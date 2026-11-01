@@ -332,6 +332,75 @@ router.get('/export/:type', requireAuth, async (req, res, next) => {
             res.send(csv);
             return;
         }
+        if (type === 'reconciliation') {
+            const recon = await runInventoryReconciliation();
+            const headers = [
+                'Product Name',
+                'SKU',
+                'Tracking Mode',
+                'Recorded On Hand',
+                'Calculated from Ledger',
+                'Physical Serial Count',
+                'Variance (Delta)',
+                'Audit Status',
+                'Recommended Corrective Action',
+            ];
+            const rows = recon.results.map((r) => [
+                r.productName,
+                r.sku,
+                r.trackingMode,
+                r.recordedOnHand,
+                r.calculatedFromLedger,
+                r.serializedPhysicalCount ?? 'N/A',
+                r.variance,
+                r.status,
+                r.recommendedAction,
+            ]);
+            const csv = generateCsv(headers, rows);
+            res.setHeader('Content-Type', 'text/csv');
+            res.setHeader('Content-Disposition', `attachment; filename=stereobliss-ledger-reconciliation-${Date.now()}.csv`);
+            res.send(csv);
+            return;
+        }
+        if (type === 'executive') {
+            let startDate;
+            let endDate;
+            if (req.query.startDate)
+                startDate = new Date(req.query.startDate);
+            if (req.query.endDate)
+                endDate = new Date(req.query.endDate);
+            const data = await getDashboardMetrics(startDate, endDate);
+            const ef = data.executiveFinancials;
+            const fh = data.financialHealth;
+            const ih = data.inventoryHealth;
+            const rp = data.rentalPerformance;
+            const headers = ['Domain', 'Metric Name', 'Recorded Value (INR / Units)', 'Previous Period Value', 'Change (%)', 'Definition & Accounting Basis'];
+            const rows = [
+                ['Executive Financials', 'Sales Revenue', ef.salesRevenue.value, ef.salesRevenue.previousValue, `${ef.salesRevenue.deltaPercent}% (${ef.salesRevenue.direction})`, ef.salesRevenue.definition],
+                ['Executive Financials', 'Cash Collected', ef.cashCollected.value, ef.cashCollected.previousValue, `${ef.cashCollected.deltaPercent}% (${ef.cashCollected.direction})`, ef.cashCollected.definition],
+                ['Executive Financials', 'Gross Profit', ef.grossProfit.value, ef.grossProfit.previousValue, `${ef.grossProfit.deltaPercent}% (${ef.grossProfit.direction})`, ef.grossProfit.definition],
+                ['Executive Financials', 'Gross Margin %', `${ef.grossProfit.marginPercent}%`, `${ef.grossProfit.previousMarginPercent}%`, 'N/A', 'Gross Profit expressed as a percentage of Recognized Sales Revenue'],
+                ['Executive Financials', 'Outstanding Receivables', ef.outstandingReceivables.value, ef.outstandingReceivables.previousValue, '0%', ef.outstandingReceivables.definition],
+                ['Executive Financials', 'Inventory Value at Cost', ef.inventoryValuationAtCost.value, ef.inventoryValuationAtCost.previousValue, '0%', ef.inventoryValuationAtCost.definition],
+                ['Executive Financials', 'Net Rental Profit', ef.netRentalProfit.value, ef.netRentalProfit.previousValue, `${ef.netRentalProfit.deltaPercent}% (${ef.netRentalProfit.direction})`, ef.netRentalProfit.definition],
+                ['Financial Health', 'Period Inflows', fh.cashInflows, 'N/A', 'N/A', 'Liquid cash receipts from POS sales, EMI payments, and rental collections'],
+                ['Financial Health', 'Period Outflows', fh.cashOutflows, 'N/A', 'N/A', 'Cash disbursements for inventory purchases and equipment maintenance'],
+                ['Financial Health', 'Net Cash Movement', fh.netCashMovement, 'N/A', 'N/A', 'Cash Inflows minus Cash Outflows during the reporting period'],
+                ['Financial Health', 'Customer Deposits Held', fh.customerDepositsHeld, 'N/A', 'N/A', 'Security deposits held in trust (Current Liability, strictly excluded from revenue)'],
+                ['Financial Health', 'Refunds Payable', fh.refundsPayable, 'N/A', 'N/A', 'Deposit refund liabilities owed to customers for returned rental equipment'],
+                ['Inventory Health', 'Total Units Owned', ih.totalUnitsOwned, 'N/A', 'N/A', 'Total physical instrument and accessory units owned by the company'],
+                ['Inventory Health', 'Available for Sale', ih.totalAvailableForSale, 'N/A', 'N/A', 'Units in warehouse ready for retail sale (excluding rented/maintenance)'],
+                ['Inventory Health', 'Currently on Rent', ih.totalUnitsInRental, 'N/A', 'N/A', 'Units currently issued out on active customer rental contracts'],
+                ['Inventory Health', 'In Maintenance', ih.totalUnitsInMaintenance, 'N/A', 'N/A', 'Units quarantined in workshop undergoing inspection or repair'],
+                ['Rental Fleet', 'Active Agreements', rp.activeAgreements, 'N/A', 'N/A', 'Active customer subscription and loan agreements'],
+                ['Rental Fleet', 'Fleet Capex Recovery %', `${rp.fleetCapexRecoveryPercent}%`, 'N/A', 'N/A', 'Total all-time net rental income as a percentage of fleet acquisition cost'],
+            ];
+            const csv = generateCsv(headers, rows);
+            res.setHeader('Content-Type', 'text/csv');
+            res.setHeader('Content-Disposition', `attachment; filename=stereobliss-executive-summary-${Date.now()}.csv`);
+            res.send(csv);
+            return;
+        }
         res.status(400).json({ success: false, error: { message: 'Invalid export type.' } });
     }
     catch (err) {

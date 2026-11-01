@@ -10,17 +10,39 @@ import { Category } from '../models/Category.js';
 import '../models/User.js';
 import '../models/StockLocation.js';
 import { SERIALIZED_STATUSES, USAGE_STATUSES, MAINTENANCE_STATUSES, ADJUSTMENT_STATUSES, TRACKING_MODES, SALE_STATUSES, } from '../config/constants.js';
+export function calcMetricDelta(current, previous) {
+    if (previous === 0) {
+        if (current === 0)
+            return { deltaPercent: 0, direction: 'neutral' };
+        return { deltaPercent: 100, direction: 'up' };
+    }
+    const pct = Number((((current - previous) / Math.abs(previous)) * 100).toFixed(1));
+    return {
+        deltaPercent: Math.abs(pct),
+        direction: pct > 0 ? 'up' : pct < 0 ? 'down' : 'neutral',
+    };
+}
 export async function getDashboardMetrics(startDate, endDate) {
-    const start = startDate ? new Date(startDate) : new Date(0);
-    const end = endDate ? new Date(endDate) : new Date();
     const now = new Date();
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
-    sevenDaysAgo.setHours(0, 0, 0, 0);
-    // Execute all dashboard queries in parallel with field projections for maximum performance
-    const [products, serializedSummary, activeUsages, overdueUsageCount, maintenanceCount, todayReceiptsCount, periodSales, pendingApprovalsCount, recentMovements, last7DaysSales, activeEmiSales,] = await Promise.all([
+    // Determine current period bounds (defaults to This Month if not passed)
+    const currentEnd = endDate ? new Date(endDate) : new Date();
+    let currentStart;
+    if (startDate) {
+        currentStart = new Date(startDate);
+    }
+    else {
+        currentStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    }
+    // Calculate equivalent previous period bounds for accurate comparisons
+    const durationMs = currentEnd.getTime() - currentStart.getTime();
+    const prevEnd = new Date(currentStart.getTime() - 1);
+    const prevStart = new Date(prevEnd.getTime() - durationMs);
+    const start = currentStart;
+    const end = currentEnd;
+    // 1. Parallel database queries across all required operational and financial models
+    const [products, serializedSummary, allSales, allEmiSales, allRentals, allMaintenanceRecords, periodReceipts, allReceipts, inventoryMovements, pendingApprovalsCount, recentMovements,] = await Promise.all([
         Product.find({ isActive: true })
-            .select('stockQuantity minStockThreshold purchaseCost defaultSellingPrice trackingMode')
+            .select('name sku brand category trackingMode purchaseCost defaultSellingPrice minStockThreshold stockQuantity locationStock updatedAt')
             .lean(),
         SerializedItem.aggregate([
             {
@@ -36,23 +58,20 @@ export async function getDashboardMetrics(startDate, endDate) {
                 },
             },
         ]),
-        InternalUsage.find({
-            status: { $in: [USAGE_STATUSES.ACTIVE, USAGE_STATUSES.PARTIALLY_RETURNED] },
-        }).select('items').lean(),
-        InternalUsage.countDocuments({
-            status: { $in: [USAGE_STATUSES.ACTIVE, USAGE_STATUSES.PARTIALLY_RETURNED, USAGE_STATUSES.OVERDUE] },
-            expectedReturnDate: { $lt: now },
-        }),
-        MaintenanceRecord.countDocuments({
-            status: { $in: [MAINTENANCE_STATUSES.IN_PROGRESS, MAINTENANCE_STATUSES.WAITING_PARTS] },
-        }),
-        PurchaseReceipt.countDocuments({ receivedDate: { $gte: start, $lte: end } }),
-        Sale.find({
-            saleStatus: { $ne: 'CANCELLED' },
-            createdAt: { $gte: start, $lte: end },
-        })
-            .select('grandTotal isEmi totalEmiPaid totalEmiDue')
+        Sale.find({ saleStatus: { $ne: 'CANCELLED' } })
+            .populate('lineItems.product', 'name sku purchaseCost defaultSellingPrice')
             .lean(),
+        Sale.find({ isEmi: true, saleStatus: { $nin: ['CANCELLED', 'RETURNED'] } })
+            .populate('lineItems.product', 'name sku purchaseCost')
+            .lean(),
+        InternalUsage.find({ isRental: true })
+            .populate('items.product', 'name sku brand purchaseCost')
+            .populate('items.serializedItemId', 'assetId manufacturerSerial unitCost')
+            .lean(),
+        MaintenanceRecord.find().lean(),
+        PurchaseReceipt.find({ receivedDate: { $gte: start, $lte: end } }).lean(),
+        PurchaseReceipt.find().lean(),
+        StockMovement.find().sort({ createdAt: -1 }).limit(100).lean(),
         InventoryAdjustment.countDocuments({ status: ADJUSTMENT_STATUSES.PENDING_APPROVAL }),
         StockMovement.find()
             .populate('product', 'name sku brand color')
@@ -62,27 +81,6 @@ export async function getDashboardMetrics(startDate, endDate) {
             .sort({ createdAt: -1 })
             .limit(10)
             .lean(),
-        Sale.aggregate([
-            {
-                $match: {
-                    saleStatus: { $ne: 'CANCELLED' },
-                    createdAt: { $gte: sevenDaysAgo },
-                },
-            },
-            {
-                $group: {
-                    _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-                    revenue: { $sum: '$grandTotal' },
-                    count: { $sum: 1 },
-                },
-            },
-            { $sort: { _id: 1 } },
-        ]),
-        Sale.find({
-            isEmi: true,
-            totalEmiDue: { $gt: 0 },
-            saleStatus: { $ne: 'CANCELLED' },
-        }).select('totalEmiDue monthlyEmiAmount').lean(),
     ]);
     // Index serialized aggregation by productId string
     const serializedMap = new Map();
@@ -91,73 +89,550 @@ export async function getDashboardMetrics(startDate, endDate) {
             serializedMap.set(s._id.toString(), { count: s.count, totalCost: s.totalCost });
         }
     }
-    const distinctProductCount = products.length;
+    // ── 2. Sales & Revenue Calculations (Current vs. Previous Period) ───────────
+    const currentSales = allSales.filter((s) => {
+        const d = new Date(s.createdAt);
+        return d >= start && d <= end && s.saleStatus !== 'RETURNED';
+    });
+    const prevSales = allSales.filter((s) => {
+        const d = new Date(s.createdAt);
+        return d >= prevStart && d <= prevEnd && s.saleStatus !== 'RETURNED';
+    });
+    // Sales Revenue (recognized from confirmed sales, excluding cancellations and returns)
+    const currentSalesRevenue = currentSales.reduce((sum, s) => sum + (s.grandTotal || 0), 0);
+    const prevSalesRevenue = prevSales.reduce((sum, s) => sum + (s.grandTotal || 0), 0);
+    // COGS for confirmed sales
+    let currentCOGS = 0;
+    for (const s of currentSales) {
+        for (const li of s.lineItems || []) {
+            const prod = li.product;
+            const unitCost = prod?.purchaseCost || 0;
+            currentCOGS += (li.quantity || 1) * unitCost;
+        }
+    }
+    let prevCOGS = 0;
+    for (const s of prevSales) {
+        for (const li of s.lineItems || []) {
+            const prod = li.product;
+            const unitCost = prod?.purchaseCost || 0;
+            prevCOGS += (li.quantity || 1) * unitCost;
+        }
+    }
+    // Gross Profit
+    const currentGrossProfit = currentSalesRevenue - currentCOGS;
+    const prevGrossProfit = prevSalesRevenue - prevCOGS;
+    const currentGrossMarginPct = currentSalesRevenue > 0 ? Number(((currentGrossProfit / currentSalesRevenue) * 100).toFixed(1)) : 0;
+    const prevGrossMarginPct = prevSalesRevenue > 0 ? Number(((prevGrossProfit / prevSalesRevenue) * 100).toFixed(1)) : 0;
+    // ── 3. Actual Cash Collected (Current vs. Previous Period) ───────────────────
+    // (A) Direct Sales Collections
+    const currDirectCash = currentSales
+        .filter((s) => !s.isEmi && s.paymentStatus === 'PAID')
+        .reduce((sum, s) => sum + (s.grandTotal || 0), 0);
+    const prevDirectCash = prevSales
+        .filter((s) => !s.isEmi && s.paymentStatus === 'PAID')
+        .reduce((sum, s) => sum + (s.grandTotal || 0), 0);
+    // (B) EMI Down Payments & Installments Collected
+    const currEmiDownPayments = currentSales
+        .filter((s) => s.isEmi)
+        .reduce((sum, s) => sum + (s.downPayment || 0), 0);
+    const prevEmiDownPayments = prevSales
+        .filter((s) => s.isEmi)
+        .reduce((sum, s) => sum + (s.downPayment || 0), 0);
+    let currEmiInstallments = 0;
+    let prevEmiInstallments = 0;
+    for (const s of allEmiSales) {
+        for (const p of s.emiPayments || []) {
+            const pDate = p.paidAt ? new Date(p.paidAt) : (p.status === 'PAID' ? new Date(p.dueDate) : null);
+            if (pDate) {
+                if (pDate >= start && pDate <= end && (p.amountPaid || 0) > 0) {
+                    currEmiInstallments += p.amountPaid;
+                }
+                else if (pDate >= prevStart && pDate <= prevEnd && (p.amountPaid || 0) > 0) {
+                    prevEmiInstallments += p.amountPaid;
+                }
+            }
+        }
+    }
+    // (C) Rental Collections
+    let currRentalIncome = 0;
+    let prevRentalIncome = 0;
+    let allTimeRentalCollected = 0;
+    let totalRentalDue = 0;
+    let totalRentalOverdue = 0;
+    let overdueRentalAgreementsCount = 0;
+    let totalSecurityDepositsHeld = 0;
+    let depositsAvailableForDeduction = 0;
+    let pendingRefundsTotal = 0;
+    let pendingRefundsCount = 0;
+    let approachingDeadlinesCount = 0;
+    const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    for (const u of allRentals) {
+        const isAct = u.status === USAGE_STATUSES.ACTIVE || u.status === USAGE_STATUSES.OVERDUE || u.status === USAGE_STATUSES.PARTIALLY_RETURNED;
+        const isRet = u.status === USAGE_STATUSES.RETURNED;
+        if (isAct) {
+            totalSecurityDepositsHeld += (u.depositBalance ?? u.securityDeposit ?? 0);
+            if (u.depositMode && (u.depositBalance ?? 0) > 0) {
+                depositsAvailableForDeduction += u.depositBalance;
+            }
+            if (u.expectedReturnDate && new Date(u.expectedReturnDate) <= thirtyDaysFromNow && new Date(u.expectedReturnDate) >= now) {
+                approachingDeadlinesCount++;
+            }
+        }
+        else if (isRet) {
+            const remainingDep = u.depositBalance ?? 0;
+            if (remainingDep > 0) {
+                pendingRefundsTotal += remainingDep;
+                pendingRefundsCount++;
+            }
+        }
+        let agreementOverdue = false;
+        for (const p of u.monthlyPayments || []) {
+            const pDate = p.paidAt ? new Date(p.paidAt) : (p.status === 'PAID' ? new Date(p.dueDate) : null);
+            if (pDate) {
+                if (pDate >= start && pDate <= end && (p.amountPaid || 0) > 0) {
+                    currRentalIncome += p.amountPaid;
+                }
+                else if (pDate >= prevStart && pDate <= prevEnd && (p.amountPaid || 0) > 0) {
+                    prevRentalIncome += p.amountPaid;
+                }
+            }
+            allTimeRentalCollected += (p.amountPaid || 0);
+            const remainingMonthDue = Math.max(0, (p.amountDue || 0) - (p.amountPaid || 0));
+            if (remainingMonthDue > 0) {
+                totalRentalDue += remainingMonthDue;
+                const pDueDate = p.dueDate ? new Date(p.dueDate) : now;
+                if (pDueDate < now) {
+                    totalRentalOverdue += remainingMonthDue;
+                    agreementOverdue = true;
+                }
+            }
+        }
+        if (agreementOverdue) {
+            overdueRentalAgreementsCount++;
+        }
+    }
+    // Fallback if payments array was empty but totalRentPaid is logged
+    if (currRentalIncome === 0 && start.getTime() === 0) {
+        currRentalIncome = allRentals.reduce((sum, u) => sum + (u.totalRentPaid || 0), 0);
+    }
+    const currentCashCollected = currDirectCash + currEmiDownPayments + currEmiInstallments + currRentalIncome;
+    const prevCashCollected = prevDirectCash + prevEmiDownPayments + prevEmiInstallments + prevRentalIncome;
+    // ── 4. Outstanding Receivables ──────────────────────────────────────────────
+    const totalEmiReceivables = allEmiSales.reduce((sum, s) => sum + (s.totalEmiDue || 0), 0);
+    const totalOutstandingReceivables = totalEmiReceivables + totalRentalDue;
+    // Overdue EMI calculation
+    let overdueEmiAmount = 0;
+    let overdueEmiCount = 0;
+    for (const s of allEmiSales) {
+        let saleHasOverdue = false;
+        for (const p of s.emiPayments || []) {
+            const unpaid = Math.max(0, (p.amountDue || 0) - (p.amountPaid || 0));
+            if (unpaid > 0 && p.dueDate && new Date(p.dueDate) < now) {
+                overdueEmiAmount += unpaid;
+                saleHasOverdue = true;
+            }
+        }
+        if (saleHasOverdue)
+            overdueEmiCount++;
+    }
+    // ── 5. Net Rental Profit & Fleet Performance ────────────────────────────────
+    const currMaintRecords = allMaintenanceRecords.filter((m) => {
+        const d = m.completedAt ? new Date(m.completedAt) : new Date(m.startedAt);
+        return d >= start && d <= end && m.status === MAINTENANCE_STATUSES.COMPLETED;
+    });
+    const prevMaintRecords = allMaintenanceRecords.filter((m) => {
+        const d = m.completedAt ? new Date(m.completedAt) : new Date(m.startedAt);
+        return d >= prevStart && d <= prevEnd && m.status === MAINTENANCE_STATUSES.COMPLETED;
+    });
+    const currMaintenanceExpense = currMaintRecords.reduce((sum, m) => sum + (m.cost || 0), 0);
+    const prevMaintenanceExpense = prevMaintRecords.reduce((sum, m) => sum + (m.cost || 0), 0);
+    const allTimeMaintenanceExpense = allMaintenanceRecords.reduce((sum, m) => sum + (m.cost || 0), 0);
+    const currentNetRentalProfit = currRentalIncome - currMaintenanceExpense;
+    const prevNetRentalProfit = prevRentalIncome - prevMaintenanceExpense;
+    // Fleet acquisition capex & capital recovery
+    let totalFleetCapex = 0;
+    let unrecoveredCapexCount = 0;
+    for (const u of allRentals) {
+        for (const it of u.items || []) {
+            const ser = it.serializedItemId;
+            const prod = it.product;
+            const cost = ser?.unitCost || prod?.purchaseCost || 0;
+            totalFleetCapex += cost;
+            if ((u.totalRentPaid || 0) < cost) {
+                unrecoveredCapexCount++;
+            }
+        }
+    }
+    const allTimeNetRentalProfit = allTimeRentalCollected - allTimeMaintenanceExpense;
+    const fleetCapexRecoveryPercent = totalFleetCapex > 0 ? Number(((allTimeNetRentalProfit / totalFleetCapex) * 100).toFixed(1)) : 100;
+    // ── 6. Inventory Valuation & Stock Health ───────────────────────────────────
     let totalUnitsOnHand = 0;
     let totalAvailableForSale = 0;
-    let lowStockCount = 0;
+    let totalUnitsInRental = 0;
+    let totalUnitsInMaintenance = 0;
+    let totalUnitsReserved = 0;
     let totalInventoryValuationAtCost = 0;
     let totalPotentialRetailValuation = 0;
+    let lowStockCount = 0;
+    let outOfStockCount = 0;
+    const lowStockItems = [];
+    const slowMovingItems = [];
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     for (const p of products) {
         const sq = p.stockQuantity || { onHand: 0, reserved: 0, issuedInternal: 0, quarantined: 0 };
         let onHand = sq.onHand || 0;
-        // For serialized items, use verified serial counts if available
         const serData = serializedMap.get(p._id.toString());
         if (p.trackingMode === TRACKING_MODES.SERIALIZED && serData && serData.count > 0) {
             onHand = Math.max(onHand, serData.count);
         }
-        const unavailable = (sq.reserved || 0) + (sq.issuedInternal || 0) + (sq.quarantined || 0);
-        const available = Math.max(0, onHand - unavailable);
+        const available = Math.max(0, onHand - (sq.reserved || 0) - (sq.issuedInternal || 0) - (sq.quarantined || 0));
         totalUnitsOnHand += onHand;
         totalAvailableForSale += available;
-        if (available <= (p.minStockThreshold || 5)) {
-            lowStockCount++;
-        }
-        // Accurate Valuation calculation
-        if (p.trackingMode === TRACKING_MODES.SERIALIZED && serData && serData.totalCost > 0) {
-            totalInventoryValuationAtCost += serData.totalCost;
-        }
-        else {
-            totalInventoryValuationAtCost += onHand * (p.purchaseCost || 0);
-        }
+        totalUnitsInRental += (sq.issuedInternal || 0);
+        totalUnitsInMaintenance += (sq.quarantined || 0);
+        totalUnitsReserved += (sq.reserved || 0);
+        const costVal = p.trackingMode === TRACKING_MODES.SERIALIZED && serData && serData.totalCost > 0
+            ? serData.totalCost
+            : onHand * (p.purchaseCost || 0);
+        totalInventoryValuationAtCost += costVal;
         totalPotentialRetailValuation += onHand * (p.defaultSellingPrice || 0);
-    }
-    // Calculate actual total units currently out on rental or internal loan (supports both bulk and serialized)
-    let totalUnitsInUse = 0;
-    for (const u of activeUsages) {
-        for (const item of u.items || []) {
-            totalUnitsInUse += Math.max(0, (item.quantityIssued || 0) - (item.quantityReturned || 0));
+        if (available === 0) {
+            outOfStockCount++;
+            lowStockItems.push({ name: p.name, sku: p.sku, available: 0, threshold: p.minStockThreshold || 5 });
+        }
+        else if (available <= (p.minStockThreshold || 5)) {
+            lowStockCount++;
+            lowStockItems.push({ name: p.name, sku: p.sku, available, threshold: p.minStockThreshold || 5 });
+        }
+        // Slow moving check: product updated before 30 days and no recent sales
+        const lastActive = p.updatedAt ? new Date(p.updatedAt) : thirtyDaysAgo;
+        if (lastActive < thirtyDaysAgo && onHand > 0) {
+            slowMovingItems.push({ name: p.name, sku: p.sku, onHand, costValue: costVal });
         }
     }
-    const productIssuedInternalSum = products.reduce((acc, p) => acc + (p.stockQuantity?.issuedInternal || 0), 0);
-    const serializedInUseCount = Math.max(totalUnitsInUse, productIssuedInternalSum);
-    const activeUsageCount = activeUsages.length;
-    const totalEmiReceivables = activeEmiSales.reduce((sum, s) => sum + (s.totalEmiDue || 0), 0);
-    const activeEmiSalesCount = activeEmiSales.length;
-    const quarantinedSum = products.reduce((acc, p) => acc + (p.stockQuantity?.quarantined || 0), 0);
-    const instrumentsUnderMaintenanceCount = Math.max(maintenanceCount, quarantinedSum);
-    const periodSalesCount = periodSales.length;
-    const periodSalesRevenue = periodSales.reduce((acc, s) => acc + (s.grandTotal || 0), 0);
+    // Active units on rent from InternalUsage items (reconciled)
+    let activeRentalsItemsCount = 0;
+    for (const u of allRentals) {
+        if (u.status === USAGE_STATUSES.ACTIVE || u.status === USAGE_STATUSES.OVERDUE || u.status === USAGE_STATUSES.PARTIALLY_RETURNED) {
+            for (const item of u.items || []) {
+                activeRentalsItemsCount += Math.max(0, (item.quantityIssued || 0) - (item.quantityReturned || 0));
+            }
+        }
+    }
+    const serializedInUseCount = Math.max(activeRentalsItemsCount, totalUnitsInRental);
+    const potentialGrossMargin = totalPotentialRetailValuation - totalInventoryValuationAtCost;
+    const potentialMarginPercent = totalPotentialRetailValuation > 0
+        ? Number(((potentialGrossMargin / totalPotentialRetailValuation) * 100).toFixed(1))
+        : 0;
+    // ── 7. Financial Health & Net Cash Movement ─────────────────────────────────
+    const inwardReceiptsValue = periodReceipts.reduce((sum, r) => {
+        const itemsVal = (r.lineItems || []).reduce((iSum, it) => iSum + (it.quantityReceived || 0) * (it.unitCost || 0), 0);
+        return sum + itemsVal;
+    }, 0);
+    const cashInflows = currentCashCollected;
+    const cashOutflows = inwardReceiptsValue + currMaintenanceExpense;
+    const netCashMovement = cashInflows - cashOutflows;
+    // ── 8. Overdue Equipment Returns ───────────────────────────────────────────
+    let overdueReturnsCount = 0;
+    let overdueReturnsAssetValue = 0;
+    for (const u of allRentals) {
+        const isAct = u.status === USAGE_STATUSES.ACTIVE || u.status === USAGE_STATUSES.OVERDUE || u.status === USAGE_STATUSES.PARTIALLY_RETURNED;
+        if (isAct && u.expectedReturnDate && new Date(u.expectedReturnDate) < now) {
+            overdueReturnsCount++;
+            for (const it of u.items || []) {
+                const ser = it.serializedItemId;
+                const prod = it.product;
+                overdueReturnsAssetValue += ser?.unitCost || prod?.purchaseCost || 0;
+            }
+        }
+    }
+    // ── 9. Prioritized Business Alerts ("Needs Attention") ──────────────────────
+    const businessAlerts = [];
+    if (overdueEmiCount > 0) {
+        businessAlerts.push({
+            id: 'alert-overdue-emi',
+            title: 'Overdue EMI Installments',
+            message: `${overdueEmiCount} customer EMI plan(s) have overdue payments totaling ₹${overdueEmiAmount.toLocaleString('en-IN')}`,
+            severity: 'critical',
+            category: 'FINANCIAL',
+            affectedCount: overdueEmiCount,
+            financialExposure: overdueEmiAmount,
+            deepLink: '/sales',
+            actionText: 'Review EMI Dues',
+        });
+    }
+    if (overdueRentalAgreementsCount > 0) {
+        businessAlerts.push({
+            id: 'alert-overdue-rent',
+            title: 'Overdue Rental Payments',
+            message: `${overdueRentalAgreementsCount} rental agreement(s) have overdue payments totaling ₹${totalRentalOverdue.toLocaleString('en-IN')}`,
+            severity: 'critical',
+            category: 'RENTAL',
+            affectedCount: overdueRentalAgreementsCount,
+            financialExposure: totalRentalOverdue,
+            deepLink: '/usage',
+            actionText: 'Collect Rent',
+        });
+    }
+    if (overdueReturnsCount > 0) {
+        businessAlerts.push({
+            id: 'alert-overdue-returns',
+            title: 'Overdue Instrument Returns',
+            message: `${overdueReturnsCount} rental instrument(s) are past their return deadline with ₹${overdueReturnsAssetValue.toLocaleString('en-IN')} in capital exposure`,
+            severity: 'high',
+            category: 'RENTAL',
+            affectedCount: overdueReturnsCount,
+            financialExposure: overdueReturnsAssetValue,
+            deepLink: '/usage',
+            actionText: 'Track Returns',
+        });
+    }
+    if (pendingRefundsCount > 0) {
+        businessAlerts.push({
+            id: 'alert-pending-refunds',
+            title: 'Customer Deposit Refunds Payable',
+            message: `${pendingRefundsCount} returned rental(s) have pending deposit refunds totaling ₹${pendingRefundsTotal.toLocaleString('en-IN')}`,
+            severity: 'medium',
+            category: 'FINANCIAL',
+            affectedCount: pendingRefundsCount,
+            financialExposure: pendingRefundsTotal,
+            deepLink: '/usage',
+            actionText: 'Disburse Refunds',
+        });
+    }
+    if (outOfStockCount > 0 || lowStockCount > 0) {
+        businessAlerts.push({
+            id: 'alert-stock-buffer',
+            title: 'Low Stock & Stockout Warning',
+            message: `${outOfStockCount} product(s) out of stock and ${lowStockCount} below minimum safety buffer`,
+            severity: 'medium',
+            category: 'INVENTORY',
+            affectedCount: outOfStockCount + lowStockCount,
+            financialExposure: 0,
+            deepLink: '/inventory',
+            actionText: 'Restock Inventory',
+        });
+    }
+    const activeMaintenanceCount = allMaintenanceRecords.filter((m) => m.status === MAINTENANCE_STATUSES.IN_PROGRESS || m.status === MAINTENANCE_STATUSES.WAITING_PARTS).length;
+    if (activeMaintenanceCount > 0) {
+        businessAlerts.push({
+            id: 'alert-maintenance',
+            title: 'Instruments Under Maintenance',
+            message: `${activeMaintenanceCount} asset(s) are currently undergoing repairs or awaiting spare parts`,
+            severity: 'low',
+            category: 'OPERATIONAL',
+            affectedCount: activeMaintenanceCount,
+            financialExposure: currMaintenanceExpense,
+            deepLink: '/returns-maintenance',
+            actionText: 'View Workshop',
+        });
+    }
+    // ── 10. Executive Trends (Daily Timeline) ───────────────────────────────────
+    const daysInPeriod = Math.max(1, Math.min(30, Math.ceil(durationMs / (24 * 60 * 60 * 1000))));
+    const dailyTimeline = [];
+    const trendStart = new Date(end);
+    trendStart.setDate(trendStart.getDate() - (daysInPeriod - 1));
+    trendStart.setHours(0, 0, 0, 0);
+    for (let i = 0; i < daysInPeriod; i++) {
+        const curD = new Date(trendStart);
+        curD.setDate(trendStart.getDate() + i);
+        const dayKey = curD.toISOString().slice(0, 10);
+        const dayLabel = curD.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' });
+        const daySales = currentSales.filter((s) => new Date(s.createdAt).toISOString().slice(0, 10) === dayKey);
+        const dayRev = daySales.reduce((sum, s) => sum + (s.grandTotal || 0), 0);
+        let dayCogs = 0;
+        for (const s of daySales) {
+            for (const li of s.lineItems || []) {
+                const prod = li.product;
+                dayCogs += (li.quantity || 1) * (prod?.purchaseCost || 0);
+            }
+        }
+        const dayDirectCash = daySales.filter((s) => !s.isEmi && s.paymentStatus === 'PAID').reduce((sum, s) => sum + (s.grandTotal || 0), 0);
+        const dayEmiDown = daySales.filter((s) => s.isEmi).reduce((sum, s) => sum + (s.downPayment || 0), 0);
+        // Rental collections for that day
+        let dayRentalCash = 0;
+        for (const u of allRentals) {
+            for (const p of u.monthlyPayments || []) {
+                if (p.paidAt && new Date(p.paidAt).toISOString().slice(0, 10) === dayKey) {
+                    dayRentalCash += (p.amountPaid || 0);
+                }
+            }
+        }
+        const dayCollections = dayDirectCash + dayEmiDown + dayRentalCash;
+        dailyTimeline.push({
+            date: dayKey,
+            label: dayLabel,
+            salesRevenue: dayRev,
+            cashCollected: dayCollections,
+            grossProfit: Math.max(0, dayRev - dayCogs),
+            rentalCollections: dayRentalCash,
+            rentalDue: totalRentalDue > 0 ? Math.round(totalRentalDue / daysInPeriod) : 0,
+        });
+    }
+    // ── 11. Compose Structured Response ─────────────────────────────────────────
+    const deltaRev = calcMetricDelta(currentSalesRevenue, prevSalesRevenue);
+    const deltaCash = calcMetricDelta(currentCashCollected, prevCashCollected);
+    const deltaProfit = calcMetricDelta(currentGrossProfit, prevGrossProfit);
+    const deltaRent = calcMetricDelta(currentNetRentalProfit, prevNetRentalProfit);
     return {
+        reportingPeriod: {
+            current: {
+                startDate: currentStart.toISOString(),
+                endDate: currentEnd.toISOString(),
+                label: `${currentStart.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })} – ${currentEnd.toLocaleDateString('en-IN', { month: 'short', day: 'numeric', year: 'numeric' })}`,
+            },
+            previous: {
+                startDate: prevStart.toISOString(),
+                endDate: prevEnd.toISOString(),
+                label: `${prevStart.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })} – ${prevEnd.toLocaleDateString('en-IN', { month: 'short', day: 'numeric', year: 'numeric' })}`,
+            },
+        },
+        // 1. Primary Executive Financials (The CEO's Core Question Cards)
+        executiveFinancials: {
+            salesRevenue: {
+                value: currentSalesRevenue,
+                previousValue: prevSalesRevenue,
+                deltaPercent: deltaRev.deltaPercent,
+                direction: deltaRev.direction,
+                definition: 'Recognized net revenue from confirmed sales transactions, excluding cancelled orders and customer returns.',
+                isAvailable: true,
+            },
+            cashCollected: {
+                value: currentCashCollected,
+                previousValue: prevCashCollected,
+                deltaPercent: deltaCash.deltaPercent,
+                direction: deltaCash.direction,
+                definition: 'Actual liquid funds received across direct POS sales, EMI installments, down payments, and rental income.',
+                isAvailable: true,
+            },
+            grossProfit: {
+                value: currentGrossProfit,
+                previousValue: prevGrossProfit,
+                deltaPercent: deltaProfit.deltaPercent,
+                direction: deltaProfit.direction,
+                marginPercent: currentGrossMarginPct,
+                previousMarginPercent: prevGrossMarginPct,
+                definition: 'Recognized sales revenue minus cost of goods sold (COGS) based on inventory purchase cost.',
+                isAvailable: true,
+            },
+            outstandingReceivables: {
+                value: totalOutstandingReceivables,
+                previousValue: totalOutstandingReceivables,
+                deltaPercent: 0,
+                direction: 'neutral',
+                emiReceivables: totalEmiReceivables,
+                rentalReceivables: totalRentalDue,
+                definition: 'Total outstanding credit balances owed by customers, including pending EMI installments and unpaid rental dues.',
+                isAvailable: true,
+            },
+            inventoryValuationAtCost: {
+                value: totalInventoryValuationAtCost,
+                previousValue: totalInventoryValuationAtCost,
+                deltaPercent: 0,
+                direction: 'neutral',
+                potentialRetailValue: totalPotentialRetailValuation,
+                potentialMargin: potentialGrossMargin,
+                marginPercent: potentialMarginPercent,
+                definition: 'Current valuation of all company-owned inventory at purchase cost across available, rented, and maintenance units.',
+                isAvailable: true,
+            },
+            netRentalProfit: {
+                value: currentNetRentalProfit,
+                previousValue: prevNetRentalProfit,
+                deltaPercent: deltaRent.deltaPercent,
+                direction: deltaRent.direction,
+                rentalRevenue: currRentalIncome,
+                maintenanceExpenses: currMaintenanceExpense,
+                allTimeProfit: allTimeNetRentalProfit,
+                capexRecoveryPercent: fleetCapexRecoveryPercent,
+                definition: 'Rental income collected during the period minus attributable instrument maintenance and servicing expenses.',
+                isAvailable: true,
+            },
+        },
+        // 2. Financial Health & Net Cash Movement
+        financialHealth: {
+            cashInflows,
+            cashOutflows,
+            netCashMovement,
+            directSalesCash: currDirectCash,
+            emiCollections: currEmiDownPayments + currEmiInstallments,
+            rentalCollections: currRentalIncome,
+            inventoryPurchases: inwardReceiptsValue,
+            maintenanceExpenses: currMaintenanceExpense,
+            customerDepositsHeld: totalSecurityDepositsHeld,
+            refundsPayable: pendingRefundsTotal,
+            outstandingEmiReceivables: totalEmiReceivables,
+            outstandingRentalReceivables: totalRentalDue,
+        },
+        // 3. Inventory & Asset Health (4-Part Stock Reconciliation)
+        inventoryHealth: {
+            totalUnitsOwned: totalUnitsOnHand,
+            totalAvailableForSale,
+            totalUnitsInRental: serializedInUseCount,
+            totalUnitsInMaintenance: Math.max(activeMaintenanceCount, totalUnitsInMaintenance),
+            totalUnitsReserved,
+            totalInventoryValuationAtCost,
+            totalPotentialRetailValuation,
+            potentialGrossMargin,
+            potentialMarginPercent,
+            lowStockCount,
+            outOfStockCount,
+            slowMovingCount: slowMovingItems.length,
+            lowStockItems: lowStockItems.slice(0, 5),
+            slowMovingItems: slowMovingItems.slice(0, 5),
+        },
+        // 4. Rental Business Performance
+        rentalPerformance: {
+            activeAgreements: allRentals.filter((u) => u.status === USAGE_STATUSES.ACTIVE || u.status === USAGE_STATUSES.OVERDUE).length,
+            instrumentsOnRent: serializedInUseCount,
+            rentalIncomeCollected: currRentalIncome,
+            allTimeRentalCollected,
+            totalRentalDue,
+            totalRentalOverdue,
+            overdueAgreementsCount: overdueRentalAgreementsCount,
+            totalSecurityDepositsHeld,
+            depositsAvailableForDeduction,
+            pendingRefundsTotal,
+            pendingRefundsCount,
+            approachingDeadlinesCount,
+            totalFleetCapex,
+            allTimeNetRentalProfit,
+            fleetCapexRecoveryPercent,
+            unrecoveredCapexCount,
+        },
+        // 5. Prioritized Business Alerts
+        businessAlerts,
+        // 6. Executive Trend Charts
+        executiveTrends: {
+            dailyTimeline,
+        },
+        // Backward compatible raw KPIs for legacy widgets
         kpis: {
             totalUnitsOnHand,
             totalAvailableForSale,
-            distinctProductCount,
+            distinctProductCount: products.length,
             serializedInUseCount,
             lowStockCount,
-            activeUsageCount,
-            overdueUsageCount,
-            instrumentsUnderMaintenanceCount,
-            todayReceiptsCount,
-            periodSalesCount,
-            periodSalesRevenue,
+            activeUsageCount: allRentals.filter((u) => u.status === USAGE_STATUSES.ACTIVE).length,
+            overdueUsageCount: overdueReturnsCount,
+            instrumentsUnderMaintenanceCount: Math.max(activeMaintenanceCount, totalUnitsInMaintenance),
+            todayReceiptsCount: periodReceipts.length,
+            periodSalesCount: currentSales.length,
+            periodSalesRevenue: currentSalesRevenue,
             pendingApprovalsCount,
             totalInventoryValuationAtCost,
             totalPotentialRetailValuation,
-            activeEmiSalesCount,
+            activeEmiSalesCount: allEmiSales.length,
             totalEmiReceivables,
+            currentCashCollected,
+            currentGrossProfit,
+            currentGrossMarginPct,
+            currentNetRentalProfit,
+            totalOutstandingReceivables,
+            netCashMovement,
         },
         recentMovements,
-        salesTrend: last7DaysSales,
+        salesTrend: dailyTimeline.map((d) => ({ _id: d.date, revenue: d.salesRevenue, count: 1 })),
     };
 }
 export async function getInventoryValuationReport() {
