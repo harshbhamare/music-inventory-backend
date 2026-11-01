@@ -336,6 +336,12 @@ export async function returnInstruments(usageId, input, actor) {
         usage.status = allReturned ? USAGE_STATUSES.RETURNED : USAGE_STATUSES.PARTIALLY_RETURNED;
         if (allReturned) {
             usage.actualReturnDate = new Date();
+            if ((usage.depositBalance ?? 0) > 0) {
+                usage.depositRefundStatus = 'REFUND_PENDING';
+            }
+            else {
+                usage.depositRefundStatus = 'REFUNDED';
+            }
         }
         await usage.save({ session });
         const usageReturn = new UsageReturn({
@@ -1531,4 +1537,84 @@ export async function updateRentalAgreement(usageId, input, actor) {
         reason: `Updated rental agreement terms / settlement for ${usage.issueReference}`,
     });
     return usage;
+}
+export async function refundSecurityDeposit(usageId, input, actor) {
+    const usage = await InternalUsage.findById(usageId);
+    if (!usage) {
+        throw new AppError('Rental agreement not found.', 404, 'NOT_FOUND');
+    }
+    const currentBalance = typeof usage.depositBalance === 'number' ? usage.depositBalance : 0;
+    if (currentBalance <= 0) {
+        throw new AppError('No refundable security deposit balance remaining on this agreement.', 400, 'NO_DEPOSIT_BALANCE');
+    }
+    const deductionAmount = Math.max(0, input.deductionAmount || 0);
+    const refundAmount = Math.max(0, input.refundAmount || 0);
+    const totalSettled = refundAmount + deductionAmount;
+    if (totalSettled > currentBalance) {
+        throw new AppError(`Total refund (₹${refundAmount}) + deductions (₹${deductionAmount}) cannot exceed available deposit balance (₹${currentBalance}).`, 400, 'EXCEEDS_DEPOSIT_BALANCE');
+    }
+    const balanceBefore = currentBalance;
+    const balanceAfter = Math.max(0, currentBalance - totalSettled);
+    usage.depositBalance = balanceAfter;
+    if (balanceAfter === 0) {
+        usage.depositExhausted = true;
+    }
+    usage.depositRefundStatus = balanceAfter === 0 ? 'REFUNDED' : 'REFUND_PENDING';
+    usage.depositRefundedAmount = (usage.depositRefundedAmount || 0) + refundAmount;
+    usage.depositRefundedAt = new Date();
+    usage.depositRefundMethod = input.paymentMethod || 'UPI';
+    usage.depositRefundTxnRef = input.transactionRef || `REFUND-${Date.now()}`;
+    usage.depositRefundNotes = input.notes || '';
+    if (deductionAmount > 0) {
+        usage.depositRefundDeductionAmount = (usage.depositRefundDeductionAmount || 0) + deductionAmount;
+        usage.depositRefundDeductionReason = input.deductionReason || 'Damage or setup adjustment';
+        if (!usage.depositDeductions)
+            usage.depositDeductions = [];
+        usage.depositDeductions.push({
+            monthIndex: (usage.depositDeductions.length || 0) + 1,
+            billingMonth: 'Return Damage / Adjustment Deduction',
+            deductedAmount: deductionAmount,
+            depositBalanceBefore: balanceBefore,
+            depositBalanceAfter: balanceBefore - deductionAmount,
+            deductedAt: new Date(),
+            deductedBy: new Types.ObjectId(actor.id),
+            noticeSent: true,
+            notes: input.deductionReason || 'Deduction from deposit upon return inspection',
+        });
+    }
+    usage.depositRefundProcessedBy = new Types.ObjectId(actor.id);
+    if (!usage.paymentLogs)
+        usage.paymentLogs = [];
+    usage.paymentLogs.push({
+        paymentType: 'DEPOSIT_REFUND',
+        amount: refundAmount,
+        paymentMethod: input.paymentMethod || 'UPI',
+        transactionRef: input.transactionRef || `REFUND-${Date.now()}`,
+        billingMonth: 'Security Deposit Refund',
+        notes: input.notes || `Security deposit refund disbursed to customer${deductionAmount > 0 ? ` (Deduction: ₹${deductionAmount})` : ''}`,
+        recordedBy: new Types.ObjectId(actor.id),
+        paidAt: new Date(),
+    });
+    usage.markModified('depositDeductions');
+    usage.markModified('paymentLogs');
+    await usage.save();
+    await logAudit({
+        actor,
+        action: 'UPDATE_INTERNAL_USAGE',
+        entityType: 'InternalUsage',
+        entityId: usage._id.toString(),
+        beforeState: { depositBalance: balanceBefore },
+        afterState: {
+            depositBalance: balanceAfter,
+            depositRefundedAmount: usage.depositRefundedAmount,
+            refundAmount,
+            deductionAmount,
+        },
+        reason: `Disbursed security deposit refund of ₹${refundAmount} (Deduction: ₹${deductionAmount}) for ${usage.issueReference}`,
+    });
+    const populated = await InternalUsage.findById(usage._id)
+        .populate('location', 'name code')
+        .populate('items.product', 'name sku brand trackingMode color defaultSellingPrice')
+        .populate('items.serializedItemId', 'assetId manufacturerSerial condition status');
+    return populated || usage;
 }

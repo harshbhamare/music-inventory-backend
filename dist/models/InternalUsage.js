@@ -34,7 +34,7 @@ const RentalReminderSchema = new Schema({
 const RentalPaymentLogSchema = new Schema({
     paymentType: {
         type: String,
-        enum: ['SECURITY_DEPOSIT', 'RENTAL_PAYMENT', 'DEPOSIT_DEDUCTION', 'MONTHLY_RENT', 'BUYOUT'],
+        enum: ['SECURITY_DEPOSIT', 'RENTAL_PAYMENT', 'DEPOSIT_DEDUCTION', 'DEPOSIT_REFUND', 'MONTHLY_RENT', 'BUYOUT'],
         required: true,
     },
     amount: { type: Number, required: true, min: 0 },
@@ -90,6 +90,19 @@ const InternalUsageSchema = new Schema({
     depositBalance: { type: Number, default: 0, min: 0 },
     depositExhausted: { type: Boolean, default: false },
     depositDeductions: [DepositDeductionSchema],
+    depositRefundStatus: {
+        type: String,
+        enum: ['HELD', 'REFUND_PENDING', 'REFUNDED'],
+        default: 'HELD',
+    },
+    depositRefundedAmount: { type: Number, default: 0, min: 0 },
+    depositRefundedAt: { type: Date },
+    depositRefundMethod: { type: String, trim: true },
+    depositRefundTxnRef: { type: String, trim: true },
+    depositRefundNotes: { type: String, trim: true },
+    depositRefundDeductionAmount: { type: Number, default: 0, min: 0 },
+    depositRefundDeductionReason: { type: String, trim: true },
+    depositRefundProcessedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     continuationStartedAt: { type: Date },
     monthlyRent: { type: Number, default: 0, min: 0 },
     includedAccessories: [{ type: String, trim: true }],

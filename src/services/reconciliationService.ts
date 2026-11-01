@@ -177,11 +177,14 @@ export async function runInventoryReconciliation(): Promise<{
 
     if (u.status === USAGE_STATUSES.ACTIVE || u.status === USAGE_STATUSES.OVERDUE || u.status === USAGE_STATUSES.PARTIALLY_RETURNED) {
       securityDepositsHeld += (u.depositBalance ?? u.securityDeposit ?? 0);
-    } else if (u.status === USAGE_STATUSES.RETURNED) {
+    } else if (u.status === USAGE_STATUSES.RETURNED || (u as any).depositRefundStatus === 'REFUND_PENDING') {
       const remainingDeposit = u.depositBalance ?? 0;
       if (remainingDeposit > 0) {
         refundsPending += remainingDeposit;
-      } else {
+      }
+      if ((u as any).depositRefundedAmount && (u as any).depositRefundedAmount > 0) {
+        securityDepositsRefunded += (u as any).depositRefundedAmount;
+      } else if (remainingDeposit === 0) {
         securityDepositsRefunded += (u.securityDeposit || 0);
       }
     }

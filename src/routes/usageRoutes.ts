@@ -16,6 +16,7 @@ import {
   sendDepositDeductionNotice,
   activateContinuationMode,
   updateRentalAgreement,
+  refundSecurityDeposit,
 } from '../services/internalUsageService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
@@ -31,6 +32,7 @@ import {
   addRentalMonthSchema,
   recordDepositDeductionSchema,
   sendDepositDeductionNoticeSchema,
+  refundDepositSchema,
 } from '../validators/index.js';
 import { ROLES, USAGE_STATUSES } from '../config/constants.js';
 
@@ -375,6 +377,22 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const usage = await activateContinuationMode(req.params.id as string, req.body, req.user!);
+      res.json({ success: true, data: { usage } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Refund security deposit to customer (deductions, cash/upi/bank transfer disbursement)
+router.post(
+  '/:id/refund-deposit',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  validate(refundDepositSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const usage = await refundSecurityDeposit(req.params.id as string, req.body, req.user!);
       res.json({ success: true, data: { usage } });
     } catch (err) {
       next(err);

@@ -360,3 +360,13 @@ export const sendDepositDeductionNoticeSchema = z.object({
         customNote: z.string().optional(),
     }),
 });
+export const refundDepositSchema = z.object({
+    body: z.object({
+        refundAmount: z.number().min(0, 'Refund amount cannot be negative'),
+        deductionAmount: z.number().min(0, 'Deduction amount cannot be negative').optional().default(0),
+        deductionReason: z.string().optional(),
+        paymentMethod: z.enum(Object.values(PAYMENT_METHODS)).optional().default(PAYMENT_METHODS.UPI),
+        transactionRef: z.string().optional().default(''),
+        notes: z.string().optional(),
+    }),
+});

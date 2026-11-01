@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { InternalUsage } from '../models/InternalUsage.js';
 import { UsageReturn } from '../models/UsageReturn.js';
-import { issueInstruments, returnInstruments, extendExpectedReturnDate, recordRentalPayment, updateRentalPayment, adjustRentalMonthDue, addRentalMonth, sendRentalReminder, getRentalDuesSummary, sendBulkRentalReminders, recordDepositDeduction, sendDepositDeductionNotice, activateContinuationMode, updateRentalAgreement, } from '../services/internalUsageService.js';
+import { issueInstruments, returnInstruments, extendExpectedReturnDate, recordRentalPayment, updateRentalPayment, adjustRentalMonthDue, addRentalMonth, sendRentalReminder, getRentalDuesSummary, sendBulkRentalReminders, recordDepositDeduction, sendDepositDeductionNotice, activateContinuationMode, updateRentalAgreement, refundSecurityDeposit, } from '../services/internalUsageService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { validate } from '../middleware/validate.js';
-import { issueInternalUsageSchema, updateRentalAgreementSchema, returnInternalUsageSchema, extendUsageSchema, recordRentalPaymentSchema, updateRentalPaymentSchema, adjustRentalMonthDueSchema, addRentalMonthSchema, recordDepositDeductionSchema, sendDepositDeductionNoticeSchema, } from '../validators/index.js';
+import { issueInternalUsageSchema, updateRentalAgreementSchema, returnInternalUsageSchema, extendUsageSchema, recordRentalPaymentSchema, updateRentalPaymentSchema, adjustRentalMonthDueSchema, addRentalMonthSchema, recordDepositDeductionSchema, sendDepositDeductionNoticeSchema, refundDepositSchema, } from '../validators/index.js';
 import { ROLES, USAGE_STATUSES } from '../config/constants.js';
 const router = Router();
 // List internal usage loans
@@ -243,6 +243,16 @@ router.post('/:id/deposit-deductions/:deductionId/send-notice', requireAuth, req
 router.post('/:id/activate-continuation', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
     try {
         const usage = await activateContinuationMode(req.params.id, req.body, req.user);
+        res.json({ success: true, data: { usage } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Refund security deposit to customer (deductions, cash/upi/bank transfer disbursement)
+router.post('/:id/refund-deposit', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(refundDepositSchema), async (req, res, next) => {
+    try {
+        const usage = await refundSecurityDeposit(req.params.id, req.body, req.user);
         res.json({ success: true, data: { usage } });
     }
     catch (err) {

@@ -235,7 +235,7 @@ export async function getDashboardMetrics(startDate?: Date, endDate?: Date) {
       if (u.expectedReturnDate && new Date(u.expectedReturnDate) <= thirtyDaysFromNow && new Date(u.expectedReturnDate) >= now) {
         approachingDeadlinesCount++;
       }
-    } else if (isRet) {
+    } else if (isRet || u.depositRefundStatus === 'REFUND_PENDING') {
       const remainingDep = u.depositBalance ?? 0;
       if (remainingDep > 0) {
         pendingRefundsTotal += remainingDep;
@@ -409,8 +409,18 @@ export async function getDashboardMetrics(startDate?: Date, endDate?: Date) {
     return sum + itemsVal;
   }, 0);
 
+  let currDepositRefundsDisbursed = 0;
+  for (const u of allRentals) {
+    if (u.depositRefundedAt) {
+      const refDate = new Date(u.depositRefundedAt);
+      if (refDate >= start && refDate <= end && (u.depositRefundedAmount || 0) > 0) {
+        currDepositRefundsDisbursed += (u.depositRefundedAmount || 0);
+      }
+    }
+  }
+
   const cashInflows = currentCashCollected;
-  const cashOutflows = inwardReceiptsValue + currMaintenanceExpense;
+  const cashOutflows = inwardReceiptsValue + currMaintenanceExpense + currDepositRefundsDisbursed;
   const netCashMovement = cashInflows - cashOutflows;
 
   // ── 8. Overdue Equipment Returns ───────────────────────────────────────────
