@@ -1203,6 +1203,9 @@ export async function sendRentalReminder(
 
 export async function getRentalDuesSummary() {
   const now = new Date();
+  // Upcoming horizon: only notify for payments due within the next 7 days
+  const reminderHorizon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
   const usages = await InternalUsage.find({
     status: {
       $in: [USAGE_STATUSES.ACTIVE, USAGE_STATUSES.PARTIALLY_RETURNED, USAGE_STATUSES.OVERDUE],
@@ -1221,24 +1224,53 @@ export async function getRentalDuesSummary() {
   const items: any[] = [];
 
   for (const u of usages) {
-    const isReturnOverdue = u.expectedReturnDate && new Date(u.expectedReturnDate) < now;
-    const unpaidMonths = (u.monthlyPayments || []).filter((p) => p.status !== 'PAID');
-    const overdueMonths = unpaidMonths.filter((p) => new Date(p.dueDate) < now);
+    // Skip if completely returned or closed
+    if (u.status === USAGE_STATUSES.RETURNED) {
+      continue;
+    }
+    const allReturned =
+      (u.items || []).length > 0 &&
+      u.items.every((i) => (i.quantityReturned || 0) >= (i.quantityIssued || 0));
+    if (allReturned) {
+      continue;
+    }
 
-    // --- Deposit-mode rentals: surface months that need a deduction notice sent ---
-    if ((u as any).depositMode) {
-      const pendingNoticeDeductions = ((u as any).depositDeductions || []).filter(
-        (d: any) => !d.noticeSent
-      );
-      if (pendingNoticeDeductions.length > 0) {
+    const unpaidMonths = (u.monthlyPayments || []).filter((p) => p.status !== 'PAID');
+    const actualUnpaidRent = unpaidMonths.reduce(
+      (acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)),
+      0
+    );
+
+    // Deposit-mode rentals:
+    // If deposit is active and has balance > 0, rent is covered by deposit deductions.
+    // Only if depositExhausted is true (or depositBalance <= 0) does the customer owe direct continuation rent.
+    if ((u as any).depositMode && !(u as any).depositExhausted && ((u as any).depositBalance ?? 0) > 0) {
+      // Dues are deducted from deposit — not customer direct dues.
+      // If there's an overdue physical return, we check that below; otherwise skip.
+      if (!u.expectedReturnDate || new Date(u.expectedReturnDate) >= now) {
+        continue;
+      }
+    }
+
+    const isReturnOverdue = Boolean(u.expectedReturnDate && new Date(u.expectedReturnDate) < now && !allReturned);
+
+    // If all rent has been paid:
+    if (actualUnpaidRent <= 0) {
+      if (isReturnOverdue) {
+        // Physical instrument return is overdue, but ZERO money is owed
         const primaryItem = u.items && u.items.length > 0 ? u.items[0] : null;
         const prod = primaryItem?.product as any;
         const serialUnit = primaryItem?.serializedItemId as any;
+        const daysOverdue = Math.max(
+          1,
+          Math.floor((now.getTime() - new Date(u.expectedReturnDate!).getTime()) / (1000 * 60 * 60 * 24))
+        );
 
+        overdueCount++;
         items.push({
           id: u._id.toString(),
           issueReference: u.issueReference,
-          loanType: 'RENTAL_DEPOSIT',
+          loanType: 'RENTAL',
           assignedPerson: u.assignedPerson,
           customerEmail: u.customerEmail,
           assignedPersonContact: u.assignedPersonContact,
@@ -1246,51 +1278,48 @@ export async function getRentalDuesSummary() {
           assetId: serialUnit?.assetId || serialUnit?.manufacturerSerial,
           totalRentDue: 0,
           monthlyRent: u.monthlyRent || 0,
-          depositBalance: (u as any).depositBalance ?? 0,
-          depositExhausted: (u as any).depositExhausted ?? false,
-          pendingNoticeDeductions,               // array of deductions awaiting notice
-          nextDueDate: pendingNoticeDeductions[0]?.deductedAt,
-          daysOverdue: 0,
-          status: 'DEPOSIT_NOTICE_PENDING',
-          billingMonth: pendingNoticeDeductions[0]?.billingMonth || 'Deposit Deduction',
+          nextDueDate: u.expectedReturnDate,
+          daysOverdue,
+          status: 'OVERDUE',
+          billingMonth: 'Equipment Return Overdue',
           remindersSentCount: u.remindersSent?.length || 0,
-          lastReminderSentAt: undefined,
+          lastReminderSentAt: u.remindersSent?.[u.remindersSent.length - 1]?.sentAt,
         });
       }
-      // Skip normal due logic for deposit-mode — customer doesn't owe separate rent
+      // If rent is paid and return is not overdue, skip completely!
       continue;
     }
 
-    const pendingRent =
-      u.totalRentDue > 0
-        ? u.totalRentDue
-        : unpaidMonths.reduce(
-            (acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)),
-            0
-          );
+    // There is unpaid rent! Check the earliest unpaid month:
+    const oldestDue = unpaidMonths[0];
+    const targetDueDate = oldestDue ? new Date(oldestDue.dueDate) : (u.expectedReturnDate ? new Date(u.expectedReturnDate) : now);
+    const isPaymentOverdue = targetDueDate < now;
+    const isDueSoon = targetDueDate >= now && targetDueDate <= reminderHorizon;
 
-    // If there is no pending rent and return is not overdue, skip
-    if (pendingRent <= 0 && !isReturnOverdue) {
+    // If the payment is not overdue AND not due within the next 7 days,
+    // that means the customer paid their current month before the deadline,
+    // and the next installment is weeks away. Do NOT trigger a notification!
+    if (!isPaymentOverdue && !isDueSoon && !isReturnOverdue) {
       continue;
     }
 
-    const isOverdue = isReturnOverdue || overdueMonths.length > 0;
-    const oldestDue = overdueMonths[0] || unpaidMonths[0];
-    const targetDueDate = oldestDue?.dueDate || u.expectedReturnDate;
-
+    const isOverdue = isPaymentOverdue || isReturnOverdue;
     let daysOverdue = 0;
-    if (targetDueDate && new Date(targetDueDate) < now) {
+    if (isOverdue) {
       daysOverdue = Math.max(
         1,
-        Math.floor((now.getTime() - new Date(targetDueDate).getTime()) / (1000 * 60 * 60 * 24))
+        Math.floor((now.getTime() - targetDueDate.getTime()) / (1000 * 60 * 60 * 24))
       );
     }
 
-    const dueAmount = pendingRent > 0 ? pendingRent : u.monthlyRent || 0;
+    // Precise amount due for this current/oldest unpaid month
+    const currentMonthDue = oldestDue
+      ? Math.max(0, oldestDue.amountDue - (oldestDue.amountPaid || 0))
+      : actualUnpaidRent;
 
-    totalPendingAmount += dueAmount;
+    totalPendingAmount += currentMonthDue;
     if (isOverdue) {
-      totalOverdueAmount += dueAmount;
+      totalOverdueAmount += currentMonthDue;
       overdueCount++;
     } else {
       dueSoonCount++;
@@ -1299,11 +1328,6 @@ export async function getRentalDuesSummary() {
     const primaryItem = u.items && u.items.length > 0 ? u.items[0] : null;
     const prod = primaryItem?.product as any;
     const serialUnit = primaryItem?.serializedItemId as any;
-
-    const lastReminder =
-      u.remindersSent && u.remindersSent.length > 0
-        ? u.remindersSent[u.remindersSent.length - 1]
-        : null;
 
     items.push({
       id: u._id.toString(),
@@ -1314,14 +1338,14 @@ export async function getRentalDuesSummary() {
       assignedPersonContact: u.assignedPersonContact,
       productName: prod?.name || 'Musical Instrument',
       assetId: serialUnit?.assetId || serialUnit?.manufacturerSerial,
-      totalRentDue: dueAmount,
+      totalRentDue: currentMonthDue,
       monthlyRent: u.monthlyRent || 0,
       nextDueDate: targetDueDate,
       daysOverdue,
-      status: isOverdue ? 'OVERDUE' : daysOverdue === 0 ? 'DUE' : 'UPCOMING',
+      status: isOverdue ? 'OVERDUE' : 'UPCOMING',
       billingMonth: oldestDue?.billingMonth || 'Active Loan Cycle',
       remindersSentCount: u.remindersSent?.length || 0,
-      lastReminderSentAt: lastReminder?.sentAt,
+      lastReminderSentAt: u.remindersSent?.[u.remindersSent.length - 1]?.sentAt,
     });
   }
 
@@ -1329,7 +1353,8 @@ export async function getRentalDuesSummary() {
   const emiSales = await Sale.find({
     isEmi: true,
     totalEmiDue: { $gt: 0 },
-    saleStatus: { $ne: 'CANCELLED' },
+    paymentStatus: { $ne: 'PAID' },
+    saleStatus: { $nin: ['CANCELLED', 'RETURNED'] },
   })
     .populate('lineItems.product', 'name sku brand')
     .sort({ createdAt: 1 })
@@ -1337,42 +1362,47 @@ export async function getRentalDuesSummary() {
 
   for (const sale of emiSales) {
     const unpaidEmis = (sale.emiPayments || []).filter((p) => p.status !== 'PAID');
-    const overdueEmis = unpaidEmis.filter((p) => new Date(p.dueDate) < now);
+    const actualUnpaidEmi = unpaidEmis.reduce(
+      (acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)),
+      0
+    );
 
-    const pendingEmi =
-      sale.totalEmiDue > 0
-        ? sale.totalEmiDue
-        : unpaidEmis.reduce((acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)), 0);
+    // If actual unpaid is 0, skip!
+    if (actualUnpaidEmi <= 0) continue;
 
-    if (pendingEmi <= 0) continue;
+    const oldestDue = unpaidEmis[0];
+    const targetDueDate = oldestDue?.dueDate ? new Date(oldestDue.dueDate) : new Date(sale.createdAt);
 
-    const isOverdue = overdueEmis.length > 0;
-    const oldestDue = overdueEmis[0] || unpaidEmis[0];
-    const targetDueDate = oldestDue?.dueDate || sale.createdAt;
+    const isEmiOverdue = targetDueDate < now;
+    const isEmiDueSoon = targetDueDate >= now && targetDueDate <= reminderHorizon;
+
+    // If not overdue and not due within 7 days, customer paid their recent EMI before deadline!
+    if (!isEmiOverdue && !isEmiDueSoon) {
+      continue;
+    }
 
     let daysOverdue = 0;
-    if (targetDueDate && new Date(targetDueDate) < now) {
+    if (isEmiOverdue) {
       daysOverdue = Math.max(
         1,
-        Math.floor((now.getTime() - new Date(targetDueDate).getTime()) / (1000 * 60 * 60 * 24))
+        Math.floor((now.getTime() - targetDueDate.getTime()) / (1000 * 60 * 60 * 24))
       );
     }
 
-    const dueAmount = pendingEmi;
+    const currentInstallmentDue = oldestDue
+      ? Math.max(0, oldestDue.amountDue - (oldestDue.amountPaid || 0))
+      : actualUnpaidEmi;
 
-    totalPendingAmount += dueAmount;
-    if (isOverdue) {
-      totalOverdueAmount += dueAmount;
+    totalPendingAmount += currentInstallmentDue;
+    if (isEmiOverdue) {
+      totalOverdueAmount += currentInstallmentDue;
       overdueCount++;
     } else {
       dueSoonCount++;
     }
 
-    const prodNames = sale.lineItems?.map((li: any) => li.product?.name).filter(Boolean).join(', ') || 'Musical Equipment';
-    const lastReminder =
-      sale.remindersSent && sale.remindersSent.length > 0
-        ? sale.remindersSent[sale.remindersSent.length - 1]
-        : null;
+    const prodNames =
+      sale.lineItems?.map((li: any) => li.product?.name).filter(Boolean).join(', ') || 'Musical Equipment';
 
     items.push({
       id: sale._id.toString(),
@@ -1382,22 +1412,25 @@ export async function getRentalDuesSummary() {
       customerEmail: sale.customerEmail,
       assignedPersonContact: sale.customerPhone,
       productName: prodNames,
-      totalRentDue: dueAmount,
-      monthlyRent: sale.monthlyEmiAmount || dueAmount,
+      totalRentDue: currentInstallmentDue,
+      monthlyRent: sale.monthlyEmiAmount || currentInstallmentDue,
       nextDueDate: targetDueDate,
       daysOverdue,
-      status: isOverdue ? 'OVERDUE' : daysOverdue === 0 ? 'DUE' : 'UPCOMING',
+      status: isEmiOverdue ? 'OVERDUE' : 'UPCOMING',
       billingMonth: oldestDue?.billingMonth || 'Active EMI Plan',
       remindersSentCount: sale.remindersSent?.length || 0,
-      lastReminderSentAt: lastReminder?.sentAt,
+      lastReminderSentAt: sale.remindersSent?.[sale.remindersSent.length - 1]?.sentAt,
     });
   }
 
-  // Sort items: OVERDUE first (descending daysOverdue), then DUE/UPCOMING
+  // Sort items: OVERDUE first (descending daysOverdue), then UPCOMING (closest nextDueDate first)
   items.sort((a, b) => {
     if (a.status === 'OVERDUE' && b.status !== 'OVERDUE') return -1;
     if (a.status !== 'OVERDUE' && b.status === 'OVERDUE') return 1;
-    return b.daysOverdue - a.daysOverdue;
+    if (a.status === 'OVERDUE' && b.status === 'OVERDUE') {
+      return b.daysOverdue - a.daysOverdue;
+    }
+    return new Date(a.nextDueDate).getTime() - new Date(b.nextDueDate).getTime();
   });
 
   return {

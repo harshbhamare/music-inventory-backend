@@ -446,6 +446,10 @@ export async function recordEmiPayment(saleId, input, actor) {
     if (!txnRef) {
         throw new AppError('Transaction number / UPI reference is compulsory.', 400, 'TRANSACTION_REF_REQUIRED');
     }
+    const unpaidInstallments = (sale.emiPayments || []).filter((p) => p.status !== 'PAID');
+    if (unpaidInstallments.length === 0) {
+        throw new AppError('All EMI installments for this sale are already fully paid.', 400, 'ALL_EMIS_PAID');
+    }
     let payment = null;
     if (input.paymentId) {
         payment = sale.emiPayments.find((p) => p._id?.toString() === input.paymentId || p.id === input.paymentId);
@@ -457,37 +461,69 @@ export async function recordEmiPayment(saleId, input, actor) {
         payment = sale.emiPayments.find((p) => p.billingMonth === input.billingMonth);
     }
     else {
-        payment = sale.emiPayments.find((p) => p.status !== 'PAID');
+        payment = unpaidInstallments[0];
     }
-    if (!payment) {
-        throw new AppError('No eligible unpaid EMI installment found for this sale.', 400, 'NO_UNPAID_EMI');
-    }
-    // Multi-installment sequential allocation: allows paying directly at once or settling multiple months
+    const totalRemainingDue = unpaidInstallments.reduce((acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)), 0);
+    const discount = Math.max(0, Math.round(input.earlySettlementDiscount || 0));
+    const isEarlySettlement = Boolean(input.settleAllRemaining ||
+        discount > 0 ||
+        (Math.round(input.amount) >= totalRemainingDue && unpaidInstallments.length > 1));
     let remainingPaymentToAllocate = Math.round(input.amount);
-    const unpaidInstallments = sale.emiPayments.filter((p) => p.status !== 'PAID');
-    const targetList = payment && !unpaidInstallments.includes(payment)
-        ? [payment, ...unpaidInstallments]
-        : (payment ? [payment, ...unpaidInstallments.filter((p) => p !== payment)] : unpaidInstallments);
-    for (const p of targetList) {
-        if (remainingPaymentToAllocate <= 0)
-            break;
-        const currentUnpaidOnMonth = Math.max(0, p.amountDue - (p.amountPaid || 0));
-        const payThisMonth = Math.min(remainingPaymentToAllocate, currentUnpaidOnMonth);
-        p.amountPaid = (p.amountPaid || 0) + payThisMonth;
-        p.paidAt = new Date();
-        p.paymentMethod = input.paymentMethod || 'UPI';
-        p.transactionRef = txnRef;
-        p.notes = input.notes?.trim() || p.notes;
-        if (p.amountPaid >= p.amountDue) {
+    const affectedPayments = [];
+    if (isEarlySettlement && (input.settleAllRemaining || discount > 0)) {
+        // Lump-sum payoff / foreclosure of all remaining installments
+        for (const p of unpaidInstallments) {
+            const currentUnpaid = Math.max(0, p.amountDue - (p.amountPaid || 0));
+            const payThis = Math.min(remainingPaymentToAllocate, currentUnpaid);
+            p.amountPaid = (p.amountPaid || 0) + payThis;
+            p.paidAt = new Date();
+            p.paymentMethod = input.paymentMethod || 'UPI';
+            p.transactionRef = txnRef;
+            // In early settlement, if a discount is applied, adjust amountDue to match actual paid so no residual due remains
+            if (p.amountPaid < p.amountDue && (input.settleAllRemaining || discount > 0)) {
+                const waivedOnMonth = p.amountDue - p.amountPaid;
+                p.amountDue = p.amountPaid;
+                p.notes = `${p.notes ? p.notes + ' | ' : ''}Early settlement waiver of ₹${waivedOnMonth} applied`;
+            }
             p.status = 'PAID';
+            remainingPaymentToAllocate -= payThis;
+            affectedPayments.push(p);
         }
-        remainingPaymentToAllocate -= payThisMonth;
+        // If extra funds remain, credit to the last installment
+        if (remainingPaymentToAllocate > 0 && affectedPayments.length > 0) {
+            const lastP = affectedPayments[affectedPayments.length - 1];
+            lastP.amountPaid = (lastP.amountPaid || 0) + remainingPaymentToAllocate;
+            lastP.amountDue = lastP.amountPaid;
+        }
     }
-    // If there is still extra amount remaining beyond all scheduled dues, credit it to the target payment
-    if (remainingPaymentToAllocate > 0 && payment) {
-        payment.amountPaid = (payment.amountPaid || 0) + remainingPaymentToAllocate;
+    else {
+        // Sequential multi-installment allocation across target & unpaid list
+        const targetList = payment && !unpaidInstallments.includes(payment)
+            ? [payment, ...unpaidInstallments]
+            : (payment ? [payment, ...unpaidInstallments.filter((p) => p !== payment)] : unpaidInstallments);
+        for (const p of targetList) {
+            if (remainingPaymentToAllocate <= 0)
+                break;
+            const currentUnpaidOnMonth = Math.max(0, p.amountDue - (p.amountPaid || 0));
+            const payThisMonth = Math.min(remainingPaymentToAllocate, currentUnpaidOnMonth);
+            p.amountPaid = (p.amountPaid || 0) + payThisMonth;
+            p.paidAt = new Date();
+            p.paymentMethod = input.paymentMethod || 'UPI';
+            p.transactionRef = txnRef;
+            if (input.notes?.trim()) {
+                p.notes = p.notes ? `${p.notes} | ${input.notes.trim()}` : input.notes.trim();
+            }
+            if (p.amountPaid >= p.amountDue) {
+                p.status = 'PAID';
+            }
+            remainingPaymentToAllocate -= payThisMonth;
+            affectedPayments.push(p);
+        }
+        if (remainingPaymentToAllocate > 0 && payment) {
+            payment.amountPaid = (payment.amountPaid || 0) + remainingPaymentToAllocate;
+        }
     }
-    // Recalculate totals with clean whole-rupee rounding
+    // Recalculate totals
     sale.totalEmiPaid = Math.round((sale.downPayment || 0) + sale.emiPayments.reduce((acc, p) => acc + (p.amountPaid || 0), 0));
     sale.totalEmiDue = Math.round(sale.emiPayments.reduce((acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)), 0));
     if (sale.totalEmiDue <= 0) {
@@ -499,32 +535,42 @@ export async function recordEmiPayment(saleId, input, actor) {
     if (!sale.paymentLogs) {
         sale.paymentLogs = [];
     }
+    const affectedMonthsStr = affectedPayments.map((p) => p.billingMonth).join(', ') || payment?.billingMonth || 'EMI';
+    const logNotes = isEarlySettlement
+        ? `Early payoff of remaining ${affectedPayments.length} EMIs (${affectedMonthsStr})${discount > 0 ? ` | Early payoff waiver/discount: ₹${discount}` : ''}${input.notes ? ` | ${input.notes.trim()}` : ''}`
+        : input.notes?.trim() || `EMI payment for ${affectedMonthsStr}`;
     sale.paymentLogs.push({
-        paymentType: 'EMI_INSTALLMENT',
-        amount: payment.amountPaid,
-        paymentMethod: payment.paymentMethod,
-        transactionRef: payment.transactionRef,
-        billingMonth: payment.billingMonth,
-        notes: payment.notes,
+        paymentType: isEarlySettlement ? 'EMI_EARLY_SETTLEMENT' : 'EMI_INSTALLMENT',
+        amount: Math.round(input.amount),
+        paymentMethod: input.paymentMethod || 'UPI',
+        transactionRef: txnRef,
+        billingMonth: affectedMonthsStr,
+        notes: logNotes,
         recordedBy: new Types.ObjectId(actor.id),
-        paidAt: payment.paidAt,
+        paidAt: new Date(),
     });
+    sale.markModified('emiPayments');
+    sale.markModified('paymentLogs');
     await sale.save();
     await logAudit({
         actor,
-        action: 'RECORD_EMI_PAYMENT',
+        action: isEarlySettlement ? 'RECORD_EMI_EARLY_SETTLEMENT' : 'RECORD_EMI_PAYMENT',
         entityType: 'Sale',
         entityId: sale._id.toString(),
         afterState: {
             invoiceNumber: sale.invoiceNumber,
-            billingMonth: payment.billingMonth,
-            amountPaid: payment.amountPaid,
-            transactionRef: payment.transactionRef,
-            paymentMethod: payment.paymentMethod,
+            billingMonth: affectedMonthsStr,
+            amountPaid: Math.round(input.amount),
+            transactionRef: txnRef,
+            paymentMethod: input.paymentMethod || 'UPI',
             totalEmiPaid: sale.totalEmiPaid,
             totalEmiDue: sale.totalEmiDue,
+            isEarlySettlement,
+            discount,
         },
-        reason: `Recorded EMI installment payment for ${payment.billingMonth} (₹${payment.amountPaid}, Trx: ${payment.transactionRef}) on ${sale.invoiceNumber}`,
+        reason: isEarlySettlement
+            ? `Recorded early settlement payoff of ${affectedPayments.length} EMIs (${affectedMonthsStr}) for ₹${input.amount} (Discount: ₹${discount}, Trx: ${txnRef}) on ${sale.invoiceNumber}`
+            : `Recorded EMI payment for ${affectedMonthsStr} (₹${input.amount}, Trx: ${txnRef}) on ${sale.invoiceNumber}`,
     });
     // Dispatch receipt email to customer
     if (sale.customerEmail && sale.customerEmail.includes('@')) {
@@ -536,21 +582,206 @@ export async function recordEmiPayment(saleId, input, actor) {
             customerContact: sale.customerPhone,
             invoiceNumber: sale.invoiceNumber,
             productName: prodName,
-            amountPaid: payment.amountPaid,
-            amountDue: payment.amountDue,
-            paymentMethod: payment.paymentMethod || 'UPI',
-            transactionRef: payment.transactionRef,
-            billingMonth: payment.billingMonth,
-            paidAt: payment.paidAt,
+            amountPaid: Math.round(input.amount),
+            amountDue: sale.totalEmiDue,
+            paymentMethod: input.paymentMethod || 'UPI',
+            transactionRef: txnRef,
+            billingMonth: affectedMonthsStr,
+            paidAt: new Date(),
             totalEmiPaid: sale.totalEmiPaid,
             totalEmiDue: sale.totalEmiDue,
             nextDueDate: nextPayment?.dueDate,
             recordedBy: { name: actor.name, email: actor.email, role: actor.role },
-            notes: payment.notes,
+            notes: logNotes,
         }).catch((emailErr) => {
             console.error('[EMAIL_EMI_RECEIPT_ERROR]', emailErr);
         });
     }
+    return sale;
+}
+export async function adjustEmiInstallmentDue(saleId, input, actor) {
+    const sale = await Sale.findById(saleId).populate('lineItems.product', 'name sku brand');
+    if (!sale) {
+        throw new AppError('Sale record not found.', 404, 'SALE_NOT_FOUND');
+    }
+    if (!sale.isEmi) {
+        throw new AppError('This sale is not an EMI installment plan.', 400, 'NOT_AN_EMI_SALE');
+    }
+    const payment = sale.emiPayments.find((p) => p.monthIndex === input.monthIndex);
+    if (!payment) {
+        throw new AppError(`Month ${input.monthIndex} not found in EMI schedule.`, 404, 'MONTH_NOT_FOUND');
+    }
+    const prevDue = payment.amountDue;
+    payment.amountDue = Math.max(0, Math.round(input.newAmountDue));
+    if (input.newDueDate) {
+        payment.dueDate = new Date(input.newDueDate);
+    }
+    if (input.reason) {
+        payment.notes = (payment.notes ? payment.notes + ' | ' : '') + input.reason.trim();
+    }
+    if ((payment.amountPaid || 0) >= payment.amountDue && payment.amountDue > 0) {
+        payment.status = 'PAID';
+    }
+    else if ((payment.amountPaid || 0) > 0) {
+        payment.status = 'DUE';
+    }
+    else {
+        payment.status = 'DUE';
+    }
+    const diff = prevDue - payment.amountDue;
+    if (input.carryForwardDifference && diff !== 0) {
+        const nextPayment = sale.emiPayments.find((p) => p.monthIndex === payment.monthIndex + 1);
+        if (nextPayment) {
+            nextPayment.amountDue = Math.max(0, nextPayment.amountDue + diff);
+            const diffText = diff > 0 ? `+₹${diff}` : `-₹${Math.abs(diff)}`;
+            nextPayment.notes = `${nextPayment.notes ? nextPayment.notes + ' | ' : ''}Auto-adjusted (${diffText}) from Month ${payment.monthIndex} edit`;
+        }
+        else if (diff > 0) {
+            const lastPayment = sale.emiPayments[sale.emiPayments.length - 1];
+            const nextDueDate = new Date(lastPayment.dueDate);
+            nextDueDate.setMonth(nextDueDate.getMonth() + 1);
+            const nextMonthName = nextDueDate.toLocaleString('default', { month: 'short', year: 'numeric' });
+            const nextIndex = payment.monthIndex + 1;
+            sale.emiPayments.push({
+                monthIndex: nextIndex,
+                billingMonth: `Month ${nextIndex} (${nextMonthName})`,
+                dueDate: nextDueDate,
+                amountDue: diff,
+                amountPaid: 0,
+                status: 'DUE',
+                notes: `Auto-generated to carry forward ₹${diff} from Month ${payment.monthIndex} adjustment`,
+            });
+            sale.emiTenureMonths = Math.max(sale.emiTenureMonths || 0, nextIndex);
+        }
+    }
+    // Recalculate totals
+    sale.totalEmiPaid = Math.round((sale.downPayment || 0) + sale.emiPayments.reduce((acc, p) => acc + (p.amountPaid || 0), 0));
+    sale.totalEmiDue = Math.round(sale.emiPayments.reduce((acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)), 0));
+    if (sale.totalEmiDue <= 0) {
+        sale.paymentStatus = PAYMENT_STATUSES.PAID;
+    }
+    else {
+        sale.paymentStatus = PAYMENT_STATUSES.PARTIAL;
+    }
+    sale.markModified('emiPayments');
+    await sale.save();
+    await logAudit({
+        actor,
+        action: 'EMI_INSTALLMENT_DUE_ADJUSTED',
+        entityType: 'Sale',
+        entityId: sale._id.toString(),
+        afterState: { monthIndex: input.monthIndex, prevDue, newDue: payment.amountDue, totalEmiDue: sale.totalEmiDue },
+        reason: `Adjusted EMI for Month ${input.monthIndex} from ₹${prevDue} to ₹${payment.amountDue}. ${input.reason || ''}`,
+    });
+    return sale;
+}
+export async function updateEmiPayment(saleId, input, actor) {
+    const sale = await Sale.findById(saleId).populate('lineItems.product', 'name sku brand');
+    if (!sale) {
+        throw new AppError('Sale record not found.', 404, 'SALE_NOT_FOUND');
+    }
+    if (!sale.isEmi) {
+        throw new AppError('This sale is not an EMI installment plan.', 400, 'NOT_AN_EMI_SALE');
+    }
+    const payment = sale.emiPayments.find((p) => p.monthIndex === input.monthIndex);
+    if (!payment) {
+        throw new AppError(`Month ${input.monthIndex} not found in EMI schedule.`, 404, 'MONTH_NOT_FOUND');
+    }
+    if (input.amountDue !== undefined) {
+        payment.amountDue = Math.max(0, Math.round(input.amountDue));
+    }
+    if (input.amountPaid !== undefined) {
+        payment.amountPaid = Math.max(0, Math.round(input.amountPaid));
+    }
+    if (input.paymentMethod !== undefined) {
+        payment.paymentMethod = input.paymentMethod;
+    }
+    if (input.transactionRef !== undefined) {
+        payment.transactionRef = input.transactionRef.trim() || undefined;
+    }
+    if (input.notes !== undefined) {
+        payment.notes = input.notes.trim() || undefined;
+    }
+    if (payment.amountPaid >= payment.amountDue && payment.amountDue > 0) {
+        payment.status = 'PAID';
+        if (!payment.paidAt)
+            payment.paidAt = new Date();
+    }
+    else if (payment.amountPaid > 0) {
+        payment.status = 'DUE';
+    }
+    else {
+        payment.status = 'DUE';
+        payment.paidAt = undefined;
+    }
+    // Recalculate totals
+    sale.totalEmiPaid = Math.round((sale.downPayment || 0) + sale.emiPayments.reduce((acc, p) => acc + (p.amountPaid || 0), 0));
+    sale.totalEmiDue = Math.round(sale.emiPayments.reduce((acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)), 0));
+    if (sale.totalEmiDue <= 0) {
+        sale.paymentStatus = PAYMENT_STATUSES.PAID;
+    }
+    else {
+        sale.paymentStatus = PAYMENT_STATUSES.PARTIAL;
+    }
+    sale.markModified('emiPayments');
+    await sale.save();
+    await logAudit({
+        actor,
+        action: 'UPDATE_EMI_PAYMENT',
+        entityType: 'Sale',
+        entityId: sale._id.toString(),
+        afterState: {
+            monthIndex: input.monthIndex,
+            amountPaid: payment.amountPaid,
+            amountDue: payment.amountDue,
+            transactionRef: payment.transactionRef,
+            totalEmiDue: sale.totalEmiDue,
+        },
+        reason: `Updated EMI payment for Month ${input.monthIndex} (₹${payment.amountPaid}, Trx: ${payment.transactionRef || 'N/A'})`,
+    });
+    return sale;
+}
+export async function addEmiInstallmentMonth(saleId, input, actor) {
+    const sale = await Sale.findById(saleId).populate('lineItems.product', 'name sku brand');
+    if (!sale) {
+        throw new AppError('Sale record not found.', 404, 'SALE_NOT_FOUND');
+    }
+    if (!sale.isEmi) {
+        throw new AppError('This sale is not an EMI installment plan.', 400, 'NOT_AN_EMI_SALE');
+    }
+    const nextIndex = (sale.emiPayments?.length || 0) + 1;
+    let nextDueDate;
+    if (input.dueDate) {
+        nextDueDate = new Date(input.dueDate);
+    }
+    else {
+        const lastPayment = sale.emiPayments && sale.emiPayments.length > 0 ? sale.emiPayments[sale.emiPayments.length - 1] : null;
+        nextDueDate = lastPayment ? new Date(lastPayment.dueDate) : new Date();
+        nextDueDate.setMonth(nextDueDate.getMonth() + 1);
+    }
+    const nextMonthName = nextDueDate.toLocaleString('default', { month: 'short', year: 'numeric' });
+    sale.emiPayments.push({
+        monthIndex: nextIndex,
+        billingMonth: `Month ${nextIndex} (${nextMonthName})`,
+        dueDate: nextDueDate,
+        amountDue: Math.max(0, Math.round(input.amountDue)),
+        amountPaid: 0,
+        status: 'DUE',
+        notes: input.reason?.trim() || 'Extended EMI installment',
+    });
+    sale.emiTenureMonths = sale.emiPayments.length;
+    sale.totalEmiDue = Math.round(sale.emiPayments.reduce((acc, p) => acc + Math.max(0, p.amountDue - (p.amountPaid || 0)), 0));
+    sale.paymentStatus = sale.totalEmiDue <= 0 ? PAYMENT_STATUSES.PAID : PAYMENT_STATUSES.PARTIAL;
+    sale.markModified('emiPayments');
+    await sale.save();
+    await logAudit({
+        actor,
+        action: 'ADD_EMI_INSTALLMENT_MONTH',
+        entityType: 'Sale',
+        entityId: sale._id.toString(),
+        afterState: { monthIndex: nextIndex, amountDue: input.amountDue, tenureMonths: sale.emiTenureMonths },
+        reason: `Added EMI Month ${nextIndex} (₹${input.amountDue}). ${input.reason || ''}`,
+    });
     return sale;
 }
 export async function sendEmiReminder(saleId, actor, options) {

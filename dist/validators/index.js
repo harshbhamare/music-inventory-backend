@@ -133,13 +133,41 @@ export const createSaleSchema = z.object({
 });
 export const recordEmiPaymentSchema = z.object({
     body: z.object({
-        amount: z.number().min(1, 'Payment amount must be greater than 0'),
+        amount: z.number().min(0, 'Payment amount must be 0 or greater'),
         billingMonth: z.string().optional(),
         paymentId: z.string().optional(),
         monthIndex: z.number().int().min(1).optional(),
         paymentMethod: z.string().optional().default('UPI'),
         transactionRef: z.string().min(1, 'Transaction number / UPI reference is compulsory'),
         notes: z.string().optional(),
+        earlySettlementDiscount: z.number().min(0).optional(),
+        settleAllRemaining: z.boolean().optional(),
+    }),
+});
+export const adjustEmiInstallmentDueSchema = z.object({
+    body: z.object({
+        monthIndex: z.number().int().min(1, 'Month index is required'),
+        newAmountDue: z.number().min(0, 'Amount due must be 0 or greater'),
+        newDueDate: z.string().optional(),
+        carryForwardDifference: z.boolean().optional(),
+        reason: z.string().optional(),
+    }),
+});
+export const updateEmiPaymentSchema = z.object({
+    body: z.object({
+        monthIndex: z.number().int().min(1, 'Month index is required'),
+        amountPaid: z.number().min(0).optional(),
+        amountDue: z.number().min(0).optional(),
+        paymentMethod: z.string().optional(),
+        transactionRef: z.string().optional(),
+        notes: z.string().optional(),
+    }),
+});
+export const addEmiInstallmentMonthSchema = z.object({
+    body: z.object({
+        amountDue: z.number().min(0, 'Amount due must be 0 or greater'),
+        dueDate: z.string().optional(),
+        reason: z.string().optional(),
     }),
 });
 export const updateSaleSchema = z.object({

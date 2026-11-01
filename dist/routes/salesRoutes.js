@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { Sale } from '../models/Sale.js';
 import { CustomerReturn } from '../models/CustomerReturn.js';
-import { createSale, updateSale, processSaleReturn, recordEmiPayment, sendEmiReminder } from '../services/salesService.js';
+import { createSale, updateSale, processSaleReturn, recordEmiPayment, adjustEmiInstallmentDue, updateEmiPayment, addEmiInstallmentMonth, sendEmiReminder, } from '../services/salesService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { validate } from '../middleware/validate.js';
-import { createSaleSchema, updateSaleSchema, recordEmiPaymentSchema } from '../validators/index.js';
+import { createSaleSchema, updateSaleSchema, recordEmiPaymentSchema, adjustEmiInstallmentDueSchema, updateEmiPaymentSchema, addEmiInstallmentMonthSchema, } from '../validators/index.js';
 import { ROLES } from '../config/constants.js';
 const router = Router();
 // List sales
@@ -200,6 +200,61 @@ router.post('/:id/emi-reminders', requireAuth, requireRole(ROLES.SUPER_ADMIN, RO
     try {
         const result = await sendEmiReminder(req.params.id, req.user, req.body);
         res.json({ success: true, data: result });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Adjust specific EMI installment due amount or schedule
+router.post('/:id/adjust-emi-due', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(adjustEmiInstallmentDueSchema), async (req, res, next) => {
+    try {
+        const sale = await adjustEmiInstallmentDue(req.params.id, req.body, req.user);
+        const populated = await Sale.findById(sale._id)
+            .populate('location', 'name code address')
+            .populate('soldBy', 'name email')
+            .populate('lineItems.product', 'name sku brand modelName defaultSellingPrice color')
+            .populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition')
+            .populate('paymentLogs.recordedBy', 'name email')
+            .populate('remindersSent.sentBy', 'name email')
+            .lean();
+        res.json({ success: true, data: { sale: populated } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Edit recorded EMI installment payment
+router.put('/:id/emi-payments/:monthIndex', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(updateEmiPaymentSchema), async (req, res, next) => {
+    try {
+        const monthIndex = parseInt(req.params.monthIndex, 10);
+        const sale = await updateEmiPayment(req.params.id, { ...req.body, monthIndex }, req.user);
+        const populated = await Sale.findById(sale._id)
+            .populate('location', 'name code address')
+            .populate('soldBy', 'name email')
+            .populate('lineItems.product', 'name sku brand modelName defaultSellingPrice color')
+            .populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition')
+            .populate('paymentLogs.recordedBy', 'name email')
+            .populate('remindersSent.sentBy', 'name email')
+            .lean();
+        res.json({ success: true, data: { sale: populated } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Add an extra EMI month to the plan
+router.post('/:id/add-emi-month', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(addEmiInstallmentMonthSchema), async (req, res, next) => {
+    try {
+        const sale = await addEmiInstallmentMonth(req.params.id, req.body, req.user);
+        const populated = await Sale.findById(sale._id)
+            .populate('location', 'name code address')
+            .populate('soldBy', 'name email')
+            .populate('lineItems.product', 'name sku brand modelName defaultSellingPrice color')
+            .populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition')
+            .populate('paymentLogs.recordedBy', 'name email')
+            .populate('remindersSent.sentBy', 'name email')
+            .lean();
+        res.json({ success: true, data: { sale: populated } });
     }
     catch (err) {
         next(err);
