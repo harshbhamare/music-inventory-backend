@@ -13,6 +13,8 @@ import {
   sendNotificationEmail,
   sendTestEmail,
   dispatchReportEmail,
+  getEmailEngineStatus,
+  resetResendDailyQuota,
 } from '../services/emailService.js';
 import { EmailDeliveryLog } from '../models/EmailDeliveryLog.js';
 import { EmailReportConfig } from '../models/EmailReportConfig.js';
@@ -169,13 +171,39 @@ router.post(
       res.json({
         success: true,
         message: `Test email successfully dispatched to ${targetRecipient}`,
-        data: { log },
+        data: {
+          log,
+          provider: log?.provider,
+          failoverFrom: log?.failoverFrom,
+          failoverReason: log?.failoverReason,
+        },
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: { message: err.message || 'Failed to send test email.' } });
     }
   }
 );
+
+// Get live Dual-Engine Email Status & Daily Quota
+router.get('/email-status', requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const status = await getEmailEngineStatus();
+    res.json({ success: true, data: status });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Reset Resend Daily Quota (Superadmin maintenance action)
+router.post('/email-reset-quota', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    await resetResendDailyQuota();
+    const status = await getEmailEngineStatus();
+    res.json({ success: true, message: 'Resend daily quota tracker reset successfully', data: status });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // Trigger manual daily summary dispatch
 router.post(

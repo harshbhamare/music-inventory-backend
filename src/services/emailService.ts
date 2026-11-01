@@ -90,6 +90,109 @@ export function getEmailTransporter(): Transporter | null {
   return null;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Resend Daily Quota & Failover State Manager
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ResendQuotaState {
+  dateKey: string;           // 'YYYY-MM-DD' in UTC
+  countToday: number;        // Emails successfully sent today via Resend
+  quotaExhausted: boolean;   // Flagged true when Resend API returns 429 or daily limit error
+  lastExhaustedReason?: string;
+  lastFailoverAt?: Date;
+  initialized: boolean;
+}
+
+const resendState: ResendQuotaState = {
+  dateKey: '',
+  countToday: 0,
+  quotaExhausted: false,
+  initialized: false,
+};
+
+function getTodayDateKey(): string {
+  const now = new Date();
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
+}
+
+export async function resetResendDailyQuota(): Promise<void> {
+  resendState.dateKey = getTodayDateKey();
+  resendState.countToday = 0;
+  resendState.quotaExhausted = false;
+  resendState.lastExhaustedReason = undefined;
+  resendState.lastFailoverAt = undefined;
+  resendState.initialized = true;
+  console.log('[RESEND_QUOTA] Resend daily quota tracker manually reset.');
+}
+
+async function ensureResendStateInitialized(): Promise<void> {
+  const todayKey = getTodayDateKey();
+  if (resendState.dateKey !== todayKey || !resendState.initialized) {
+    resendState.dateKey = todayKey;
+    resendState.quotaExhausted = false;
+    resendState.lastExhaustedReason = undefined;
+
+    try {
+      const startOfDay = new Date();
+      startOfDay.setUTCHours(0, 0, 0, 0);
+      const dbCount = await EmailDeliveryLog.countDocuments({
+        provider: 'RESEND',
+        status: 'SENT',
+        createdAt: { $gte: startOfDay },
+      });
+      resendState.countToday = dbCount;
+      const dailyQuota = ENV.RESEND_DAILY_QUOTA || 100;
+      if (resendState.countToday >= dailyQuota) {
+        resendState.quotaExhausted = true;
+        resendState.lastExhaustedReason = `Daily limit reached (${resendState.countToday}/${dailyQuota} emails sent today)`;
+      }
+    } catch {
+      resendState.countToday = 0;
+    }
+    resendState.initialized = true;
+  }
+}
+
+export async function getEmailEngineStatus() {
+  await ensureResendStateInitialized();
+  const apiKey = (process.env.RESEND_API_KEY || ENV.RESEND_API_KEY || '').trim();
+  const resendConfigured = Boolean(apiKey && apiKey.startsWith('re_'));
+  const transporter = getEmailTransporter();
+  const nodemailerConfigured = Boolean(transporter);
+  const dailyQuota = ENV.RESEND_DAILY_QUOTA || 100;
+
+  let activeEngine: 'RESEND' | 'NODEMAILER' | 'SIMULATED';
+  if (resendConfigured && !resendState.quotaExhausted && resendState.countToday < dailyQuota) {
+    activeEngine = 'RESEND';
+  } else if (nodemailerConfigured) {
+    activeEngine = 'NODEMAILER';
+  } else {
+    activeEngine = 'SIMULATED';
+  }
+
+  return {
+    activeEngine,
+    resend: {
+      configured: resendConfigured,
+      apiKeyMasked: resendConfigured ? `${apiKey.slice(0, 5)}...${apiKey.slice(-4)}` : null,
+      dailyQuota,
+      usedToday: resendState.countToday,
+      remainingToday: Math.max(0, dailyQuota - resendState.countToday),
+      quotaExhausted: resendState.quotaExhausted,
+      exhaustedReason: resendState.lastExhaustedReason,
+      lastFailoverAt: resendState.lastFailoverAt,
+    },
+    nodemailer: {
+      configured: nodemailerConfigured,
+      transportType: (process.env.GMAIL_USER || ENV.SMTP_USER) ? 'GMAIL_SSL' : 'CUSTOM_SMTP',
+      host: ENV.SMTP_HOST,
+      userMasked: (process.env.GMAIL_USER || ENV.SMTP_USER)
+        ? (process.env.GMAIL_USER || ENV.SMTP_USER).replace(/^(.{2})(.*)(@.*)$/, '$1***$3')
+        : null,
+    },
+  };
+}
+
 export function normalizeRecipients(input?: string | string[]): string[] {
   if (!input) return [];
   const list = Array.isArray(input) ? input : input.split(/[,;\s]+/);
@@ -134,6 +237,127 @@ async function resolveRecipients(
   return [];
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Dedicated Engine Dispatchers
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function sendViaResend(
+  org: { companyName: string },
+  senderFrom: string,
+  validRecipients: string[],
+  params: SendEmailParams
+): Promise<{ success: boolean; id?: string; error?: string; isQuotaExceeded?: boolean; statusCode?: number }> {
+  const apiKey = (process.env.RESEND_API_KEY || ENV.RESEND_API_KEY || '').trim();
+  if (!apiKey) {
+    return { success: false, error: 'No Resend API Key configured' };
+  }
+
+  // Determine sender for Resend:
+  // If custom RESEND_FROM is set in .env (e.g. "StereoBliss" <sales@stereobliss.com>), prioritize it.
+  // Otherwise if senderFrom has a domain, use it; fallback to standard onboarding sandbox for testing.
+  let resendFrom = (process.env.RESEND_FROM || ENV.RESEND_FROM || '').trim();
+  if (!resendFrom) {
+    if (senderFrom && !senderFrom.includes('gmail.com') && !senderFrom.includes('localhost')) {
+      resendFrom = senderFrom;
+    } else {
+      resendFrom = `"${org.companyName}" <onboarding@resend.dev>`;
+    }
+  }
+
+  const resendPayload: any = {
+    from: resendFrom,
+    to: validRecipients,
+    subject: params.subject,
+    html: params.htmlContent,
+  };
+
+  if (params.attachments && params.attachments.length > 0) {
+    resendPayload.attachments = params.attachments.map((att) => ({
+      filename: att.filename,
+      content: att.content.toString('base64'),
+    }));
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s fast timeout
+
+  try {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(resendPayload),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    const data = (await response.json().catch(() => ({}))) as any;
+
+    if (response.ok && data?.id) {
+      return { success: true, id: data.id };
+    }
+
+    const errorMsg = data?.message || data?.error?.message || (typeof data === 'string' ? data : JSON.stringify(data));
+    const isQuota =
+      response.status === 429 ||
+      response.status === 402 ||
+      /quota|rate.?limit|limit.?exceeded|exceeded.*limit|daily.*limit|payment.?required|too.?many.?requests/i.test(errorMsg);
+
+    return {
+      success: false,
+      error: errorMsg,
+      isQuotaExceeded: isQuota,
+      statusCode: response.status,
+    };
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    return {
+      success: false,
+      error: err.name === 'AbortError' ? 'Resend API request timed out after 12s' : (err.message || String(err)),
+      isQuotaExceeded: false,
+    };
+  }
+}
+
+async function sendViaNodemailer(
+  senderFrom: string,
+  validRecipients: string[],
+  params: SendEmailParams
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  const transporter = getEmailTransporter();
+  if (!transporter) {
+    return { success: false, error: 'No Nodemailer SMTP transporter configured' };
+  }
+
+  const mailOptions: any = {
+    from: senderFrom,
+    to: validRecipients.join(', '),
+    subject: params.subject,
+    html: params.htmlContent,
+  };
+
+  if (params.attachments && params.attachments.length > 0) {
+    mailOptions.attachments = params.attachments.map((att) => ({
+      filename: att.filename,
+      content: att.content,
+      contentType: att.contentType || 'application/pdf',
+    }));
+  }
+
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    return { success: true, messageId: info.messageId };
+  } catch (err: any) {
+    return { success: false, error: err.message || String(err) };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Intelligent Dual-Engine Dispatcher with Automatic Failover
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function sendNotificationEmail(params: SendEmailParams) {
   // Idempotency check
   if (params.idempotencyKey) {
@@ -148,6 +372,9 @@ export async function sendNotificationEmail(params: SendEmailParams) {
   }
 
   let status: 'SENT' | 'SIMULATED' | 'FAILED' = 'SIMULATED';
+  let provider: 'RESEND' | 'NODEMAILER' | 'SIMULATED' = 'SIMULATED';
+  let failoverFrom: string | undefined;
+  let failoverReason: string | undefined;
   let errorDetails: string | undefined;
   let providerReference: string | undefined;
 
@@ -159,86 +386,96 @@ export async function sendNotificationEmail(params: SendEmailParams) {
   }
 
   const org = await getOrgInfo();
-  const transporter = getEmailTransporter();
+  await ensureResendStateInitialized();
+
+  const apiKey = (process.env.RESEND_API_KEY || ENV.RESEND_API_KEY || '').trim();
+  const resendConfigured = Boolean(apiKey && apiKey.startsWith('re_'));
+  const dailyQuota = ENV.RESEND_DAILY_QUOTA || 100;
+  const canUseResend = resendConfigured && !resendState.quotaExhausted && resendState.countToday < dailyQuota;
+
   const gmailUser = (process.env.GMAIL_USER || ENV.SMTP_USER || '').trim();
   const rawSender = gmailUser || ENV.EMAIL_FROM || 'sales@stereobliss.com';
   const senderFrom = rawSender.includes('<') ? rawSender : `"${org.companyName}" <${rawSender}>`;
 
-  if (transporter) {
-    // Delivery via configured Gmail SSL or SMTP
-    try {
-      const mailOptions: any = {
-        from: senderFrom,
-        to: validRecipients.join(', '),
-        subject: params.subject,
-        html: params.htmlContent,
-      };
+  // 1. PRIMARY ATTEMPT: Resend API
+  if (canUseResend) {
+    const resendResult = await sendViaResend(org, senderFrom, validRecipients, params);
 
-      if (params.attachments && params.attachments.length > 0) {
-        mailOptions.attachments = params.attachments.map((att) => ({
-          filename: att.filename,
-          content: att.content,
-          contentType: att.contentType || 'application/pdf',
-        }));
-      }
-
-      const info = await transporter.sendMail(mailOptions);
+    if (resendResult.success) {
       status = 'SENT';
-      providerReference = info.messageId;
-      console.log(`[EMAIL_SENT] "${params.subject}" sent via SMTP to [${validRecipients.join(', ')}]. MsgId: ${info.messageId}`);
-    } catch (err: any) {
-      status = 'FAILED';
-      errorDetails = err.message || String(err);
-      console.error(`[EMAIL_ERROR] SMTP delivery failed for "${params.subject}":`, err);
-    }
-  } else if (ENV.RESEND_API_KEY) {
-    // Delivery via Resend API
-    try {
-      const resendPayload: any = {
-        from: senderFrom,
-        to: validRecipients,
-        subject: params.subject,
-        html: params.htmlContent,
-      };
-
-      if (params.attachments && params.attachments.length > 0) {
-        resendPayload.attachments = params.attachments.map((att) => ({
-          filename: att.filename,
-          content: att.content.toString('base64'),
-        }));
+      provider = 'RESEND';
+      providerReference = resendResult.id;
+      resendState.countToday++;
+      console.log(
+        `[EMAIL_SENT] "${params.subject}" delivered via Resend API to [${validRecipients.join(', ')}]. ID: ${resendResult.id} (Resend usage today: ${resendState.countToday}/${dailyQuota})`
+      );
+    } else {
+      // Resend failed — classify whether daily quota was exceeded or network error
+      if (resendResult.isQuotaExceeded) {
+        resendState.quotaExhausted = true;
+        resendState.lastExhaustedReason = resendResult.error;
+        resendState.lastFailoverAt = new Date();
+        console.warn(
+          `[EMAIL_FAILOVER] Resend daily quota/limit reached (${resendResult.error}). Seamlessly switching to Nodemailer SMTP...`
+        );
+      } else {
+        console.warn(
+          `[EMAIL_FAILOVER] Resend delivery encountered error (${resendResult.error}). Attempting immediate fallback to Nodemailer SMTP...`
+        );
       }
 
-      const response = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${ENV.RESEND_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(resendPayload),
-      });
+      // ── FAILOVER ATTEMPT: Nodemailer SMTP ──
+      const nodemailerResult = await sendViaNodemailer(senderFrom, validRecipients, params);
 
-      const data = (await response.json()) as any;
-      if (response.ok) {
+      if (nodemailerResult.success) {
         status = 'SENT';
-        providerReference = data.id;
-        console.log(`[EMAIL_SENT] "${params.subject}" sent via Resend API to [${validRecipients.join(', ')}]. ID: ${data.id}`);
+        provider = 'NODEMAILER';
+        failoverFrom = 'RESEND';
+        failoverReason = resendResult.error;
+        providerReference = nodemailerResult.messageId;
+        console.log(
+          `[EMAIL_FAILOVER_SUCCESS] "${params.subject}" delivered via Nodemailer SMTP fallback to [${validRecipients.join(', ')}]. MsgId: ${nodemailerResult.messageId}`
+        );
       } else {
         status = 'FAILED';
-        errorDetails = data.message || JSON.stringify(data);
-        console.error(`[EMAIL_ERROR] Resend API error:`, data);
+        errorDetails = `Resend failed (${resendResult.error}); Nodemailer fallback failed (${nodemailerResult.error})`;
+        console.error(`[EMAIL_ERROR] Both Resend and Nodemailer failed for "${params.subject}":`, errorDetails);
       }
-    } catch (err: any) {
-      status = 'FAILED';
-      errorDetails = err.message;
-      console.error(`[EMAIL_ERROR] Resend API request failed:`, err);
     }
   } else {
-    // Simulated mode with full audit logging
-    status = 'SIMULATED';
-    providerReference = `sim-${Date.now()}`;
-    console.log(
-      `[EMAIL_SIMULATED] Subject: "${params.subject}" to [${validRecipients.join(', ')}] (Add Gmail app password or SMTP in .env for real delivery)`
-    );
+    // 2. RESEND NOT AVAILABLE OR DAILY QUOTA ALREADY EXHAUSTED: Route directly to Nodemailer
+    if (resendConfigured && (resendState.quotaExhausted || resendState.countToday >= dailyQuota)) {
+      console.log(
+        `[EMAIL_ROUTER] Resend daily quota limit active (${resendState.countToday}/${dailyQuota}). Routing directly to Nodemailer SMTP.`
+      );
+      failoverFrom = 'RESEND';
+      failoverReason = resendState.lastExhaustedReason || `Daily quota of ${dailyQuota} emails reached`;
+    }
+
+    const nodemailerResult = await sendViaNodemailer(senderFrom, validRecipients, params);
+
+    if (nodemailerResult.success) {
+      status = 'SENT';
+      provider = 'NODEMAILER';
+      providerReference = nodemailerResult.messageId;
+      console.log(
+        `[EMAIL_SENT] "${params.subject}" delivered via Nodemailer SMTP to [${validRecipients.join(', ')}]. MsgId: ${nodemailerResult.messageId}`
+      );
+    } else {
+      if (!getEmailTransporter()) {
+        // Neither active Resend nor SMTP credentials configured — simulated mode
+        status = 'SIMULATED';
+        provider = 'SIMULATED';
+        providerReference = `sim-${Date.now()}`;
+        console.log(
+          `[EMAIL_SIMULATED] Subject: "${params.subject}" to [${validRecipients.join(', ')}] (Provide RESEND_API_KEY or SMTP credentials in .env for live transmission)`
+        );
+      } else {
+        status = 'FAILED';
+        errorDetails = nodemailerResult.error;
+        console.error(`[EMAIL_ERROR] Nodemailer delivery failed for "${params.subject}":`, errorDetails);
+      }
+    }
   }
 
   const log = await EmailDeliveryLog.create({
@@ -247,6 +484,9 @@ export async function sendNotificationEmail(params: SendEmailParams) {
     subject: params.subject,
     bodySnippet: params.htmlContent.substring(0, 300).replace(/<[^>]+>/g, ''),
     status,
+    provider,
+    failoverFrom,
+    failoverReason,
     deliveryAttempt: 1,
     providerReference,
     errorDetails,
@@ -1228,27 +1468,50 @@ export async function sendTestEmail(recipient?: string | string[], triggeredBy?:
     throw new Error('Please enter a recipient email address to send the test email.');
   }
 
+  const engineStatus = await getEmailEngineStatus();
   const nowStr = new Date().toLocaleString('en-IN', { dateStyle: 'full', timeStyle: 'medium' });
-  const gmailUser = process.env.GMAIL_USER || ENV.SMTP_USER;
+  const activeEngineLabel =
+    engineStatus.activeEngine === 'RESEND'
+      ? 'Resend API (Primary HTTP Service)'
+      : engineStatus.activeEngine === 'NODEMAILER'
+      ? 'Nodemailer SMTP (Failover / Direct SMTP)'
+      : 'Simulated Engine (Dev / Audit Mode)';
 
   const html = `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: auto; padding: 24px; border: 1px solid #10b981; border-radius: 12px; background: #ffffff;">
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 620px; margin: auto; padding: 24px; border: 1px solid #10b981; border-radius: 12px; background: #ffffff;">
       <div style="border-bottom: 2px solid #10b981; padding-bottom: 12px; margin-bottom: 16px;">
-        <h2 style="color: #065f46; margin: 0; font-size: 20px;">✅ Gmail SMTP Operational Test</h2>
+        <h2 style="color: #065f46; margin: 0; font-size: 20px;">✅ Dual-Engine Email System Verification</h2>
         <div style="color: #64748b; font-size: 13px; margin-top: 4px;">${org.companyName} — ${org.storeName}</div>
       </div>
       <p style="color: #334155; font-size: 14px; line-height: 1.6;">
-        This email confirms that your <strong>Google App Password and Gmail SMTP delivery service</strong> are functioning properly.
+        This test confirms that your <strong>Dual-Engine Email Architecture (Resend API Primary + Nodemailer Auto-Failover)</strong> is functioning properly.
       </p>
-      <div style="background: #f0fdf4; border-left: 4px solid #10b981; padding: 14px; border-radius: 6px; margin: 16px 0;">
-        <div style="font-size: 12px; color: #166534; font-weight: 700; text-transform: uppercase;">Delivery Status: VERIFIED ACTIVE</div>
-        <div style="font-size: 13px; color: #065f46; margin-top: 6px;">Sender Account: <strong>${gmailUser}</strong></div>
-        <div style="font-size: 13px; color: #065f46; margin-top: 2px;">Recipient: <strong>${validRecipients.join(', ')}</strong></div>
-        <div style="font-size: 13px; color: #065f46; margin-top: 2px;">Dispatched By: <strong>${triggeredBy || 'Administrator'}</strong></div>
-        <div style="font-size: 12px; color: #64748b; margin-top: 6px;">Timestamp: ${nowStr}</div>
+
+      <div style="background: #f0fdf4; border-left: 4px solid #10b981; padding: 16px; border-radius: 6px; margin: 16px 0;">
+        <div style="font-size: 12px; color: #166534; font-weight: 700; text-transform: uppercase;">⚡ Active Dispatch Engine: ${activeEngineLabel}</div>
+        <div style="font-size: 13px; color: #065f46; margin-top: 8px;">
+          Resend Status: <strong>${engineStatus.resend.configured ? 'Configured' : 'Not Set'}</strong> 
+          (${engineStatus.resend.usedToday} / ${engineStatus.resend.dailyQuota} used today &bull; ${engineStatus.resend.remainingToday} remaining)
+        </div>
+        <div style="font-size: 13px; color: #065f46; margin-top: 4px;">
+          Nodemailer Failover: <strong>${engineStatus.nodemailer.configured ? 'Active & Ready' : 'Not Configured'}</strong> (${engineStatus.nodemailer.transportType})
+        </div>
+        <div style="font-size: 13px; color: #065f46; margin-top: 4px;">
+          Recipient: <strong>${validRecipients.join(', ')}</strong>
+        </div>
+        <div style="font-size: 13px; color: #065f46; margin-top: 4px;">
+          Dispatched By: <strong>${triggeredBy || 'Administrator'}</strong>
+        </div>
+        <div style="font-size: 12px; color: #64748b; margin-top: 8px;">Timestamp: ${nowStr}</div>
       </div>
+
+      <div style="font-size: 12px; color: #475569; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 14px; line-height: 1.6;">
+        <strong>How Failover Works:</strong> All customer receipts, rental confirmations, and reminders send via Resend API. 
+        If your daily free limit (${engineStatus.resend.dailyQuota} emails) is reached or Resend reports rate limiting, our system auto-switches to Nodemailer SMTP instantly with zero message loss.
+      </div>
+
       <div style="margin-top: 24px; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center;">
-        Stereobliss Retail Inventory System &bull; Secure Transactional Dispatch
+        Stereobliss Retail Inventory System &bull; Intelligent Dual-Engine Transactional Mailer
       </div>
     </div>
   `;
@@ -1256,7 +1519,7 @@ export async function sendTestEmail(recipient?: string | string[], triggeredBy?:
   return sendNotificationEmail({
     reportType: REPORT_TYPES.TEST_EMAIL,
     recipients: validRecipients,
-    subject: `✅ Gmail SMTP Test Succeeded — ${org.companyName} (${new Date().toLocaleTimeString('en-IN')})`,
+    subject: `✅ Dual-Engine Email Test Succeeded — ${org.companyName} (${new Date().toLocaleTimeString('en-IN')})`,
     htmlContent: html,
   });
 }

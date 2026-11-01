@@ -7,6 +7,9 @@ export interface IEmailDeliveryLog extends Document {
   subject: string;
   bodySnippet?: string;
   status: 'SENT' | 'FAILED' | 'SIMULATED';
+  provider?: 'RESEND' | 'NODEMAILER' | 'SIMULATED';
+  failoverFrom?: string;
+  failoverReason?: string;
   deliveryAttempt: number;
   providerReference?: string;
   errorDetails?: string;
@@ -29,6 +32,13 @@ const EmailDeliveryLogSchema = new Schema<IEmailDeliveryLog>(
       enum: ['SENT', 'FAILED', 'SIMULATED'],
       required: true,
     },
+    provider: {
+      type: String,
+      enum: ['RESEND', 'NODEMAILER', 'SIMULATED'],
+      default: 'SIMULATED',
+    },
+    failoverFrom: { type: String },
+    failoverReason: { type: String },
     deliveryAttempt: { type: Number, default: 1 },
     providerReference: { type: String },
     errorDetails: { type: String },
