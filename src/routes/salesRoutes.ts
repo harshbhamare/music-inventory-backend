@@ -162,6 +162,22 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const sale = await createSale(req.body, req.user!);
+
+      // Auto-dispatch Tax Invoice PDF & receipt email to customer if email is provided
+      if (sale.customerEmail && sale.customerEmail.includes('@')) {
+        setImmediate(async () => {
+          try {
+            const { sendInvoicePdfEmail } = await import('../services/emailService.js');
+            await sendInvoicePdfEmail({
+              sale,
+              recipientEmail: sale.customerEmail,
+            });
+          } catch (emailErr) {
+            console.error('[AUTO_EMAIL_INVOICE_ERROR] Failed to send tax invoice email on sale checkout:', emailErr);
+          }
+        });
+      }
+
       res.status(201).json({ success: true, data: { sale } });
     } catch (err) {
       next(err);

@@ -400,4 +400,112 @@ router.post(
   }
 );
 
+// Manually resend Equipment Return Confirmation email to customer
+router.post(
+  '/:id/send-return-confirmation',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { InternalUsage } = await import('../models/InternalUsage.js');
+      const { sendRentalReturnConfirmationEmail } = await import('../services/emailService.js');
+      const usage = await InternalUsage.findById(req.params.id)
+        .populate('items.product', 'name sku brand')
+        .populate('items.serializedItemId', 'assetId manufacturerSerial');
+
+      if (!usage) {
+        return res.status(404).json({ success: false, message: 'Rental record not found.' });
+      }
+
+      const targetEmail = (req.body.recipientEmail || usage.customerEmail || '').trim();
+      if (!targetEmail || !targetEmail.includes('@')) {
+        return res.status(400).json({ success: false, message: 'Please provide a valid recipient email address.' });
+      }
+
+      const prodName = (usage.items[0]?.product as any)?.name || 'Musical Instrument';
+      const assetId =
+        (usage.items[0]?.serializedItemId as any)?.assetId ||
+        (usage.items[0]?.serializedItemId as any)?.manufacturerSerial;
+
+      const log = await sendRentalReturnConfirmationEmail({
+        recipientEmail: targetEmail,
+        customerName: usage.assignedPerson,
+        customerContact: usage.assignedPersonContact,
+        issueReference: usage.issueReference,
+        returnReference: `RET-${usage.issueReference}`,
+        productName: prodName,
+        assetId,
+        returnDate: usage.actualReturnDate || new Date(),
+        returnedItemsCount: usage.items.reduce((acc, it) => acc + (it.quantityReturned || 1), 0),
+        returnCondition: 'GOOD',
+        inspectionOutcome: 'AVAILABLE',
+        depositBalance: usage.depositBalance || 0,
+        depositRefundStatus: usage.depositRefundStatus || 'REFUNDED',
+        totalRentPaid: usage.totalRentPaid || 0,
+        totalMonthsRented: usage.monthlyPayments?.length || 1,
+        receivedBy: { name: req.user!.name, email: req.user!.email, role: req.user!.role },
+        notes: req.body.customNote,
+      });
+
+      res.json({ success: true, message: `Return confirmation email dispatched to ${targetEmail}`, data: { log } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Manually resend Security Deposit Refund Receipt email to customer
+router.post(
+  '/:id/send-refund-receipt',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { InternalUsage } = await import('../models/InternalUsage.js');
+      const { sendDepositRefundReceiptEmail } = await import('../services/emailService.js');
+      const usage = await InternalUsage.findById(req.params.id)
+        .populate('items.product', 'name sku brand')
+        .populate('items.serializedItemId', 'assetId manufacturerSerial');
+
+      if (!usage) {
+        return res.status(404).json({ success: false, message: 'Rental record not found.' });
+      }
+
+      const targetEmail = (req.body.recipientEmail || usage.customerEmail || '').trim();
+      if (!targetEmail || !targetEmail.includes('@')) {
+        return res.status(400).json({ success: false, message: 'Please provide a valid recipient email address.' });
+      }
+
+      const prodName = (usage.items[0]?.product as any)?.name || 'Musical Instrument';
+      const assetId =
+        (usage.items[0]?.serializedItemId as any)?.assetId ||
+        (usage.items[0]?.serializedItemId as any)?.manufacturerSerial;
+
+      const log = await sendDepositRefundReceiptEmail({
+        recipientEmail: targetEmail,
+        customerName: usage.assignedPerson,
+        customerContact: usage.assignedPersonContact,
+        issueReference: usage.issueReference,
+        productName: prodName,
+        assetId,
+        initialDeposit: usage.securityDeposit || 0,
+        refundAmount: usage.depositRefundedAmount || 0,
+        deductionAmount: usage.depositRefundDeductionAmount || 0,
+        deductionReason: usage.depositRefundDeductionReason,
+        depositBalanceBefore: (usage.depositRefundedAmount || 0) + (usage.depositRefundDeductionAmount || 0),
+        depositBalanceAfter: usage.depositBalance || 0,
+        paymentMethod: usage.depositRefundMethod || 'UPI',
+        transactionRef: usage.depositRefundTxnRef || `REFUND-${Date.now()}`,
+        processedAt: usage.depositRefundedAt || new Date(),
+        processedBy: { name: req.user!.name, email: req.user!.email, role: req.user!.role },
+        notes: req.body.customNote || usage.depositRefundNotes,
+      });
+
+      res.json({ success: true, message: `Deposit refund receipt email dispatched to ${targetEmail}`, data: { log } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
 export default router;

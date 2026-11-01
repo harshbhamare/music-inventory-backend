@@ -361,7 +361,7 @@ export async function returnInstruments(
     throw new AppError('This equipment issue has already been completely returned.', 400, 'ALREADY_RETURNED');
   }
 
-  return await withTransaction(async (session) => {
+  const result = await withTransaction(async (session) => {
     const returnCount = await UsageReturn.countDocuments();
     const year = new Date().getFullYear();
     const returnReference = `RET-USE-${year}-${String(returnCount + 1).padStart(5, '0')}`;
@@ -510,6 +510,48 @@ export async function returnInstruments(
 
     return usageReturn;
   });
+
+  // Automatically dispatch Equipment Return Confirmation email to customer
+  if (usage.customerEmail && usage.customerEmail.includes('@')) {
+    setImmediate(async () => {
+      try {
+        const { sendRentalReturnConfirmationEmail } = await import('./emailService.js');
+        const populatedUsage = await InternalUsage.findById(usage._id)
+          .populate('items.product', 'name sku brand')
+          .populate('items.serializedItemId', 'assetId manufacturerSerial');
+
+        const prodName = (populatedUsage?.items[0]?.product as any)?.name || 'Musical Instrument';
+        const assetId =
+          (populatedUsage?.items[0]?.serializedItemId as any)?.assetId ||
+          (populatedUsage?.items[0]?.serializedItemId as any)?.manufacturerSerial;
+        const returnItem = input.items[0];
+
+        await sendRentalReturnConfirmationEmail({
+          recipientEmail: usage.customerEmail!,
+          customerName: usage.assignedPerson,
+          customerContact: usage.assignedPersonContact,
+          issueReference: usage.issueReference,
+          returnReference: result.returnReference,
+          productName: prodName,
+          assetId,
+          returnDate: new Date(),
+          returnedItemsCount: input.items.reduce((acc, it) => acc + (it.quantityReturned || 1), 0),
+          returnCondition: returnItem?.returnCondition || 'GOOD',
+          inspectionOutcome: returnItem?.inspectionOutcome || 'AVAILABLE',
+          depositBalance: usage.depositBalance || 0,
+          depositRefundStatus: usage.depositRefundStatus || 'REFUNDED',
+          totalRentPaid: usage.totalRentPaid || 0,
+          totalMonthsRented: usage.monthlyPayments?.length || 1,
+          receivedBy: { name: actor.name, email: actor.email, role: actor.role },
+          notes: input.notes,
+        });
+      } catch (emailErr) {
+        console.error('[EMAIL_RETURN_CONFIRMATION_ERROR] Failed to send return confirmation email:', emailErr);
+      }
+    });
+  }
+
+  return result;
 }
 
 export async function extendExpectedReturnDate(
@@ -1673,6 +1715,49 @@ export async function recordDepositDeduction(
     reason: `Monthly rent ₹${deductAmount} deducted from deposit for ${payment.billingMonth}. Remaining balance: ₹${balanceAfter}`,
   });
 
+  // Automatically dispatch Rent Auto-Deduction notice email to customer
+  if (usage.customerEmail && usage.customerEmail.includes('@')) {
+    const prodName = (usage.items[0]?.product as any)?.name || 'Musical Instrument';
+    const assetId =
+      (usage.items[0]?.serializedItemId as any)?.assetId ||
+      (usage.items[0]?.serializedItemId as any)?.manufacturerSerial;
+
+    setImmediate(async () => {
+      try {
+        await sendDepositDeductionNoticeEmail({
+          recipientEmail: usage.customerEmail!,
+          customerName: usage.assignedPerson,
+          customerContact: usage.assignedPersonContact,
+          issueReference: usage.issueReference,
+          productName: prodName,
+          assetId,
+          billingMonth: payment.billingMonth,
+          deductedAmount: deductAmount,
+          depositBalanceBefore: balanceBefore,
+          depositBalanceAfter: balanceAfter,
+          depositExhausted: nowExhausted,
+          deductedAt: new Date(),
+          sentBy: { name: actor.name, email: actor.email, role: actor.role },
+          notes: input.notes,
+        });
+
+        // Mark deduction noticeSent as true in database
+        await InternalUsage.updateOne(
+          { _id: usage._id, 'depositDeductions.billingMonth': payment.billingMonth },
+          {
+            $set: {
+              'depositDeductions.$.noticeSent': true,
+              'depositDeductions.$.noticeSentAt': new Date(),
+              'depositDeductions.$.noticeSentBy': new Types.ObjectId(actor.id),
+            },
+          }
+        );
+      } catch (emailErr) {
+        console.error('[EMAIL_DEDUCTION_NOTICE_ERROR] Failed to send deduction notice email:', emailErr);
+      }
+    });
+  }
+
   // If deposit just got exhausted, send automatic exhaustion notice email (fire-and-forget)
   if (nowExhausted && usage.customerEmail && usage.customerEmail.includes('@')) {
     const prodName = (usage.items[0]?.product as any)?.name || 'Musical Instrument';
@@ -2107,6 +2192,41 @@ export async function refundSecurityDeposit(
     .populate('location', 'name code')
     .populate('items.product', 'name sku brand trackingMode color defaultSellingPrice')
     .populate('items.serializedItemId', 'assetId manufacturerSerial condition status');
+
+  // Automatically dispatch Security Deposit Refund Confirmation & Receipt to customer
+  if (usage.customerEmail && usage.customerEmail.includes('@')) {
+    setImmediate(async () => {
+      try {
+        const { sendDepositRefundReceiptEmail } = await import('./emailService.js');
+        const prodName = (populated?.items[0]?.product as any)?.name || 'Musical Instrument';
+        const assetId =
+          (populated?.items[0]?.serializedItemId as any)?.assetId ||
+          (populated?.items[0]?.serializedItemId as any)?.manufacturerSerial;
+
+        await sendDepositRefundReceiptEmail({
+          recipientEmail: usage.customerEmail!,
+          customerName: usage.assignedPerson,
+          customerContact: usage.assignedPersonContact,
+          issueReference: usage.issueReference,
+          productName: prodName,
+          assetId,
+          initialDeposit: usage.securityDeposit || balanceBefore,
+          refundAmount,
+          deductionAmount,
+          deductionReason: input.deductionReason,
+          depositBalanceBefore: balanceBefore,
+          depositBalanceAfter: balanceAfter,
+          paymentMethod: input.paymentMethod || 'UPI',
+          transactionRef: usage.depositRefundTxnRef || input.transactionRef || `REFUND-${Date.now()}`,
+          processedAt: new Date(),
+          processedBy: { name: actor.name, email: actor.email, role: actor.role },
+          notes: input.notes,
+        });
+      } catch (emailErr) {
+        console.error('[EMAIL_DEPOSIT_REFUND_ERROR] Failed to send deposit refund receipt email:', emailErr);
+      }
+    });
+  }
 
   return populated || usage;
 }
