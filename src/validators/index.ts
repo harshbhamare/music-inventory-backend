@@ -139,6 +139,7 @@ export const createSaleSchema = z.object({
     notes: z.string().optional(),
     remarks: z.string().optional(),
     idempotencyKey: z.string().optional(),
+    sendReceiptEmail: z.boolean().optional().default(true),
     lineItems: z
       .array(
         z.object({
@@ -165,6 +166,8 @@ export const recordEmiPaymentSchema = z.object({
     notes: z.string().optional(),
     earlySettlementDiscount: z.number().min(0).optional(),
     settleAllRemaining: z.boolean().optional(),
+    customerEmail: z.string().email('Invalid email address').optional().or(z.literal('')),
+    sendReceiptEmail: z.boolean().optional().default(true),
   }),
 });
 
@@ -287,6 +290,8 @@ export const recordRentalPaymentSchema = z.object({
     transactionRef: z.string().min(1, 'Transaction reference number is mandatory for all rent payments'),
     notes: z.string().optional(),
     adjustNextMonth: z.boolean().optional(),
+    customerEmail: z.string().email('Invalid email address').optional().or(z.literal('')),
+    sendReceiptEmail: z.boolean().optional().default(true),
   }),
 });
 
@@ -320,6 +325,8 @@ export const addRentalMonthSchema = z.object({
 export const returnInternalUsageSchema = z.object({
   body: z.object({
     notes: z.string().optional(),
+    customerEmail: z.string().email('Invalid email address').optional().or(z.literal('')),
+    sendReceiptEmail: z.boolean().optional().default(true),
     items: z
       .array(
         z.object({
@@ -418,5 +425,7 @@ export const refundDepositSchema = z.object({
     paymentMethod: z.enum(Object.values(PAYMENT_METHODS) as [string, ...string[]]).optional().default(PAYMENT_METHODS.UPI),
     transactionRef: z.string().optional().default(''),
     notes: z.string().optional(),
+    customerEmail: z.string().email('Invalid email address').optional().or(z.literal('')),
+    sendReceiptEmail: z.boolean().optional().default(true),
   }),
 });

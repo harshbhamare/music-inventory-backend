@@ -549,6 +549,9 @@ export async function recordEmiPayment(saleId, input, actor) {
         recordedBy: new Types.ObjectId(actor.id),
         paidAt: new Date(),
     });
+    if (input.customerEmail && input.customerEmail.trim().includes('@')) {
+        sale.customerEmail = input.customerEmail.trim().toLowerCase();
+    }
     sale.markModified('emiPayments');
     sale.markModified('paymentLogs');
     await sale.save();
@@ -573,11 +576,12 @@ export async function recordEmiPayment(saleId, input, actor) {
             : `Recorded EMI payment for ${affectedMonthsStr} (₹${input.amount}, Trx: ${txnRef}) on ${sale.invoiceNumber}`,
     });
     // Dispatch receipt email to customer
-    if (sale.customerEmail && sale.customerEmail.includes('@')) {
+    const targetEmail = (input.customerEmail || sale.customerEmail || '').trim().toLowerCase();
+    if (input.sendReceiptEmail !== false && targetEmail && targetEmail.includes('@')) {
         const prodName = sale.lineItems.map((l) => l.product?.name).filter(Boolean).join(', ') || 'Musical Equipment';
         const nextPayment = sale.emiPayments.find((p) => p.status !== 'PAID');
         sendEmiPaymentReceiptEmail({
-            recipientEmail: sale.customerEmail,
+            recipientEmail: targetEmail,
             customerName: sale.customerName,
             customerContact: sale.customerPhone,
             invoiceNumber: sale.invoiceNumber,

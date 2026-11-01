@@ -118,7 +118,18 @@ router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), val
 router.post('/:id/return', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(returnInternalUsageSchema), async (req, res, next) => {
     try {
         const result = await returnInstruments(req.params.id, req.body, req.user);
-        res.status(201).json({ success: true, data: { return: result } });
+        res.status(201).json({
+            success: true,
+            message: result.message || 'Equipment return completed successfully.',
+            data: {
+                return: result.return,
+                usage: result.usage,
+                emailSent: result.emailSent,
+                recipient: result.recipient,
+                provider: result.provider,
+                message: result.message || 'Equipment return completed successfully.',
+            },
+        });
     }
     catch (err) {
         next(err);
@@ -153,8 +164,18 @@ router.get('/returns/all', requireAuth, async (_req, res, next) => {
 // Record monthly rental payment
 router.post('/:id/payments', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(recordRentalPaymentSchema), async (req, res, next) => {
     try {
-        const usage = await recordRentalPayment(req.params.id, req.body, req.user);
-        res.json({ success: true, data: { usage } });
+        const result = await recordRentalPayment(req.params.id, req.body, req.user);
+        res.json({
+            success: true,
+            message: result.message || `Rental payment of ₹${req.body.amount} recorded successfully.`,
+            data: {
+                usage: result.usage,
+                emailSent: result.emailSent,
+                recipient: result.recipient,
+                provider: result.provider,
+                message: result.message || `Rental payment of ₹${req.body.amount} recorded successfully.`,
+            },
+        });
     }
     catch (err) {
         next(err);
@@ -252,8 +273,18 @@ router.post('/:id/activate-continuation', requireAuth, requireRole(ROLES.SUPER_A
 // Refund security deposit to customer (deductions, cash/upi/bank transfer disbursement)
 router.post('/:id/refund-deposit', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(refundDepositSchema), async (req, res, next) => {
     try {
-        const usage = await refundSecurityDeposit(req.params.id, req.body, req.user);
-        res.json({ success: true, data: { usage } });
+        const result = await refundSecurityDeposit(req.params.id, req.body, req.user);
+        res.json({
+            success: true,
+            message: result.message || `Security deposit refund of ₹${req.body.refundAmount} processed successfully.`,
+            data: {
+                usage: result.usage,
+                emailSent: result.emailSent,
+                recipient: result.recipient,
+                provider: result.provider,
+                message: result.message || `Security deposit refund of ₹${req.body.refundAmount} processed successfully.`,
+            },
+        });
     }
     catch (err) {
         next(err);
@@ -273,6 +304,10 @@ router.post('/:id/send-return-confirmation', requireAuth, requireRole(ROLES.SUPE
         const targetEmail = (req.body.recipientEmail || usage.customerEmail || '').trim();
         if (!targetEmail || !targetEmail.includes('@')) {
             return res.status(400).json({ success: false, message: 'Please provide a valid recipient email address.' });
+        }
+        if (!usage.customerEmail || usage.customerEmail !== targetEmail) {
+            usage.customerEmail = targetEmail.toLowerCase();
+            await usage.save();
         }
         const prodName = usage.items[0]?.product?.name || 'Musical Instrument';
         const assetId = usage.items[0]?.serializedItemId?.assetId ||
@@ -296,7 +331,17 @@ router.post('/:id/send-return-confirmation', requireAuth, requireRole(ROLES.SUPE
             receivedBy: { name: req.user.name, email: req.user.email, role: req.user.role },
             notes: req.body.customNote,
         });
-        res.json({ success: true, message: `Return confirmation email dispatched to ${targetEmail}`, data: { log } });
+        const returnMsg = `Return confirmation email dispatched to ${targetEmail}`;
+        res.json({
+            success: true,
+            message: returnMsg,
+            data: {
+                log,
+                recipient: targetEmail,
+                provider: log?.provider || 'EMAIL',
+                message: returnMsg,
+            },
+        });
     }
     catch (err) {
         next(err);
@@ -316,6 +361,10 @@ router.post('/:id/send-refund-receipt', requireAuth, requireRole(ROLES.SUPER_ADM
         const targetEmail = (req.body.recipientEmail || usage.customerEmail || '').trim();
         if (!targetEmail || !targetEmail.includes('@')) {
             return res.status(400).json({ success: false, message: 'Please provide a valid recipient email address.' });
+        }
+        if (!usage.customerEmail || usage.customerEmail !== targetEmail) {
+            usage.customerEmail = targetEmail.toLowerCase();
+            await usage.save();
         }
         const prodName = usage.items[0]?.product?.name || 'Musical Instrument';
         const assetId = usage.items[0]?.serializedItemId?.assetId ||
@@ -339,7 +388,17 @@ router.post('/:id/send-refund-receipt', requireAuth, requireRole(ROLES.SUPER_ADM
             processedBy: { name: req.user.name, email: req.user.email, role: req.user.role },
             notes: req.body.customNote || usage.depositRefundNotes,
         });
-        res.json({ success: true, message: `Deposit refund receipt email dispatched to ${targetEmail}`, data: { log } });
+        const refundMsg = `Deposit refund receipt email dispatched to ${targetEmail}`;
+        res.json({
+            success: true,
+            message: refundMsg,
+            data: {
+                log,
+                recipient: targetEmail,
+                provider: log?.provider || 'EMAIL',
+                message: refundMsg,
+            },
+        });
     }
     catch (err) {
         next(err);

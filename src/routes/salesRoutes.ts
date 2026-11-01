@@ -163,8 +163,8 @@ router.post(
     try {
       const sale = await createSale(req.body, req.user!);
 
-      // Auto-dispatch Tax Invoice PDF & receipt email to customer if email is provided
-      if (sale.customerEmail && sale.customerEmail.includes('@')) {
+      // Auto-dispatch Tax Invoice PDF & receipt email to customer if email is provided and requested
+      if (req.body.sendReceiptEmail !== false && sale.customerEmail && sale.customerEmail.includes('@')) {
         setImmediate(async () => {
           try {
             const { sendInvoicePdfEmail } = await import('../services/emailService.js');
@@ -178,7 +178,15 @@ router.post(
         });
       }
 
-      res.status(201).json({ success: true, data: { sale } });
+      res.status(201).json({
+        success: true,
+        message: 'Sale completed successfully.',
+        data: {
+          sale,
+          emailSent: Boolean(req.body.sendReceiptEmail !== false && sale.customerEmail && sale.customerEmail.includes('@')),
+          recipient: sale.customerEmail,
+        },
+      });
     } catch (err) {
       next(err);
     }
@@ -259,7 +267,22 @@ router.post(
         .populate('remindersSent.sentBy', 'name email')
         .lean();
 
-      res.json({ success: true, data: { sale: populated } });
+      const emiRecipient = (req.body.customerEmail || (populated as any)?.customerEmail || '').trim();
+      const emailSent = Boolean(req.body.sendReceiptEmail !== false && emiRecipient && emiRecipient.includes('@'));
+      const msg = emailSent
+        ? `EMI payment recorded & receipt email dispatched to ${emiRecipient}.`
+        : `EMI installment payment recorded successfully.`;
+
+      res.json({
+        success: true,
+        message: msg,
+        data: {
+          sale: populated,
+          emailSent,
+          recipient: emiRecipient || undefined,
+          message: msg,
+        },
+      });
     } catch (err) {
       next(err);
     }

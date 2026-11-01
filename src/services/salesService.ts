@@ -609,6 +609,8 @@ export async function recordEmiPayment(
     notes?: string;
     earlySettlementDiscount?: number;
     settleAllRemaining?: boolean;
+    customerEmail?: string;
+    sendReceiptEmail?: boolean;
   },
   actor: AuthenticatedUser
 ) {
@@ -752,6 +754,10 @@ export async function recordEmiPayment(
     paidAt: new Date(),
   } as any);
 
+  if (input.customerEmail && input.customerEmail.trim().includes('@')) {
+    sale.customerEmail = input.customerEmail.trim().toLowerCase();
+  }
+
   sale.markModified('emiPayments');
   sale.markModified('paymentLogs');
   await sale.save();
@@ -778,12 +784,13 @@ export async function recordEmiPayment(
   });
 
   // Dispatch receipt email to customer
-  if (sale.customerEmail && sale.customerEmail.includes('@')) {
+  const targetEmail = (input.customerEmail || sale.customerEmail || '').trim().toLowerCase();
+  if (input.sendReceiptEmail !== false && targetEmail && targetEmail.includes('@')) {
     const prodName =
       sale.lineItems.map((l: any) => l.product?.name).filter(Boolean).join(', ') || 'Musical Equipment';
     const nextPayment = sale.emiPayments.find((p) => p.status !== 'PAID');
     sendEmiPaymentReceiptEmail({
-      recipientEmail: sale.customerEmail,
+      recipientEmail: targetEmail,
       customerName: sale.customerName,
       customerContact: sale.customerPhone,
       invoiceNumber: sale.invoiceNumber,

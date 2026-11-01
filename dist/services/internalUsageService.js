@@ -244,6 +244,9 @@ export async function returnInstruments(usageId, input, actor) {
     if (usage.status === USAGE_STATUSES.RETURNED) {
         throw new AppError('This equipment issue has already been completely returned.', 400, 'ALREADY_RETURNED');
     }
+    if (input.customerEmail && input.customerEmail.trim().includes('@')) {
+        usage.customerEmail = input.customerEmail.trim().toLowerCase();
+    }
     const result = await withTransaction(async (session) => {
         const returnCount = await UsageReturn.countDocuments();
         const year = new Date().getFullYear();
@@ -364,43 +367,54 @@ export async function returnInstruments(usageId, input, actor) {
         return usageReturn;
     });
     // Automatically dispatch Equipment Return Confirmation email to customer
-    if (usage.customerEmail && usage.customerEmail.includes('@')) {
-        setImmediate(async () => {
-            try {
-                const { sendRentalReturnConfirmationEmail } = await import('./emailService.js');
-                const populatedUsage = await InternalUsage.findById(usage._id)
-                    .populate('items.product', 'name sku brand')
-                    .populate('items.serializedItemId', 'assetId manufacturerSerial');
-                const prodName = populatedUsage?.items[0]?.product?.name || 'Musical Instrument';
-                const assetId = populatedUsage?.items[0]?.serializedItemId?.assetId ||
-                    populatedUsage?.items[0]?.serializedItemId?.manufacturerSerial;
-                const returnItem = input.items[0];
-                await sendRentalReturnConfirmationEmail({
-                    recipientEmail: usage.customerEmail,
-                    customerName: usage.assignedPerson,
-                    customerContact: usage.assignedPersonContact,
-                    issueReference: usage.issueReference,
-                    returnReference: result.returnReference,
-                    productName: prodName,
-                    assetId,
-                    returnDate: new Date(),
-                    returnedItemsCount: input.items.reduce((acc, it) => acc + (it.quantityReturned || 1), 0),
-                    returnCondition: returnItem?.returnCondition || 'GOOD',
-                    inspectionOutcome: returnItem?.inspectionOutcome || 'AVAILABLE',
-                    depositBalance: usage.depositBalance || 0,
-                    depositRefundStatus: usage.depositRefundStatus || 'REFUNDED',
-                    totalRentPaid: usage.totalRentPaid || 0,
-                    totalMonthsRented: usage.monthlyPayments?.length || 1,
-                    receivedBy: { name: actor.name, email: actor.email, role: actor.role },
-                    notes: input.notes,
-                });
-            }
-            catch (emailErr) {
-                console.error('[EMAIL_RETURN_CONFIRMATION_ERROR] Failed to send return confirmation email:', emailErr);
-            }
-        });
+    let emailSent = false;
+    let deliveryLog = null;
+    const targetEmail = (input.customerEmail || usage.customerEmail || '').trim().toLowerCase();
+    if (input.sendReceiptEmail !== false && targetEmail && targetEmail.includes('@')) {
+        try {
+            const { sendRentalReturnConfirmationEmail } = await import('./emailService.js');
+            const populatedUsage = await InternalUsage.findById(usage._id)
+                .populate('items.product', 'name sku brand')
+                .populate('items.serializedItemId', 'assetId manufacturerSerial');
+            const prodName = populatedUsage?.items[0]?.product?.name || 'Musical Instrument';
+            const assetId = populatedUsage?.items[0]?.serializedItemId?.assetId ||
+                populatedUsage?.items[0]?.serializedItemId?.manufacturerSerial;
+            const returnItem = input.items[0];
+            deliveryLog = await sendRentalReturnConfirmationEmail({
+                recipientEmail: targetEmail,
+                customerName: usage.assignedPerson,
+                customerContact: usage.assignedPersonContact,
+                issueReference: usage.issueReference,
+                returnReference: result.returnReference,
+                productName: prodName,
+                assetId,
+                returnDate: new Date(),
+                returnedItemsCount: input.items.reduce((acc, it) => acc + (it.quantityReturned || 1), 0),
+                returnCondition: returnItem?.returnCondition || 'GOOD',
+                inspectionOutcome: returnItem?.inspectionOutcome || 'AVAILABLE',
+                depositBalance: usage.depositBalance || 0,
+                depositRefundStatus: usage.depositRefundStatus || 'REFUNDED',
+                totalRentPaid: usage.totalRentPaid || 0,
+                totalMonthsRented: usage.monthlyPayments?.length || 1,
+                receivedBy: { name: actor.name, email: actor.email, role: actor.role },
+                notes: input.notes,
+            });
+            emailSent = !!deliveryLog;
+        }
+        catch (emailErr) {
+            console.error('[EMAIL_RETURN_CONFIRMATION_ERROR] Failed to send return confirmation email:', emailErr);
+        }
     }
-    return result;
+    return {
+        return: result,
+        usage,
+        emailSent,
+        recipient: targetEmail || undefined,
+        provider: deliveryLog?.provider || (emailSent ? 'EMAIL' : undefined),
+        message: emailSent
+            ? `Equipment return completed & receipt email dispatched to ${targetEmail}`
+            : `Equipment returned to inventory successfully`,
+    };
 }
 export async function extendExpectedReturnDate(usageId, newDate, reason, actor, options) {
     const usage = await InternalUsage.findById(usageId)
@@ -574,6 +588,9 @@ export async function recordRentalPayment(usageId, input, actor) {
         recordedBy: new Types.ObjectId(actor.id),
         paidAt: payment.paidAt || new Date(),
     });
+    if (input.customerEmail && input.customerEmail.trim().includes('@')) {
+        usage.customerEmail = input.customerEmail.trim().toLowerCase();
+    }
     await usage.save();
     await logAudit({
         actor,
@@ -584,7 +601,10 @@ export async function recordRentalPayment(usageId, input, actor) {
         reason: `Recorded rent payment of ₹${input.amount} for ${usage.assignedPerson} (${payment.billingMonth})`,
     });
     // Dispatch payment confirmation and receipt email for accountability
-    if (payment.amountPaid > 0 && usage.customerEmail && usage.customerEmail.includes('@')) {
+    let emailSent = false;
+    let deliveryLog = null;
+    const targetEmail = (input.customerEmail || usage.customerEmail || '').trim().toLowerCase();
+    if (input.sendReceiptEmail !== false && payment.amountPaid > 0 && targetEmail && targetEmail.includes('@')) {
         try {
             await usage.populate('items.product', 'name');
             await usage.populate('items.serializedItemId', 'assetId manufacturerSerial');
@@ -592,8 +612,8 @@ export async function recordRentalPayment(usageId, input, actor) {
             const assetId = usage.items[0]?.serializedItemId?.assetId ||
                 usage.items[0]?.serializedItemId?.manufacturerSerial;
             const nextPayment = usage.monthlyPayments.find((p) => p.status !== 'PAID');
-            sendRentalPaymentReceiptEmail({
-                recipientEmail: usage.customerEmail,
+            deliveryLog = await sendRentalPaymentReceiptEmail({
+                recipientEmail: targetEmail,
                 customerName: usage.assignedPerson,
                 customerContact: usage.assignedPersonContact,
                 issueReference: usage.issueReference,
@@ -610,15 +630,22 @@ export async function recordRentalPayment(usageId, input, actor) {
                 nextDueDate: nextPayment?.dueDate,
                 recordedBy: { name: actor.name, email: actor.email, role: actor.role },
                 notes: payment.notes,
-            }).catch((emailErr) => {
-                console.error('[EMAIL_RECEIPT_ERROR] Failed to dispatch receipt email:', emailErr);
             });
+            emailSent = !!deliveryLog;
         }
-        catch (err) {
-            console.error('[EMAIL_RECEIPT_PREP_ERROR]', err);
+        catch (emailErr) {
+            console.error('[EMAIL_RECEIPT_ERROR] Failed to dispatch receipt email:', emailErr);
         }
     }
-    return usage;
+    return {
+        usage,
+        emailSent,
+        recipient: targetEmail || undefined,
+        provider: deliveryLog?.provider || (emailSent ? 'EMAIL' : undefined),
+        message: emailSent
+            ? `Rent payment recorded & receipt email dispatched to ${targetEmail}`
+            : `Rent payment of ₹${input.amount} recorded successfully`,
+    };
 }
 export async function updateRentalPayment(usageId, paymentId, input, actor) {
     const usage = await InternalUsage.findById(usageId);
@@ -1670,6 +1697,9 @@ export async function refundSecurityDeposit(usageId, input, actor) {
         recordedBy: new Types.ObjectId(actor.id),
         paidAt: new Date(),
     });
+    if (input.customerEmail && input.customerEmail.trim().includes('@')) {
+        usage.customerEmail = input.customerEmail.trim().toLowerCase();
+    }
     usage.markModified('depositDeductions');
     usage.markModified('paymentLogs');
     await usage.save();
@@ -1692,37 +1722,47 @@ export async function refundSecurityDeposit(usageId, input, actor) {
         .populate('items.product', 'name sku brand trackingMode color defaultSellingPrice')
         .populate('items.serializedItemId', 'assetId manufacturerSerial condition status');
     // Automatically dispatch Security Deposit Refund Confirmation & Receipt to customer
-    if (usage.customerEmail && usage.customerEmail.includes('@')) {
-        setImmediate(async () => {
-            try {
-                const { sendDepositRefundReceiptEmail } = await import('./emailService.js');
-                const prodName = populated?.items[0]?.product?.name || 'Musical Instrument';
-                const assetId = populated?.items[0]?.serializedItemId?.assetId ||
-                    populated?.items[0]?.serializedItemId?.manufacturerSerial;
-                await sendDepositRefundReceiptEmail({
-                    recipientEmail: usage.customerEmail,
-                    customerName: usage.assignedPerson,
-                    customerContact: usage.assignedPersonContact,
-                    issueReference: usage.issueReference,
-                    productName: prodName,
-                    assetId,
-                    initialDeposit: usage.securityDeposit || balanceBefore,
-                    refundAmount,
-                    deductionAmount,
-                    deductionReason: input.deductionReason,
-                    depositBalanceBefore: balanceBefore,
-                    depositBalanceAfter: balanceAfter,
-                    paymentMethod: input.paymentMethod || 'UPI',
-                    transactionRef: usage.depositRefundTxnRef || input.transactionRef || `REFUND-${Date.now()}`,
-                    processedAt: new Date(),
-                    processedBy: { name: actor.name, email: actor.email, role: actor.role },
-                    notes: input.notes,
-                });
-            }
-            catch (emailErr) {
-                console.error('[EMAIL_DEPOSIT_REFUND_ERROR] Failed to send deposit refund receipt email:', emailErr);
-            }
-        });
+    let emailSent = false;
+    let deliveryLog = null;
+    const targetEmail = (input.customerEmail || usage.customerEmail || '').trim().toLowerCase();
+    if (input.sendReceiptEmail !== false && targetEmail && targetEmail.includes('@')) {
+        try {
+            const { sendDepositRefundReceiptEmail } = await import('./emailService.js');
+            const prodName = populated?.items[0]?.product?.name || 'Musical Instrument';
+            const assetId = populated?.items[0]?.serializedItemId?.assetId ||
+                populated?.items[0]?.serializedItemId?.manufacturerSerial;
+            deliveryLog = await sendDepositRefundReceiptEmail({
+                recipientEmail: targetEmail,
+                customerName: usage.assignedPerson,
+                customerContact: usage.assignedPersonContact,
+                issueReference: usage.issueReference,
+                productName: prodName,
+                assetId,
+                initialDeposit: usage.securityDeposit || balanceBefore,
+                refundAmount,
+                deductionAmount,
+                deductionReason: input.deductionReason,
+                depositBalanceBefore: balanceBefore,
+                depositBalanceAfter: balanceAfter,
+                paymentMethod: input.paymentMethod || 'UPI',
+                transactionRef: usage.depositRefundTxnRef || input.transactionRef || `REFUND-${Date.now()}`,
+                processedAt: new Date(),
+                processedBy: { name: actor.name, email: actor.email, role: actor.role },
+                notes: input.notes,
+            });
+            emailSent = !!deliveryLog;
+        }
+        catch (emailErr) {
+            console.error('[EMAIL_DEPOSIT_REFUND_ERROR] Failed to send deposit refund receipt email:', emailErr);
+        }
     }
-    return populated || usage;
+    return {
+        usage: populated || usage,
+        emailSent,
+        recipient: targetEmail || undefined,
+        provider: deliveryLog?.provider || (emailSent ? 'EMAIL' : undefined),
+        message: emailSent
+            ? `Deposit refund processed & receipt email dispatched to ${targetEmail}`
+            : `Security deposit refund of ₹${refundAmount} processed successfully`,
+    };
 }
