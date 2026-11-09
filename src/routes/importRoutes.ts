@@ -52,7 +52,7 @@ router.get(
       );
       res.setHeader(
         'Content-Disposition',
-        'attachment; filename="stereobliss-historical-import-template.xlsx"'
+        'attachment; filename="muziclub-inventory-import-template.xlsx"'
       );
       res.setHeader('Content-Length', buf.length);
       res.send(buf);

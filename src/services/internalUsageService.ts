@@ -81,11 +81,15 @@ export async function issueInstruments(input: IssueInternalUsageInput, actor: Au
     const issueReference = `USE-${year}-${String(usageCount + 1).padStart(5, '0')}`;
 
     const processedItems: any[] = [];
+    let firstProductName = 'Musical Instrument';
 
     for (const itemInput of input.items) {
       const product = await Product.findById(itemInput.product).session(session);
       if (!product || !product.isActive) {
         throw new AppError(`Product ${itemInput.product} is invalid or inactive.`, 400, 'INVALID_PRODUCT');
+      }
+      if (firstProductName === 'Musical Instrument' && product.name) {
+        firstProductName = product.name;
       }
 
       if (product.trackingMode === TRACKING_MODES.SERIALIZED) {
@@ -304,7 +308,7 @@ export async function issueInstruments(input: IssueInternalUsageInput, actor: Au
 
     // Send welcome / agreement confirmation email to customer (fire-and-forget, outside transaction)
     if (input.customerEmail?.trim() && input.customerEmail.includes('@')) {
-      const productName = processedItems[0]?.productName || 'Musical Instrument';
+      const productName = firstProductName;
       setImmediate(async () => {
         try {
           await sendRentalAgreementWelcomeEmail({
