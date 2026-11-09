@@ -167,9 +167,9 @@ export function parseNum(val: unknown, def = 0): number {
   let s = String(val).trim();
   if (!s) return def;
   s = s.replace(/[₹$,]/g, '')
-       .replace(/^(rs\.?|inr)\s*/i, '')
-       .replace(/\s*(rs\.?|inr)$/i, '')
-       .trim();
+    .replace(/^(rs\.?|inr)\s*/i, '')
+    .replace(/\s*(rs\.?|inr)$/i, '')
+    .trim();
   const n = Number(s);
   return isNaN(n) ? def : n;
 }
@@ -275,6 +275,9 @@ export function normalizeHeaderKey(header: string, sheetName?: string): string {
     brandname: 'brand',
     model: 'modelName',
     modelname: 'modelName',
+    modelseriesname: 'modelName',
+    modelseries: 'modelName',
+    seriesname: 'modelName',
     color: 'color',
     colour: 'color',
     finish: 'color',
@@ -293,6 +296,7 @@ export function normalizeHeaderKey(header: string, sheetName?: string): string {
     buyprice: 'purchaseCost',
     buyingprice: 'purchaseCost',
     sellingprice: 'sellingPrice',
+    retailprice: 'sellingPrice',
     price: 'sellingPrice',
     unitprice: 'unitPrice',
     rate: 'unitPrice',
@@ -308,6 +312,7 @@ export function normalizeHeaderKey(header: string, sheetName?: string): string {
     vendor: 'supplier',
     minstock: 'minStockThreshold',
     minstockthreshold: 'minStockThreshold',
+    lowstockalert: 'minStockThreshold',
     reorderlevel: 'minStockThreshold',
 
     // Serialized Items
@@ -416,7 +421,10 @@ export function normalizeHeaderKey(header: string, sheetName?: string): string {
     deposittransactionref: 'depositTransactionRef',
     deposittxnref: 'depositTransactionRef',
     depositmode: 'depositMode',
+    depositbalance: 'depositBalance',
+    depositrefundstatus: 'depositRefundStatus',
     lockinperiodmonths: 'lockInPeriodMonths',
+    lockinmonths: 'lockInPeriodMonths',
     lockin: 'lockInPeriodMonths',
     includedaccessories: 'includedAccessories',
     accessories: 'includedAccessories',
@@ -520,15 +528,15 @@ export function sheetToRows(
     .map(row => {
       const obj: Record<string, string> = {};
       mappedKeys.forEach((key, i) => {
-        if (key) {
-          const val = String((row as unknown[])[i] ?? '').trim();
-          obj[key] = val;
-          const raw = rawHeaders[i];
-          if (raw && !obj[raw]) obj[raw] = val;
-        }
+        const rawHeader = rawHeaders[i];
+        if (!rawHeader) return;
+        const rawKey = rawHeader.replace(/\s*\*$/, '').trim();
+        const val = String((row as unknown[])[i] ?? '').trim();
+        if (key) obj[key] = val;
+        if (rawKey && !obj[rawKey]) obj[rawKey] = val;
       });
 
-      // Cross-assign aliases for convenient access
+      // Preserve aliases used by older import templates and rental sheets.
       if (obj['customerName'] && !obj['assignedPerson']) obj['assignedPerson'] = obj['customerName'];
       if (obj['assignedPerson'] && !obj['customerName']) obj['customerName'] = obj['assignedPerson'];
       if (obj['customerPhone'] && !obj['assignedPersonContact']) obj['assignedPersonContact'] = obj['customerPhone'];
@@ -639,17 +647,22 @@ export const SHEET_COLS: Record<string, ColDef[]> = {
     { header: 'Is Default?', key: 'isDefault', width: 14, required: false, hint: 'TRUE or FALSE', example: 'TRUE' },
   ],
   Products: [
-    { header: 'Product Name', key: 'name', width: 32, required: true, example: 'Yamaha F310 Acoustic Guitar' },
-    { header: 'SKU Code', key: 'sku', width: 16, required: false, hint: 'Leave blank to auto-generate', example: 'SKU-0001' },
-    { header: 'Category', key: 'category', width: 22, required: true, hint: 'Must match Category Name', example: 'Guitars' },
     { header: 'Brand', key: 'brand', width: 20, required: false, example: 'Yamaha' },
+    { header: 'Product Name', key: 'name', width: 32, required: true, example: 'Yamaha F310 Acoustic Guitar' },
+    { header: 'Model / Series', key: 'modelName', width: 20, required: false, hint: 'e.g. F310, Pacifica', example: 'F310' },
+    { header: 'Category', key: 'category', width: 22, required: true, hint: 'Must match Category Name', example: 'Guitars' },
     { header: 'Color / Finish', key: 'color', width: 18, required: false, example: 'Natural' },
+    { header: 'HSN Code', key: 'hsnCode', width: 14, required: false, hint: 'Default: 9202', example: '9202' },
+    { header: 'Low Stock Alert', key: 'minStockThreshold', width: 16, required: false, hint: 'Default: 5', example: 5 },
+    { header: 'Unit of Measure', key: 'unitOfMeasure', width: 16, required: false, hint: 'pcs / set / unit', example: 'pcs' },
     { header: 'Tracking Mode', key: 'trackingMode', width: 18, required: false, hint: 'QUANTITY or SERIALIZED', example: 'SERIALIZED' },
-    { header: 'Purchase Cost', key: 'purchaseCost', width: 16, required: true, hint: 'Number only, e.g. 6000', example: 6000 },
-    { header: 'Selling Price', key: 'sellingPrice', width: 16, required: true, hint: 'Number only, e.g. 8500', example: 8500 },
-    { header: 'Opening Stock', key: 'openingStock', width: 16, required: false, hint: 'For QUANTITY mode only', example: 0 },
+    { header: 'Purchase Cost', key: 'purchaseCost', width: 16, required: true, hint: 'Number only, no symbol', example: 6000 },
+    { header: 'Selling Price', key: 'sellingPrice', width: 16, required: true, hint: 'Number only, no symbol', example: 8500 },
+    { header: 'Opening Stock', key: 'openingStock', width: 16, required: false, hint: 'For QUANTITY or default stock', example: 4 },
     { header: 'Location Code', key: 'location', width: 18, required: false, hint: 'Where stock lives', example: 'MAIN' },
-    { header: 'Supplier', key: 'supplier', width: 24, required: false, hint: 'Supplier Name', example: 'Furtados Music' },
+    { header: 'Supplier', key: 'supplier', width: 24, required: false, hint: 'Must match Supplier Name', example: 'Furtados Music' },
+    { header: 'SKU Code', key: 'sku', width: 16, required: false, hint: 'Leave blank to auto-generate', example: 'SKU-0001' },
+    { header: 'Description', key: 'description', width: 36, required: false, example: 'Spruce top acoustic guitar' },
   ],
   SerializedItems: [
     { header: 'Asset ID', key: 'assetId', width: 20, required: true, hint: 'Unique tag e.g. F310-001', example: 'F310-001' },
@@ -660,31 +673,38 @@ export const SHEET_COLS: Record<string, ColDef[]> = {
     { header: 'Status', key: 'status', width: 18, required: false, hint: 'AVAILABLE or SOLD', example: 'AVAILABLE' },
     { header: 'Condition', key: 'condition', width: 14, required: false, hint: 'NEW / GOOD / FAIR / POOR', example: 'NEW' },
     { header: 'Warranty Expiry', key: 'warrantyExpiry', width: 18, required: false, hint: 'YYYY-MM-DD', example: '2026-12-31' },
+    { header: 'Notes', key: 'notes', width: 24, required: false, example: 'Inspected and verified' },
   ],
   DirectSales: [
     { header: 'Invoice No.', key: 'invoiceNumber', width: 20, required: true, hint: 'Same No. for multi-item sale', example: 'INV-2024-0001' },
-    { header: 'Sale Date', key: 'date', width: 14, required: true, hint: 'YYYY-MM-DD or DD/MM/YYYY', example: '2024-01-15' },
+    { header: 'Sale Date', key: 'date', width: 14, required: true, hint: 'YYYY-MM-DD', example: '2024-01-15' },
     { header: 'Customer Name', key: 'customerName', width: 26, required: true, example: 'Rahul Sharma' },
-    { header: 'Customer Email', key: 'customerEmail', width: 30, required: false, example: 'rahul@gmail.com' },
-    { header: 'Customer Phone', key: 'customerPhone', width: 16, required: false, example: '9876543210' },
+    { header: 'Customer Email', key: 'customerEmail', width: 30, required: true, example: 'rahul@gmail.com' },
+    { header: 'Customer Phone', key: 'customerPhone', width: 16, required: true, example: '9876543210' },
+    { header: 'Customer GSTIN', key: 'customerGstin', width: 18, required: false, hint: '15-digit GSTIN', example: '27AAAAA0000A1Z5' },
+    { header: 'Customer Address', key: 'customerAddress', width: 32, required: false, example: 'FC Road, Pune, MH' },
     { header: 'Product SKU', key: 'productSku', width: 18, required: true, example: 'SKU-0001' },
+    { header: 'HSN Code', key: 'hsnCode', width: 12, required: false, hint: 'Default: 9202', example: '9202' },
     { header: 'Qty', key: 'quantity', width: 8, required: true, example: 1 },
     { header: 'Unit Price', key: 'unitPrice', width: 14, required: true, hint: 'Number only', example: 8500 },
     { header: 'Discount', key: 'discount', width: 12, required: false, hint: 'Per-unit discount, default 0', example: 0 },
     { header: 'Asset ID', key: 'assetId', width: 16, required: false, hint: 'For serialized products', example: 'F310-001' },
-    { header: 'Payment Method', key: 'paymentMethod', width: 18, required: false, hint: 'CASH / UPI / CARD / BANK_TRANSFER', example: 'UPI' },
+    { header: 'Payment Method', key: 'paymentMethod', width: 18, required: true, hint: 'CASH / UPI / CARD / BANK_TRANSFER', example: 'UPI' },
   ],
   EMISales: [
     { header: 'Invoice No.', key: 'invoiceNumber', width: 20, required: true, hint: 'Same No. for multi-item sale', example: 'INV-2024-0010' },
-    { header: 'Sale Date', key: 'date', width: 14, required: true, hint: 'YYYY-MM-DD or DD/MM/YYYY', example: '2024-02-01' },
+    { header: 'Sale Date', key: 'date', width: 14, required: true, hint: 'YYYY-MM-DD', example: '2024-02-01' },
     { header: 'Customer Name', key: 'customerName', width: 26, required: true, example: 'Priya Desai' },
-    { header: 'Customer Email', key: 'customerEmail', width: 30, required: false, example: 'priya@gmail.com' },
-    { header: 'Customer Phone', key: 'customerPhone', width: 16, required: false, example: '9988776655' },
+    { header: 'Customer Email', key: 'customerEmail', width: 30, required: true, example: 'priya@gmail.com' },
+    { header: 'Customer Phone', key: 'customerPhone', width: 16, required: true, example: '9988776655' },
+    { header: 'Customer GSTIN', key: 'customerGstin', width: 18, required: false, example: '27AAAAA0000A1Z5' },
+    { header: 'Customer Address', key: 'customerAddress', width: 32, required: false, example: 'Kothrud, Pune, MH' },
     { header: 'Product SKU', key: 'productSku', width: 18, required: true, example: 'SKU-0002' },
     { header: 'Qty', key: 'quantity', width: 8, required: true, example: 1 },
     { header: 'Unit Price', key: 'unitPrice', width: 14, required: true, example: 7200 },
-    { header: 'Down Payment', key: 'downPayment', width: 16, required: false, hint: 'Amount paid upfront', example: 1200 },
+    { header: 'Down Payment', key: 'downPayment', width: 16, required: true, hint: 'Amount paid upfront', example: 1200 },
     { header: 'No. of Months', key: 'emiTenureMonths', width: 16, required: true, hint: 'Total EMI instalments', example: 6 },
+    { header: 'Down Payment Method', key: 'downPaymentMethod', width: 20, required: false, hint: 'CASH / UPI / CARD / BANK_TRANSFER', example: 'UPI' },
   ],
   EMIPayments: [
     { header: 'Invoice No.', key: 'invoiceNumber', width: 20, required: true, hint: 'Must match EMI Sales Invoice No.', example: 'INV-2024-0010' },
@@ -702,13 +722,18 @@ export const SHEET_COLS: Record<string, ColDef[]> = {
     { header: 'Reference No.', key: 'issueReference', width: 22, required: true, hint: 'e.g. USE-2024-00001', example: 'USE-2024-00001' },
     { header: 'Issue Date', key: 'issueDate', width: 14, required: true, hint: 'YYYY-MM-DD', example: '2024-03-01' },
     { header: 'Return By Date', key: 'expectedReturnDate', width: 18, required: true, hint: 'YYYY-MM-DD', example: '2024-06-01' },
+    { header: 'Actual Return Date', key: 'actualReturnDate', width: 18, required: false, hint: 'YYYY-MM-DD (if returned)', example: '2024-06-01' },
     { header: 'Customer Name', key: 'assignedPerson', width: 26, required: true, example: 'Amit Joshi' },
     { header: 'Customer Phone', key: 'assignedPersonContact', width: 18, required: false, example: '9123456780' },
     { header: 'Customer Email', key: 'customerEmail', width: 30, required: false, example: 'amit@gmail.com' },
     { header: 'Product SKU', key: 'productSku', width: 18, required: true, example: 'SKU-0001' },
-    { header: 'Asset ID', key: 'assetId', width: 16, required: false, example: 'F310-002' },
+    { header: 'Asset ID', key: 'assetId', width: 16, required: false, example: 'F310-001' },
     { header: 'Monthly Rent', key: 'monthlyRent', width: 14, required: true, hint: 'Number only', example: 1500 },
+    { header: 'Lock-In Months', key: 'lockInPeriodMonths', width: 16, required: false, hint: 'Tenure (default: 3)', example: 3 },
     { header: 'Security Deposit', key: 'securityDeposit', width: 18, required: false, hint: 'Number only, 0 if none', example: 5000 },
+    { header: 'Deposit Mode', key: 'depositMode', width: 14, required: false, hint: 'TRUE or FALSE', example: 'FALSE' },
+    { header: 'Deposit Balance', key: 'depositBalance', width: 16, required: false, hint: 'Remaining deposit balance', example: 5000 },
+    { header: 'Deposit Refund Status', key: 'depositRefundStatus', width: 22, required: false, hint: 'HELD / REFUND_PENDING / REFUNDED', example: 'HELD' },
     { header: 'Deposit Txn Ref', key: 'depositTransactionRef', width: 20, required: false, example: 'CASH-001' },
     { header: 'Status', key: 'status', width: 20, required: false, hint: 'ACTIVE / RETURNED / OVERDUE', example: 'ACTIVE' },
     { header: 'Accessories', key: 'includedAccessories', width: 36, required: false, hint: 'Comma-separated', example: 'Stand, Power Adapter' },
@@ -798,17 +823,22 @@ export function generateImportTemplate(): Buffer {
     const extraRows: (string | number)[][] = [];
     if (sheetName === 'Products') {
       extraRows.push([
-        'Casio CT-X700 Portable Keyboard',
-        'SKU-0002',
-        'Keyboards',
         'Casio',
+        'Casio CT-X700 Portable Keyboard',
+        'CT-X700',
+        'Keyboards',
         'Black',
+        '9207',
+        5,
+        'pcs',
         'QUANTITY',
         5500,
         7200,
         4,
         'MAIN',
         'Furtados Music',
+        'SKU-0002',
+        'Portable keyboard',
       ]);
     } else if (sheetName === 'Categories') {
       extraRows.push(['Keyboards', 'Digital pianos, synthesizers and workstations']);
@@ -816,6 +846,24 @@ export function generateImportTemplate(): Buffer {
 
     const ws = XLSX.utils.aoa_to_sheet([headerRow, hintRow, exampleRow, ...extraRows]);
     ws['!cols'] = cols.map(c => ({ wch: c.width }));
+
+    // Style header and hint rows where the XLSX writer supports cell styles.
+    cols.forEach((col, ci) => {
+      const cellAddr = XLSX.utils.encode_cell({ r: 0, c: ci });
+      if (!ws[cellAddr]) ws[cellAddr] = { v: col.header, t: 's' };
+      ws[cellAddr].s = {
+        font: { bold: true, color: { rgb: 'FFFFFF' } },
+        fill: { fgColor: { rgb: col.required ? '1A6EB7' : '4A5568' } },
+        alignment: { horizontal: 'left' },
+        border: { bottom: { style: 'thin', color: { rgb: 'CCCCCC' } } },
+      };
+      const hintAddr = XLSX.utils.encode_cell({ r: 1, c: ci });
+      if (!ws[hintAddr]) ws[hintAddr] = { v: hintRow[ci], t: 's' };
+      ws[hintAddr].s = {
+        font: { italic: true, color: { rgb: '718096' }, sz: 9 },
+        fill: { fgColor: { rgb: 'F7FAFC' } },
+      };
+    });
 
     XLSX.utils.book_append_sheet(wb, ws, sheetName);
   }
@@ -858,6 +906,36 @@ export async function validateImportFile(buf: Buffer): Promise<ValidationResult>
       errors.push({ sheet, row, field, message: `${field} must be a valid number` });
       return false;
     }
+    return true;
+  };
+
+
+  const mustBeEnum = (
+    sheet: string,
+    row: number,
+    field: string,
+    val: string,
+    allowedValues: string[]
+  ): boolean => {
+    const normalizedValue = String(val ?? '').trim().toUpperCase();
+
+    // Empty values are allowed when the field is optional.
+    if (!normalizedValue) return true;
+
+    const allowed = new Set(
+      allowedValues.map(value => String(value).trim().toUpperCase())
+    );
+
+    if (!allowed.has(normalizedValue)) {
+      errors.push({
+        sheet,
+        row,
+        field,
+        message: `${field} must be one of: ${allowedValues.filter(Boolean).join(', ')}`,
+      });
+      return false;
+    }
+
     return true;
   };
 
@@ -1155,10 +1233,14 @@ export async function validateImportFile(buf: Buffer): Promise<ValidationResult>
       errors.push({ sheet: 'Rentals', row: rowNum, field: 'Product SKU', message: `Product "${r['productSku']}" not found in Products sheet or database` });
       ok = false;
     }
-
     ok = requireField('Rentals', rowNum, 'Monthly Rent', r['monthlyRent']) && ok;
     ok = mustBeNum('Rentals', rowNum, 'Monthly Rent', r['monthlyRent']) && ok;
     ok = mustBeNum('Rentals', rowNum, 'Security Deposit', r['securityDeposit']) && ok;
+    ok = mustBeEnum('Rentals', rowNum, 'status', r['status'], ['', ...Object.values(USAGE_STATUSES)]) && ok;
+    ok = mustBeEnum('Rentals', rowNum, 'purpose', r['purpose'], ['', ...Object.values(USAGE_PURPOSES)]) && ok;
+    ok = mustBeEnum('Rentals', rowNum, 'depositRefundStatus', r['depositRefundStatus'], ['', 'HELD', 'REFUND_PENDING', 'REFUNDED']) && ok;
+    ok = mustBeNum('Rentals', rowNum, 'lockInPeriodMonths', r['lockInPeriodMonths']) && ok;
+    ok = mustBeNum('Rentals', rowNum, 'depositBalance', r['depositBalance']) && ok;
 
     const ref = r['issueReference'] ? r['issueReference'].trim().toUpperCase() : '';
     if (ref && seenRefs.has(ref)) {
@@ -1506,8 +1588,8 @@ export async function executeImport(buf: Buffer, actor: AuthenticatedUser): Prom
           locId && tracking === TRACKING_MODES.QUANTITY && opening > 0
             ? [{ location: locId, onHand: opening, reserved: 0, issuedInternal: 0, quarantined: 0 }]
             : locId
-            ? [{ location: locId, onHand: 0, reserved: 0, issuedInternal: 0, quarantined: 0 }]
-            : [],
+              ? [{ location: locId, onHand: 0, reserved: 0, issuedInternal: 0, quarantined: 0 }]
+              : [],
         isActive: true,
       });
 
@@ -1877,8 +1959,8 @@ export async function executeImport(buf: Buffer, actor: AuthenticatedUser): Prom
             status: (['PAID', 'DUE', 'OVERDUE'].includes((p['status'] || '').toUpperCase())
               ? (p['status'] || '').toUpperCase()
               : paid >= due
-              ? 'PAID'
-              : 'DUE') as any,
+                ? 'PAID'
+                : 'DUE') as any,
             notes: p['notes'] || undefined,
           };
         });
@@ -1937,17 +2019,17 @@ export async function executeImport(buf: Buffer, actor: AuthenticatedUser): Prom
           paymentLogs:
             downPay > 0
               ? [
-                  {
-                    paymentType: 'DOWN_PAYMENT',
-                    amount: downPay,
-                    paymentMethod: PAYMENT_METHODS.UPI,
-                    transactionRef: `HIST-DP-${invoiceNumber}`,
-                    billingMonth: 'Down Payment',
-                    notes: 'Historical import',
-                    recordedBy: actorId,
-                    paidAt: saleDate,
-                  },
-                ]
+                {
+                  paymentType: 'DOWN_PAYMENT',
+                  amount: downPay,
+                  paymentMethod: PAYMENT_METHODS.UPI,
+                  transactionRef: `HIST-DP-${invoiceNumber}`,
+                  billingMonth: 'Down Payment',
+                  notes: 'Historical import',
+                  recordedBy: actorId,
+                  paidAt: saleDate,
+                },
+              ]
               : [],
           soldBy: actorId,
           confirmedAt: saleDate,
@@ -2052,8 +2134,8 @@ export async function executeImport(buf: Buffer, actor: AuthenticatedUser): Prom
           status: (['PAID', 'DUE', 'OVERDUE'].includes((p['status'] || '').toUpperCase())
             ? (p['status'] || '').toUpperCase()
             : paid >= due
-            ? 'PAID'
-            : 'DUE') as any,
+              ? 'PAID'
+              : 'DUE') as any,
           notes: p['notes'] || undefined,
         };
       });
@@ -2101,8 +2183,17 @@ export async function executeImport(buf: Buffer, actor: AuthenticatedUser): Prom
         securityDeposit: deposit,
         depositTransactionRef: r['depositTransactionRef'] || '',
         depositMode: depMode,
-        depositBalance: depMode ? Math.max(0, deposit - totalPaid) : 0,
-        depositExhausted: depMode ? deposit - totalPaid <= 0 : false,
+        depositBalance: r['depositBalance'] !== undefined && r['depositBalance'] !== ''
+          ? parseNum(r['depositBalance'])
+          : (depMode ? Math.max(0, deposit - totalPaid) : deposit),
+        depositExhausted: depMode
+          ? (r['depositBalance'] !== undefined && r['depositBalance'] !== ''
+            ? parseNum(r['depositBalance']) <= 0
+            : deposit - totalPaid <= 0)
+          : false,
+        depositRefundStatus: ['HELD', 'REFUND_PENDING', 'REFUNDED'].includes(r['depositRefundStatus']?.trim()?.toUpperCase())
+          ? (r['depositRefundStatus'].trim().toUpperCase() as any)
+          : (status === USAGE_STATUSES.RETURNED ? 'REFUNDED' : 'HELD'),
         monthlyRent: monthly,
         includedAccessories: accessories,
         monthlyPayments,
@@ -2116,7 +2207,13 @@ export async function executeImport(buf: Buffer, actor: AuthenticatedUser): Prom
         await SerializedItem.findByIdAndUpdate(serialId, {
           status: SERIALIZED_STATUSES.ISSUED_INTERNAL,
           currentUsage: usage._id,
-          assignedTo: (r['assignedPerson'] || 'Customer').trim(),
+          assignedTo: (r['assignedPerson'] || r['customerName'] || 'Customer').trim(),
+        });
+      } else if (serialId && status === USAGE_STATUSES.RETURNED) {
+        await SerializedItem.findByIdAndUpdate(serialId, {
+          status: SERIALIZED_STATUSES.AVAILABLE,
+          currentUsage: null,
+          assignedTo: null,
         });
       }
 

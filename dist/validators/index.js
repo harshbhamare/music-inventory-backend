@@ -119,6 +119,7 @@ export const createSaleSchema = z.object({
         notes: z.string().optional(),
         remarks: z.string().optional(),
         idempotencyKey: z.string().optional(),
+        sendReceiptEmail: z.boolean().optional().default(true),
         lineItems: z
             .array(z.object({
             product: z.string().min(1, 'Product ID is required'),
@@ -133,13 +134,43 @@ export const createSaleSchema = z.object({
 });
 export const recordEmiPaymentSchema = z.object({
     body: z.object({
-        amount: z.number().min(1, 'Payment amount must be greater than 0'),
+        amount: z.number().min(0, 'Payment amount must be 0 or greater'),
         billingMonth: z.string().optional(),
         paymentId: z.string().optional(),
         monthIndex: z.number().int().min(1).optional(),
         paymentMethod: z.string().optional().default('UPI'),
         transactionRef: z.string().min(1, 'Transaction number / UPI reference is compulsory'),
         notes: z.string().optional(),
+        earlySettlementDiscount: z.number().min(0).optional(),
+        settleAllRemaining: z.boolean().optional(),
+        customerEmail: z.string().email('Invalid email address').optional().or(z.literal('')),
+        sendReceiptEmail: z.boolean().optional().default(true),
+    }),
+});
+export const adjustEmiInstallmentDueSchema = z.object({
+    body: z.object({
+        monthIndex: z.number().int().min(1, 'Month index is required'),
+        newAmountDue: z.number().min(0, 'Amount due must be 0 or greater'),
+        newDueDate: z.string().optional(),
+        carryForwardDifference: z.boolean().optional(),
+        reason: z.string().optional(),
+    }),
+});
+export const updateEmiPaymentSchema = z.object({
+    body: z.object({
+        monthIndex: z.number().int().min(1, 'Month index is required'),
+        amountPaid: z.number().min(0).optional(),
+        amountDue: z.number().min(0).optional(),
+        paymentMethod: z.string().optional(),
+        transactionRef: z.string().optional(),
+        notes: z.string().optional(),
+    }),
+});
+export const addEmiInstallmentMonthSchema = z.object({
+    body: z.object({
+        amountDue: z.number().min(0, 'Amount due must be 0 or greater'),
+        dueDate: z.string().optional(),
+        reason: z.string().optional(),
     }),
 });
 export const updateSaleSchema = z.object({
@@ -179,10 +210,15 @@ export const issueInternalUsageSchema = z.object({
         customerEmail: z.string().email().optional().or(z.literal('')),
         location: z.string().min(1, 'Location is required'),
         expectedReturnDate: z.string().min(1, 'Expected return date is required'),
+        startDate: z.string().optional(),
+        issueDate: z.string().optional(),
         notes: z.string().optional(),
         isRental: z.boolean().optional().default(true),
         lockInPeriodMonths: z.number().int().min(1).max(36).optional().default(3),
         securityDeposit: z.number().min(0).optional().default(0),
+        depositTransactionRef: z.string().optional(),
+        depositMode: z.boolean().optional().default(false),
+        depositPaymentMethod: z.enum(Object.values(PAYMENT_METHODS)).optional().default(PAYMENT_METHODS.CASH),
         monthlyRent: z.number().min(0).optional().default(0),
         includedAccessories: z.array(z.string()).optional().default([]),
         items: z
@@ -195,6 +231,21 @@ export const issueInternalUsageSchema = z.object({
             .min(1, 'At least one item must be issued'),
     }),
 });
+export const updateRentalAgreementSchema = z.object({
+    body: z.object({
+        assignedPerson: z.string().min(1, 'Customer name is required').optional(),
+        assignedPersonContact: z.string().optional(),
+        customerEmail: z.string().email('Valid email required').optional().or(z.literal('')),
+        lockInPeriodMonths: z.number().int().min(1).max(36).optional(),
+        monthlyRent: z.number().min(0).optional(),
+        securityDeposit: z.number().min(0).optional(),
+        depositMode: z.boolean().optional(),
+        notes: z.string().optional(),
+        payAllRemainingNow: z.boolean().optional(),
+        paymentMethod: z.string().optional(),
+        transactionRef: z.string().optional(),
+    }),
+});
 export const recordRentalPaymentSchema = z.object({
     body: z.object({
         amount: z.number().min(1, 'Payment amount must be greater than 0'),
@@ -202,9 +253,11 @@ export const recordRentalPaymentSchema = z.object({
         paymentId: z.string().optional(),
         monthIndex: z.number().optional(),
         paymentMethod: z.enum(Object.values(PAYMENT_METHODS)).default(PAYMENT_METHODS.UPI),
-        transactionRef: z.string().optional(),
+        transactionRef: z.string().min(1, 'Transaction reference number is mandatory for all rent payments'),
         notes: z.string().optional(),
         adjustNextMonth: z.boolean().optional(),
+        customerEmail: z.string().email('Invalid email address').optional().or(z.literal('')),
+        sendReceiptEmail: z.boolean().optional().default(true),
     }),
 });
 export const updateRentalPaymentSchema = z.object({
@@ -234,6 +287,8 @@ export const addRentalMonthSchema = z.object({
 export const returnInternalUsageSchema = z.object({
     body: z.object({
         notes: z.string().optional(),
+        customerEmail: z.string().email('Invalid email address').optional().or(z.literal('')),
+        sendReceiptEmail: z.boolean().optional().default(true),
         items: z
             .array(z.object({
             product: z.string().min(1, 'Product ID is required'),
@@ -250,6 +305,7 @@ export const extendUsageSchema = z.object({
     body: z.object({
         extendedDate: z.string().min(1, 'New return date is required'),
         reason: z.string().min(3, 'Reason for extension is required'),
+        addRentalMonths: z.boolean().optional(),
     }),
 });
 // Adjustments
@@ -294,5 +350,32 @@ export const releaseMaintenanceSchema = z.object({
         repairDetails: z.string().min(3, 'Repair details required'),
         cost: z.number().min(0).default(0),
         notes: z.string().optional(),
+    }),
+});
+export const recordDepositDeductionSchema = z.object({
+    body: z.object({
+        monthIndex: z.number().int().min(1, 'Month index is required'),
+        billingMonth: z.string().min(1, 'Billing month label is required'),
+        amount: z.number().min(0).optional(),
+        allowPartial: z.boolean().optional(),
+        notes: z.string().optional(),
+    }),
+});
+export const sendDepositDeductionNoticeSchema = z.object({
+    body: z.object({
+        recipientEmail: z.string().email('Valid recipient email is required').optional(),
+        customNote: z.string().optional(),
+    }),
+});
+export const refundDepositSchema = z.object({
+    body: z.object({
+        refundAmount: z.number().min(0, 'Refund amount cannot be negative'),
+        deductionAmount: z.number().min(0, 'Deduction amount cannot be negative').optional().default(0),
+        deductionReason: z.string().optional(),
+        paymentMethod: z.enum(Object.values(PAYMENT_METHODS)).optional().default(PAYMENT_METHODS.UPI),
+        transactionRef: z.string().optional().default(''),
+        notes: z.string().optional(),
+        customerEmail: z.string().email('Invalid email address').optional().or(z.literal('')),
+        sendReceiptEmail: z.boolean().optional().default(true),
     }),
 });

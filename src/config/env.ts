@@ -9,6 +9,8 @@ export const ENV = {
   SESSION_COOKIE_NAME: process.env.SESSION_COOKIE_NAME || 'stereobliss_session',
   FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:3000',
   RESEND_API_KEY: process.env.RESEND_API_KEY || '',
+  RESEND_DAILY_QUOTA: parseInt(process.env.RESEND_DAILY_QUOTA || '100', 10),
+  RESEND_FROM: process.env.RESEND_FROM || '',
   EMAIL_FROM: process.env.EMAIL_FROM || process.env.SMTP_FROM || process.env.GMAIL_USER || process.env.SMTP_USER || 'sales@stereobliss.com',
   SMTP_HOST: process.env.SMTP_HOST || 'smtp.gmail.com',
   SMTP_PORT: parseInt(process.env.SMTP_PORT || '465', 10),

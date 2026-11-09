@@ -14,6 +14,13 @@ const EmailDeliveryLogSchema = new Schema({
         enum: ['SENT', 'FAILED', 'SIMULATED'],
         required: true,
     },
+    provider: {
+        type: String,
+        enum: ['RESEND', 'NODEMAILER', 'SIMULATED'],
+        default: 'SIMULATED',
+    },
+    failoverFrom: { type: String },
+    failoverReason: { type: String },
     deliveryAttempt: { type: Number, default: 1 },
     providerReference: { type: String },
     errorDetails: { type: String },

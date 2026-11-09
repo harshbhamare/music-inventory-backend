@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { InternalUsage } from '../models/InternalUsage.js';
 import { UsageReturn } from '../models/UsageReturn.js';
-import { issueInstruments, returnInstruments, extendExpectedReturnDate, recordRentalPayment, updateRentalPayment, adjustRentalMonthDue, addRentalMonth, sendRentalReminder, getRentalDuesSummary, sendBulkRentalReminders, } from '../services/internalUsageService.js';
+import { issueInstruments, returnInstruments, extendExpectedReturnDate, recordRentalPayment, updateRentalPayment, adjustRentalMonthDue, addRentalMonth, sendRentalReminder, getRentalDuesSummary, sendBulkRentalReminders, recordDepositDeduction, sendDepositDeductionNotice, activateContinuationMode, updateRentalAgreement, refundSecurityDeposit, } from '../services/internalUsageService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { validate } from '../middleware/validate.js';
-import { issueInternalUsageSchema, returnInternalUsageSchema, extendUsageSchema, recordRentalPaymentSchema, updateRentalPaymentSchema, adjustRentalMonthDueSchema, addRentalMonthSchema, } from '../validators/index.js';
+import { issueInternalUsageSchema, updateRentalAgreementSchema, returnInternalUsageSchema, extendUsageSchema, recordRentalPaymentSchema, updateRentalPaymentSchema, adjustRentalMonthDueSchema, addRentalMonthSchema, recordDepositDeductionSchema, sendDepositDeductionNoticeSchema, refundDepositSchema, } from '../validators/index.js';
 import { ROLES, USAGE_STATUSES } from '../config/constants.js';
 const router = Router();
 // List internal usage loans
@@ -32,7 +32,7 @@ router.get('/', requireAuth, async (req, res, next) => {
             InternalUsage.find(query)
                 .populate('location', 'name code')
                 .populate('issuedBy', 'name email')
-                .populate('items.product', 'name sku brand trackingMode')
+                .populate('items.product', 'name sku brand trackingMode color defaultSellingPrice purchaseCost')
                 .populate('items.serializedItemId', 'assetId manufacturerSerial condition')
                 .sort({ createdAt: -1 })
                 .skip(skip)
@@ -84,10 +84,20 @@ router.get('/:id', requireAuth, async (req, res, next) => {
         const usage = await InternalUsage.findById(req.params.id)
             .populate('location', 'name code')
             .populate('issuedBy', 'name email')
-            .populate('items.product', 'name sku brand trackingMode')
+            .populate('items.product', 'name sku brand trackingMode color defaultSellingPrice purchaseCost')
             .populate('items.serializedItemId', 'assetId manufacturerSerial condition status')
             .populate('extensions.approvedBy', 'name email')
             .lean();
+        res.json({ success: true, data: { usage } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Update rental agreement terms (tenure, rent, customer info, or settle remaining rent)
+router.put('/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(updateRentalAgreementSchema), async (req, res, next) => {
+    try {
+        const usage = await updateRentalAgreement(req.params.id, req.body, req.user);
         res.json({ success: true, data: { usage } });
     }
     catch (err) {
@@ -108,7 +118,18 @@ router.post('/', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), val
 router.post('/:id/return', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(returnInternalUsageSchema), async (req, res, next) => {
     try {
         const result = await returnInstruments(req.params.id, req.body, req.user);
-        res.status(201).json({ success: true, data: { return: result } });
+        res.status(201).json({
+            success: true,
+            message: result.message || 'Equipment return completed successfully.',
+            data: {
+                return: result.return,
+                usage: result.usage,
+                emailSent: result.emailSent,
+                recipient: result.recipient,
+                provider: result.provider,
+                message: result.message || 'Equipment return completed successfully.',
+            },
+        });
     }
     catch (err) {
         next(err);
@@ -117,7 +138,7 @@ router.post('/:id/return', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MAN
 // Extend return date
 router.post('/:id/extend', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(extendUsageSchema), async (req, res, next) => {
     try {
-        const usage = await extendExpectedReturnDate(req.params.id, req.body.extendedDate, req.body.reason, req.user);
+        const usage = await extendExpectedReturnDate(req.params.id, req.body.extendedDate, req.body.reason, req.user, { addRentalMonths: req.body.addRentalMonths });
         res.json({ success: true, data: { usage } });
     }
     catch (err) {
@@ -143,8 +164,18 @@ router.get('/returns/all', requireAuth, async (_req, res, next) => {
 // Record monthly rental payment
 router.post('/:id/payments', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(recordRentalPaymentSchema), async (req, res, next) => {
     try {
-        const usage = await recordRentalPayment(req.params.id, req.body, req.user);
-        res.json({ success: true, data: { usage } });
+        const result = await recordRentalPayment(req.params.id, req.body, req.user);
+        res.json({
+            success: true,
+            message: result.message || `Rental payment of ₹${req.body.amount} recorded successfully.`,
+            data: {
+                usage: result.usage,
+                emailSent: result.emailSent,
+                recipient: result.recipient,
+                provider: result.provider,
+                message: result.message || `Rental payment of ₹${req.body.amount} recorded successfully.`,
+            },
+        });
     }
     catch (err) {
         next(err);
@@ -204,6 +235,170 @@ router.post('/:id/send-reminder', requireAuth, requireRole(ROLES.SUPER_ADMIN, RO
             return res.json({ success: true, data: result });
         }
         return res.status(404).json({ success: false, message: 'Dues record not found.' });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Record monthly rent deduction from security deposit (deposit-mode rentals)
+router.post('/:id/deposit-deductions', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(recordDepositDeductionSchema), async (req, res, next) => {
+    try {
+        const usage = await recordDepositDeduction(req.params.id, req.body, req.user);
+        res.json({ success: true, data: { usage } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Send deposit deduction notice email to customer (triggered from notification bell)
+router.post('/:id/deposit-deductions/:deductionId/send-notice', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(sendDepositDeductionNoticeSchema), async (req, res, next) => {
+    try {
+        const result = await sendDepositDeductionNotice(req.params.id, req.params.deductionId, req.user, { recipientEmail: req.body.recipientEmail, customNote: req.body.customNote });
+        res.json({ success: true, data: result });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Explicitly activate continuation mode (e.g. when deposit is low/insufficient or customer chooses direct payments)
+router.post('/:id/activate-continuation', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
+    try {
+        const usage = await activateContinuationMode(req.params.id, req.body, req.user);
+        res.json({ success: true, data: { usage } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Refund security deposit to customer (deductions, cash/upi/bank transfer disbursement)
+router.post('/:id/refund-deposit', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), validate(refundDepositSchema), async (req, res, next) => {
+    try {
+        const result = await refundSecurityDeposit(req.params.id, req.body, req.user);
+        res.json({
+            success: true,
+            message: result.message || `Security deposit refund of ₹${req.body.refundAmount} processed successfully.`,
+            data: {
+                usage: result.usage,
+                emailSent: result.emailSent,
+                recipient: result.recipient,
+                provider: result.provider,
+                message: result.message || `Security deposit refund of ₹${req.body.refundAmount} processed successfully.`,
+            },
+        });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Manually resend Equipment Return Confirmation email to customer
+router.post('/:id/send-return-confirmation', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
+    try {
+        const { InternalUsage } = await import('../models/InternalUsage.js');
+        const { sendRentalReturnConfirmationEmail } = await import('../services/emailService.js');
+        const usage = await InternalUsage.findById(req.params.id)
+            .populate('items.product', 'name sku brand')
+            .populate('items.serializedItemId', 'assetId manufacturerSerial');
+        if (!usage) {
+            return res.status(404).json({ success: false, message: 'Rental record not found.' });
+        }
+        const targetEmail = (req.body.recipientEmail || usage.customerEmail || '').trim();
+        if (!targetEmail || !targetEmail.includes('@')) {
+            return res.status(400).json({ success: false, message: 'Please provide a valid recipient email address.' });
+        }
+        if (!usage.customerEmail || usage.customerEmail !== targetEmail) {
+            usage.customerEmail = targetEmail.toLowerCase();
+            await usage.save();
+        }
+        const prodName = usage.items[0]?.product?.name || 'Musical Instrument';
+        const assetId = usage.items[0]?.serializedItemId?.assetId ||
+            usage.items[0]?.serializedItemId?.manufacturerSerial;
+        const log = await sendRentalReturnConfirmationEmail({
+            recipientEmail: targetEmail,
+            customerName: usage.assignedPerson,
+            customerContact: usage.assignedPersonContact,
+            issueReference: usage.issueReference,
+            returnReference: `RET-${usage.issueReference}`,
+            productName: prodName,
+            assetId,
+            returnDate: usage.actualReturnDate || new Date(),
+            returnedItemsCount: usage.items.reduce((acc, it) => acc + (it.quantityReturned || 1), 0),
+            returnCondition: 'GOOD',
+            inspectionOutcome: 'AVAILABLE',
+            depositBalance: usage.depositBalance || 0,
+            depositRefundStatus: usage.depositRefundStatus || 'REFUNDED',
+            totalRentPaid: usage.totalRentPaid || 0,
+            totalMonthsRented: usage.monthlyPayments?.length || 1,
+            receivedBy: { name: req.user.name, email: req.user.email, role: req.user.role },
+            notes: req.body.customNote,
+        });
+        const returnMsg = `Return confirmation email dispatched to ${targetEmail}`;
+        res.json({
+            success: true,
+            message: returnMsg,
+            data: {
+                log,
+                recipient: targetEmail,
+                provider: log?.provider || 'EMAIL',
+                message: returnMsg,
+            },
+        });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Manually resend Security Deposit Refund Receipt email to customer
+router.post('/:id/send-refund-receipt', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
+    try {
+        const { InternalUsage } = await import('../models/InternalUsage.js');
+        const { sendDepositRefundReceiptEmail } = await import('../services/emailService.js');
+        const usage = await InternalUsage.findById(req.params.id)
+            .populate('items.product', 'name sku brand')
+            .populate('items.serializedItemId', 'assetId manufacturerSerial');
+        if (!usage) {
+            return res.status(404).json({ success: false, message: 'Rental record not found.' });
+        }
+        const targetEmail = (req.body.recipientEmail || usage.customerEmail || '').trim();
+        if (!targetEmail || !targetEmail.includes('@')) {
+            return res.status(400).json({ success: false, message: 'Please provide a valid recipient email address.' });
+        }
+        if (!usage.customerEmail || usage.customerEmail !== targetEmail) {
+            usage.customerEmail = targetEmail.toLowerCase();
+            await usage.save();
+        }
+        const prodName = usage.items[0]?.product?.name || 'Musical Instrument';
+        const assetId = usage.items[0]?.serializedItemId?.assetId ||
+            usage.items[0]?.serializedItemId?.manufacturerSerial;
+        const log = await sendDepositRefundReceiptEmail({
+            recipientEmail: targetEmail,
+            customerName: usage.assignedPerson,
+            customerContact: usage.assignedPersonContact,
+            issueReference: usage.issueReference,
+            productName: prodName,
+            assetId,
+            initialDeposit: usage.securityDeposit || 0,
+            refundAmount: usage.depositRefundedAmount || 0,
+            deductionAmount: usage.depositRefundDeductionAmount || 0,
+            deductionReason: usage.depositRefundDeductionReason,
+            depositBalanceBefore: (usage.depositRefundedAmount || 0) + (usage.depositRefundDeductionAmount || 0),
+            depositBalanceAfter: usage.depositBalance || 0,
+            paymentMethod: usage.depositRefundMethod || 'UPI',
+            transactionRef: usage.depositRefundTxnRef || `REFUND-${Date.now()}`,
+            processedAt: usage.depositRefundedAt || new Date(),
+            processedBy: { name: req.user.name, email: req.user.email, role: req.user.role },
+            notes: req.body.customNote || usage.depositRefundNotes,
+        });
+        const refundMsg = `Deposit refund receipt email dispatched to ${targetEmail}`;
+        res.json({
+            success: true,
+            message: refundMsg,
+            data: {
+                log,
+                recipient: targetEmail,
+                provider: log?.provider || 'EMAIL',
+                message: refundMsg,
+            },
+        });
     }
     catch (err) {
         next(err);

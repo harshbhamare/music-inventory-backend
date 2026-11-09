@@ -39,7 +39,7 @@ const EmiReminderSchema = new Schema({
 const SalePaymentLogSchema = new Schema({
     paymentType: {
         type: String,
-        enum: ['DOWN_PAYMENT', 'EMI_INSTALLMENT', 'FULL_PAYMENT'],
+        enum: ['DOWN_PAYMENT', 'EMI_INSTALLMENT', 'FULL_PAYMENT', 'EMI_EARLY_SETTLEMENT'],
         required: true,
     },
     amount: { type: Number, required: true, min: 0 },

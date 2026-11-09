@@ -47,7 +47,7 @@ export interface IEmiReminder {
 
 export interface ISalePaymentLog {
   _id?: Types.ObjectId;
-  paymentType: 'DOWN_PAYMENT' | 'EMI_INSTALLMENT' | 'FULL_PAYMENT';
+  paymentType: 'DOWN_PAYMENT' | 'EMI_INSTALLMENT' | 'FULL_PAYMENT' | 'EMI_EARLY_SETTLEMENT';
   amount: number;
   paymentMethod: string;
   transactionRef: string;
@@ -155,7 +155,7 @@ const SalePaymentLogSchema = new Schema<ISalePaymentLog>(
   {
     paymentType: {
       type: String,
-      enum: ['DOWN_PAYMENT', 'EMI_INSTALLMENT', 'FULL_PAYMENT'],
+      enum: ['DOWN_PAYMENT', 'EMI_INSTALLMENT', 'FULL_PAYMENT', 'EMI_EARLY_SETTLEMENT'],
       required: true,
     },
     amount: { type: Number, required: true, min: 0 },

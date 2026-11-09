@@ -1,11 +1,27 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { Sale } from '../models/Sale.js';
 import { CustomerReturn } from '../models/CustomerReturn.js';
-import { createSale, updateSale, processSaleReturn, recordEmiPayment, sendEmiReminder } from '../services/salesService.js';
+import {
+  createSale,
+  updateSale,
+  processSaleReturn,
+  recordEmiPayment,
+  adjustEmiInstallmentDue,
+  updateEmiPayment,
+  addEmiInstallmentMonth,
+  sendEmiReminder,
+} from '../services/salesService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { validate } from '../middleware/validate.js';
-import { createSaleSchema, updateSaleSchema, recordEmiPaymentSchema } from '../validators/index.js';
+import {
+  createSaleSchema,
+  updateSaleSchema,
+  recordEmiPaymentSchema,
+  adjustEmiInstallmentDueSchema,
+  updateEmiPaymentSchema,
+  addEmiInstallmentMonthSchema,
+} from '../validators/index.js';
 import { ROLES } from '../config/constants.js';
 
 const router = Router();
@@ -31,7 +47,8 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
       Sale.find(query)
         .populate('location', 'name code')
         .populate('soldBy', 'name email')
-        .populate('lineItems.product', 'name sku brand')
+        .populate('lineItems.product', 'name sku brand color modelName defaultSellingPrice hsnCode')
+        .populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition')
         .populate('paymentLogs.recordedBy', 'name email')
         .populate('remindersSent.sentBy', 'name email')
         .sort({ createdAt: -1 })
@@ -145,7 +162,31 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const sale = await createSale(req.body, req.user!);
-      res.status(201).json({ success: true, data: { sale } });
+
+      // Auto-dispatch Tax Invoice PDF & receipt email to customer if email is provided and requested
+      if (req.body.sendReceiptEmail !== false && sale.customerEmail && sale.customerEmail.includes('@')) {
+        setImmediate(async () => {
+          try {
+            const { sendInvoicePdfEmail } = await import('../services/emailService.js');
+            await sendInvoicePdfEmail({
+              sale,
+              recipientEmail: sale.customerEmail,
+            });
+          } catch (emailErr) {
+            console.error('[AUTO_EMAIL_INVOICE_ERROR] Failed to send tax invoice email on sale checkout:', emailErr);
+          }
+        });
+      }
+
+      res.status(201).json({
+        success: true,
+        message: 'Sale completed successfully.',
+        data: {
+          sale,
+          emailSent: Boolean(req.body.sendReceiptEmail !== false && sale.customerEmail && sale.customerEmail.includes('@')),
+          recipient: sale.customerEmail,
+        },
+      });
     } catch (err) {
       next(err);
     }
@@ -226,7 +267,22 @@ router.post(
         .populate('remindersSent.sentBy', 'name email')
         .lean();
 
-      res.json({ success: true, data: { sale: populated } });
+      const emiRecipient = (req.body.customerEmail || (populated as any)?.customerEmail || '').trim();
+      const emailSent = Boolean(req.body.sendReceiptEmail !== false && emiRecipient && emiRecipient.includes('@'));
+      const msg = emailSent
+        ? `EMI payment recorded & receipt email dispatched to ${emiRecipient}.`
+        : `EMI installment payment recorded successfully.`;
+
+      res.json({
+        success: true,
+        message: msg,
+        data: {
+          sale: populated,
+          emailSent,
+          recipient: emiRecipient || undefined,
+          message: msg,
+        },
+      });
     } catch (err) {
       next(err);
     }
@@ -242,6 +298,82 @@ router.post(
     try {
       const result = await sendEmiReminder(req.params.id as string, req.user!, req.body);
       res.json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Adjust specific EMI installment due amount or schedule
+router.post(
+  '/:id/adjust-emi-due',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  validate(adjustEmiInstallmentDueSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const sale = await adjustEmiInstallmentDue(req.params.id as string, req.body, req.user!);
+      const populated = await Sale.findById(sale._id)
+        .populate('location', 'name code address')
+        .populate('soldBy', 'name email')
+        .populate('lineItems.product', 'name sku brand modelName defaultSellingPrice color')
+        .populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition')
+        .populate('paymentLogs.recordedBy', 'name email')
+        .populate('remindersSent.sentBy', 'name email')
+        .lean();
+
+      res.json({ success: true, data: { sale: populated } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Edit recorded EMI installment payment
+router.put(
+  '/:id/emi-payments/:monthIndex',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  validate(updateEmiPaymentSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const monthIndex = parseInt(req.params.monthIndex as string, 10);
+      const sale = await updateEmiPayment(req.params.id as string, { ...req.body, monthIndex }, req.user!);
+      const populated = await Sale.findById(sale._id)
+        .populate('location', 'name code address')
+        .populate('soldBy', 'name email')
+        .populate('lineItems.product', 'name sku brand modelName defaultSellingPrice color')
+        .populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition')
+        .populate('paymentLogs.recordedBy', 'name email')
+        .populate('remindersSent.sentBy', 'name email')
+        .lean();
+
+      res.json({ success: true, data: { sale: populated } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Add an extra EMI month to the plan
+router.post(
+  '/:id/add-emi-month',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  validate(addEmiInstallmentMonthSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const sale = await addEmiInstallmentMonth(req.params.id as string, req.body, req.user!);
+      const populated = await Sale.findById(sale._id)
+        .populate('location', 'name code address')
+        .populate('soldBy', 'name email')
+        .populate('lineItems.product', 'name sku brand modelName defaultSellingPrice color')
+        .populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition')
+        .populate('paymentLogs.recordedBy', 'name email')
+        .populate('remindersSent.sentBy', 'name email')
+        .lean();
+
+      res.json({ success: true, data: { sale: populated } });
     } catch (err) {
       next(err);
     }

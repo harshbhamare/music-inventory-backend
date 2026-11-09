@@ -40,7 +40,7 @@ export interface IRentalReminder {
 
 export interface IRentalPaymentLog {
   _id?: Types.ObjectId;
-  paymentType: 'SECURITY_DEPOSIT' | 'RENTAL_PAYMENT' | 'DEPOSIT_DEDUCTION';
+  paymentType: 'SECURITY_DEPOSIT' | 'RENTAL_PAYMENT' | 'DEPOSIT_DEDUCTION' | 'DEPOSIT_REFUND' | 'MONTHLY_RENT' | 'BUYOUT';
   amount: number;
   paymentMethod: string;
   transactionRef: string;
@@ -90,6 +90,15 @@ export interface IInternalUsage extends Document {
   depositBalance: number;          // running balance of remaining deposit
   depositExhausted: boolean;       // true when depositBalance hits 0
   depositDeductions: IDepositDeduction[]; // audit trail of each monthly deduction
+  depositRefundStatus?: 'HELD' | 'REFUND_PENDING' | 'REFUNDED';
+  depositRefundedAmount?: number;
+  depositRefundedAt?: Date;
+  depositRefundMethod?: string;
+  depositRefundTxnRef?: string;
+  depositRefundNotes?: string;
+  depositRefundDeductionAmount?: number;
+  depositRefundDeductionReason?: string;
+  depositRefundProcessedBy?: Types.ObjectId;
   // continuationRent: after deposit exhausted, customer continues paying rent separately
   continuationStartedAt?: Date;
   monthlyRent: number;
@@ -156,7 +165,7 @@ const RentalPaymentLogSchema = new Schema<IRentalPaymentLog>(
   {
     paymentType: {
       type: String,
-      enum: ['SECURITY_DEPOSIT', 'RENTAL_PAYMENT', 'DEPOSIT_DEDUCTION'],
+      enum: ['SECURITY_DEPOSIT', 'RENTAL_PAYMENT', 'DEPOSIT_DEDUCTION', 'DEPOSIT_REFUND', 'MONTHLY_RENT', 'BUYOUT'],
       required: true,
     },
     amount: { type: Number, required: true, min: 0 },
@@ -220,6 +229,19 @@ const InternalUsageSchema = new Schema<IInternalUsage>(
     depositBalance: { type: Number, default: 0, min: 0 },
     depositExhausted: { type: Boolean, default: false },
     depositDeductions: [DepositDeductionSchema],
+    depositRefundStatus: {
+      type: String,
+      enum: ['HELD', 'REFUND_PENDING', 'REFUNDED'],
+      default: 'HELD',
+    },
+    depositRefundedAmount: { type: Number, default: 0, min: 0 },
+    depositRefundedAt: { type: Date },
+    depositRefundMethod: { type: String, trim: true },
+    depositRefundTxnRef: { type: String, trim: true },
+    depositRefundNotes: { type: String, trim: true },
+    depositRefundDeductionAmount: { type: Number, default: 0, min: 0 },
+    depositRefundDeductionReason: { type: String, trim: true },
+    depositRefundProcessedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     continuationStartedAt: { type: Date },
     monthlyRent: { type: Number, default: 0, min: 0 },
     includedAccessories: [{ type: String, trim: true }],
