@@ -257,7 +257,8 @@ export async function createSale(input: CreateSaleInput, actor: AuthenticatedUse
       }
 
       const itemHsn = itemInput.hsnCode || (product as any).hsnCode || '9202';
-      const itemTaxable = itemTotal;
+      // unitPrice is GST-inclusive. Extract base and tax components.
+      const itemTaxable = Math.round((itemTotal / 1.18) * 100) / 100;
       const itemCgst = Math.round(itemTaxable * 0.09 * 100) / 100;
       const itemSgst = Math.round(itemTaxable * 0.09 * 100) / 100;
 
@@ -275,13 +276,15 @@ export async function createSale(input: CreateSaleInput, actor: AuthenticatedUse
       });
     }
 
-    const taxableAmount = Math.max(0, subtotal - discountTotal);
+    // grandTotal = sum of GST-inclusive line totals (what the customer pays)
+    // taxableAmount = grandTotal ÷ 1.18 (base extracted from inclusive price)
+    const grandTotal = Math.round(Math.max(0, subtotal - discountTotal));
+    const taxableAmount = Math.round((grandTotal / 1.18) * 100) / 100;
     const cgstRate = 9;
     const sgstRate = 9;
     const cgstAmount = Math.round(taxableAmount * 0.09 * 100) / 100;
     const sgstAmount = Math.round(taxableAmount * 0.09 * 100) / 100;
     const taxTotal = Math.round((cgstAmount + sgstAmount) * 100) / 100;
-    const grandTotal = Math.round(taxableAmount + taxTotal);
 
     const isEmi = input.isEmi === true || input.saleType === 'EMI';
     const saleType = isEmi ? 'EMI' : 'DIRECT';
@@ -1207,9 +1210,9 @@ export async function updateSale(saleId: string, input: UpdateSaleInput, actor: 
         const itemSubtotal = existingLine.unitPrice * existingLine.quantity;
         const itemDiscount = existingLine.discount * existingLine.quantity;
         const itemTotal = Math.max(0, itemSubtotal - itemDiscount);
-        existingLine.taxableAmount = itemTotal;
-        existingLine.cgstAmount = Math.round(itemTotal * 0.09 * 100) / 100;
-        existingLine.sgstAmount = Math.round(itemTotal * 0.09 * 100) / 100;
+        existingLine.taxableAmount = Math.round((itemTotal / 1.18) * 100) / 100;
+        existingLine.cgstAmount = Math.round(existingLine.taxableAmount * 0.09 * 100) / 100;
+        existingLine.sgstAmount = Math.round(existingLine.taxableAmount * 0.09 * 100) / 100;
         existingLine.total = itemTotal;
 
         subtotal += itemSubtotal;
@@ -1219,11 +1222,11 @@ export async function updateSale(saleId: string, input: UpdateSaleInput, actor: 
 
     sale.subtotal = subtotal;
     sale.discountTotal = discountTotal;
-    sale.taxableAmount = Math.max(0, subtotal - discountTotal);
+    sale.taxableAmount = Math.round((Math.max(0, subtotal - discountTotal) / 1.18) * 100) / 100;
     sale.cgstAmount = Math.round(sale.taxableAmount * 0.09 * 100) / 100;
     sale.sgstAmount = Math.round(sale.taxableAmount * 0.09 * 100) / 100;
     sale.taxTotal = Math.round((sale.cgstAmount + sale.sgstAmount) * 100) / 100;
-    sale.grandTotal = Math.round(sale.taxableAmount + sale.taxTotal);
+    sale.grandTotal = Math.round(Math.max(0, subtotal - discountTotal));
   }
 
   // If EMI sale, recalculate financing cleanly without points and restructure schedule
