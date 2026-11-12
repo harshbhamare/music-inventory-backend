@@ -103,7 +103,24 @@ async function _initOnce(): Promise<void> {
   //    rather than on every request.
   await ensureDatabaseSeeded();
 
-  // 3. Create the Express application once.
+  // 3. Normalize any legacy SERIALIZED products to QUANTITY.
+  //    This system is quantity-only. Any product still carrying trackingMode
+  //    'SERIALIZED' from an earlier migration is corrected here on cold start
+  //    so the purchase intake path never hits the SERIALIZED branch.
+  try {
+    const { Product } = await import('../src/models/Product.js');
+    const updated = await Product.updateMany(
+      { trackingMode: { $ne: 'QUANTITY' } },
+      { $set: { trackingMode: 'QUANTITY' } }
+    );
+    if (updated.modifiedCount > 0) {
+      console.log(`[VERCEL] Normalized ${updated.modifiedCount} SERIALIZED product(s) to QUANTITY tracking mode.`);
+    }
+  } catch (err) {
+    console.warn('[VERCEL] Could not run trackingMode migration:', err);
+  }
+
+  // 4. Create the Express application once.
   if (!appInstance) {
     appInstance = createApp();
     console.log('[VERCEL] Express application initialised.');

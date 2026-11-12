@@ -180,82 +180,10 @@ export async function receivePurchase(
 
       const serializedItemIds: Types.ObjectId[] = [];
 
-      if (product.trackingMode === TRACKING_MODES.SERIALIZED) {
-        const units = itemInput.serializedUnits || [];
-        if (units.length !== itemInput.quantityReceived) {
-          throw new AppError(
-            `Product ${product.name} requires exactly ${itemInput.quantityReceived} serialized units, but ${units.length} provided.`,
-            400,
-            'SERIAL_COUNT_MISMATCH'
-          );
-        }
-
-        for (let i = 0; i < units.length; i++) {
-          const unit = units[i];
-          let assetId = unit.assetId?.trim().toUpperCase();
-          if (!assetId) {
-            const count = await SerializedItem.countDocuments().session(session || null);
-            const prefix = product.brand.substring(0, 3).toUpperCase().replace(/[^A-Z]/g, 'MZI');
-            assetId = `MZI-${prefix}-${String(count + i + 1).padStart(5, '0')}`;
-          }
-
-          // Check assetId uniqueness
-          const existingAsset = await SerializedItem.findOne({ assetId }).session(session || null);
-          if (existingAsset) {
-            throw new AppError(`Asset ID ${assetId} already exists in the system.`, 409, 'DUPLICATE_ASSET_ID');
-          }
-
-          // Check manufacturer serial uniqueness if provided
-          if (unit.manufacturerSerial) {
-            const existingSerial = await SerializedItem.findOne({
-              manufacturerSerial: unit.manufacturerSerial.trim().toUpperCase(),
-            }).session(session || null);
-            if (existingSerial) {
-              throw new AppError(
-                `Manufacturer Serial Number ${unit.manufacturerSerial} already exists in inventory.`,
-                409,
-                'DUPLICATE_SERIAL_NUMBER'
-              );
-            }
-          }
-
-          const serializedItem = new SerializedItem({
-            assetId,
-            manufacturerSerial: unit.manufacturerSerial?.trim().toUpperCase() || undefined,
-            product: product._id,
-            purchaseReceipt: undefined, // updated below
-            unitCost: itemInput.unitCost,
-            location: locationId,
-            status: SERIALIZED_STATUSES.AVAILABLE,
-            condition: unit.condition || ITEM_CONDITIONS.NEW,
-            warrantyExpiry: unit.warrantyExpiry ? new Date(unit.warrantyExpiry) : undefined,
-            notes: unit.notes,
-          });
-
-          await serializedItem.save({ session });
-          serializedItemIds.push(serializedItem._id);
-
-          // Record stock movement for serialized unit
-          await createStockMovement(
-            {
-              product: product._id,
-              serializedItem: serializedItem._id,
-              location: locationId,
-              movementType: MOVEMENT_TYPES.PURCHASE_RECEIPT,
-              quantityDelta: 1,
-              sourceStatus: undefined,
-              destinationStatus: SERIALIZED_STATUSES.AVAILABLE,
-              transactionRef: receiptNumber,
-              transactionModel: 'PurchaseReceipt',
-              reason: `Stock intake against PO ${purchase.purchaseOrderNumber}`,
-              performedBy: actor.id,
-              idempotencyKey: input.idempotencyKey ? `${input.idempotencyKey}-${assetId}` : undefined,
-            },
-            session
-          );
-        }
-      } else {
-        // Quantity-based product intake
+      // All products use quantity-based tracking. Treat any product still
+      // flagged as SERIALIZED in the DB as QUANTITY — the startup migration
+      // in server.ts / api/index.ts normalises the flag on cold start.
+      // Quantity-based product intake
         await createStockMovement(
           {
             product: product._id,
@@ -270,7 +198,6 @@ export async function receivePurchase(
           },
           session
         );
-      }
 
       // Update product on-hand balance atomically
       product.stockQuantity.onHand += itemInput.quantityReceived;
@@ -414,68 +341,30 @@ export async function quickReceiveStock(input: QuickReceiveInput, actor: Authent
 
       const serializedItemIds: Types.ObjectId[] = [];
 
-      if (product.trackingMode === TRACKING_MODES.SERIALIZED) {
-        const units = itemInput.serializedUnits || [];
-        for (let i = 0; i < qty; i++) {
-          const u = units[i] || {};
-          let assetId = u.assetId?.trim().toUpperCase();
-          if (!assetId) {
-            const count = await SerializedItem.countDocuments().session(session || null);
-            assetId = `${product.sku}-${year}-${String(count + i + 1).padStart(4, '0')}`;
-          }
-
-          const existingAsset = await SerializedItem.findOne({ assetId }).session(session || null);
-          if (existingAsset) {
-            assetId = `${assetId}-${Date.now().toString().slice(-4)}`;
-          }
-
-          const serializedItem = new SerializedItem({
-            assetId,
-            manufacturerSerial: u.manufacturerSerial?.trim() || undefined,
-            product: product._id,
-            location: locationId,
-            status: SERIALIZED_STATUSES.AVAILABLE,
-            condition: u.condition || ITEM_CONDITIONS.NEW,
-            warrantyExpiry: u.warrantyExpiry ? new Date(u.warrantyExpiry) : undefined,
-          });
-
-          await serializedItem.save({ session: session || undefined });
-          serializedItemIds.push(serializedItem._id as Types.ObjectId);
-
-          await createStockMovement(
-            {
-              product: product._id,
-              serializedItem: serializedItem._id,
-              location: locationId,
-              movementType: MOVEMENT_TYPES.PURCHASE_RECEIPT,
-              quantityDelta: 1,
-              sourceStatus: 'NONE',
-              destinationStatus: SERIALIZED_STATUSES.AVAILABLE,
-              transactionRef: receiptNumber,
-              transactionModel: 'PurchaseReceipt',
-              reason: `Direct Stock Intake (${purchaseOrderNumber}) from ${supplier.name}`,
-              performedBy: actor.id,
-            },
-            session
-          );
-        }
-      } else {
-        await createStockMovement(
-          {
-            product: product._id,
-            location: locationId,
-            movementType: MOVEMENT_TYPES.PURCHASE_RECEIPT,
-            quantityDelta: qty,
-            sourceStatus: 'NONE',
-            destinationStatus: 'AVAILABLE',
-            transactionRef: receiptNumber,
-            transactionModel: 'PurchaseReceipt',
-            reason: `Direct Stock Intake (${purchaseOrderNumber}) from ${supplier.name}`,
-            performedBy: actor.id,
-          },
-          session
-        );
-      }
+      // All products are quantity-based in this system. If a product still has
+      // trackingMode === SERIALIZED in the database (legacy data before the
+      // server-startup migration guard), treat it as QUANTITY here rather than
+      // crashing. The startup guard in server.ts / api/index.ts will normalize
+      // it on the next cold start.
+      //
+      // We intentionally skip the SERIALIZED branch entirely so no SerializedItem
+      // document is created, which avoids the "unitCost is required" Mongoose
+      // validation error.
+      await createStockMovement(
+        {
+          product: product._id,
+          location: locationId,
+          movementType: MOVEMENT_TYPES.PURCHASE_RECEIPT,
+          quantityDelta: qty,
+          sourceStatus: 'NONE',
+          destinationStatus: 'AVAILABLE',
+          transactionRef: receiptNumber,
+          transactionModel: 'PurchaseReceipt',
+          reason: `Direct Stock Intake (${purchaseOrderNumber}) from ${supplier.name}`,
+          performedBy: actor.id,
+        },
+        session
+      );
 
       // Update Product Stock and Pricing
       if (typeof itemInput.unitCost === 'number' && itemInput.unitCost >= 0) {
