@@ -1,6 +1,6 @@
 /**
  * Historical Data Import Routes
- * All endpoints are restricted to SUPER_ADMIN only.
+ * Endpoints for Super Admin and Managers to import historical inventory and sales data.
  *
  * GET  /import/template   → Download Excel template (.xlsx)
  * POST /import/validate   → Validate uploaded file, return row errors + preview
@@ -20,29 +20,76 @@ import {
 
 const router = Router();
 
-// Multer: store file in memory (max 50 MB for large historical datasets)
+// Multer memory storage (50 MB limit)
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
-  fileFilter: (_req, file, cb) => {
-    const ok =
-      file.mimetype ===
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-      file.mimetype === 'application/vnd.ms-excel' ||
-      file.originalname.endsWith('.xlsx') ||
-      file.originalname.endsWith('.xls');
-    if (!ok) {
-      return cb(new Error('Only Excel files (.xlsx) are accepted.'));
-    }
-    cb(null, true);
-  },
 });
+
+/**
+ * Custom upload middleware wrapper:
+ * - Catches multer errors gracefully (file size, format) and returns clean HTTP 400
+ * - Performs case-insensitive extension and mimetype check
+ */
+function handleUpload(fieldName: string) {
+  const multerSingle = upload.single(fieldName);
+  return (req: Request, res: Response, next: NextFunction) => {
+    multerSingle(req, res, (err: any) => {
+      if (err) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'FILE_TOO_LARGE',
+              message: 'The uploaded file exceeds the 50 MB size limit.',
+            },
+          });
+        }
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'UPLOAD_ERROR',
+            message: err.message || 'File upload failed.',
+          },
+        });
+      }
+
+      if (req.file) {
+        const originalName = (req.file.originalname || '').toLowerCase();
+        const isValidExtension =
+          originalName.endsWith('.xlsx') ||
+          originalName.endsWith('.xls') ||
+          originalName.endsWith('.csv');
+
+        const isValidMime =
+          req.file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+          req.file.mimetype === 'application/vnd.ms-excel' ||
+          req.file.mimetype === 'text/csv' ||
+          req.file.mimetype === 'application/octet-stream' ||
+          req.file.mimetype === 'application/x-zip-compressed' ||
+          req.file.mimetype === 'application/zip';
+
+        if (!isValidExtension && !isValidMime) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'INVALID_FILE_TYPE',
+              message: 'Only Excel spreadsheet files (.xlsx, .xls) are accepted.',
+            },
+          });
+        }
+      }
+
+      next();
+    });
+  };
+}
 
 // ── GET /import/template ──────────────────────────────────────────────────────
 router.get(
   '/template',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
   (_req: Request, res: Response, next: NextFunction) => {
     try {
       const buf = generateImportTemplate();
@@ -66,18 +113,32 @@ router.get(
 router.post(
   '/validate',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN),
-  upload.single('file'),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  handleUpload('file'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      if (!req.file) {
+      if (!req.file || !req.file.buffer || req.file.buffer.length === 0) {
         return res.status(400).json({
           success: false,
-          error: { message: 'No file uploaded. Attach the Excel file as the "file" field.' },
+          error: {
+            code: 'NO_FILE',
+            message: 'No file uploaded. Please attach your Excel file in the "file" field.',
+          },
         });
       }
 
-      const result = await validateImportFile(req.file.buffer);
+      let result;
+      try {
+        result = await validateImportFile(req.file.buffer);
+      } catch (parseErr: any) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'CORRUPTED_FILE',
+            message: `Could not parse Excel spreadsheet: ${parseErr.message || 'Invalid or password-protected file.'}`,
+          },
+        });
+      }
 
       res.json({ success: true, data: result });
     } catch (err) {
@@ -90,33 +151,64 @@ router.post(
 router.post(
   '/execute',
   requireAuth,
-  requireRole(ROLES.SUPER_ADMIN),
-  upload.single('file'),
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  handleUpload('file'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      if (!req.file) {
+      if (!req.file || !req.file.buffer || req.file.buffer.length === 0) {
         return res.status(400).json({
           success: false,
-          error: { message: 'No file uploaded. Attach the Excel file as the "file" field.' },
+          error: {
+            code: 'NO_FILE',
+            message: 'No file uploaded. Please attach your Excel file in the "file" field.',
+          },
         });
       }
 
-      // Run validation first — abort if hard errors exist (unless forceImport=true is passed)
-      const force = req.body?.forceImport === 'true' || req.body?.forceImport === true;
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: 'UNAUTHORIZED',
+            message: 'Authenticated user session is required to execute an import.',
+          },
+        });
+      }
+
+      // Check forceImport parameter from either body or query string
+      const force =
+        req.body?.forceImport === 'true' ||
+        req.body?.forceImport === true ||
+        req.query?.forceImport === 'true' ||
+        req.query?.force === 'true';
+
       if (!force) {
-        const validation = await validateImportFile(req.file.buffer);
+        let validation;
+        try {
+          validation = await validateImportFile(req.file.buffer);
+        } catch (parseErr: any) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'CORRUPTED_FILE',
+              message: `Could not parse Excel spreadsheet: ${parseErr.message || 'Invalid file format.'}`,
+            },
+          });
+        }
+
         if (!validation.valid) {
           return res.status(422).json({
             success: false,
             error: {
-              message: `Import aborted: ${validation.errorCount} validation error(s) found. Fix them or send forceImport=true to skip invalid rows.`,
+              code: 'VALIDATION_FAILED',
+              message: `Import aborted: ${validation.errorCount} validation error(s) found. Fix the highlighted errors or check "Skip invalid rows" to proceed with valid data.`,
             },
             data: { validation },
           });
         }
       }
 
-      const result = await executeImport(req.file.buffer, req.user!);
+      const result = await executeImport(req.file.buffer, req.user);
 
       res.json({ success: true, data: result });
     } catch (err) {
