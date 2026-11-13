@@ -11,6 +11,7 @@ import {
   addEmiInstallmentMonth,
   sendEmiReminder,
   cancelSale,
+  deleteSale,
 } from '../services/salesService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
@@ -421,6 +422,21 @@ router.patch(
         message: `Sale ${(populated as any)?.invoiceNumber} has been cancelled and stock restored.`,
         data: { sale: populated },
       });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Permanently delete a sale (SuperAdmin only, only CANCELLED/RETURNED sales)
+router.delete(
+  '/:id',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await deleteSale(req.params.id as string, req.user!);
+      res.json({ success: true, message: `Sale ${result.invoiceNumber} permanently deleted.`, data: result });
     } catch (err) {
       next(err);
     }

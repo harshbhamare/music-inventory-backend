@@ -1454,3 +1454,49 @@ export async function cancelSale(
     return sale;
   });
 }
+
+// ── Delete Sale ─────────────────────────────────────────────────────────────
+// Permanently removes a sale record from the database.
+// Safety: only allowed on CANCELLED or RETURNED sales (stock already restored).
+// CONFIRMED sales must be cancelled first to ensure stock is properly restored.
+// Role: SUPER_ADMIN only (enforced at route level).
+
+export async function deleteSale(saleId: string, actor: AuthenticatedUser) {
+  const sale = await Sale.findById(saleId);
+  if (!sale) {
+    throw new AppError('Sale record not found.', 404, 'SALE_NOT_FOUND');
+  }
+
+  if (sale.saleStatus === SALE_STATUSES.CONFIRMED || sale.saleStatus === SALE_STATUSES.DRAFT) {
+    throw new AppError(
+      'Cannot delete an active sale. Cancel it first to restore stock, then delete the cancelled record.',
+      400,
+      'DELETE_ACTIVE_SALE_FORBIDDEN'
+    );
+  }
+
+  const invoiceNumber = sale.invoiceNumber;
+  const beforeState = {
+    invoiceNumber,
+    saleStatus: sale.saleStatus,
+    grandTotal: sale.grandTotal,
+    customerName: sale.customerName,
+  };
+
+  // Remove any associated CustomerReturn records
+  await CustomerReturn.deleteMany({ originalSale: sale._id });
+
+  await Sale.findByIdAndDelete(saleId);
+
+  await logAudit({
+    actor,
+    action: 'DELETE_SALE',
+    entityType: 'Sale',
+    entityId: saleId,
+    beforeState,
+    afterState: null,
+    reason: `${sale.saleStatus} sale ${invoiceNumber} permanently deleted by ${actor.name}`,
+  });
+
+  return { deleted: true, invoiceNumber };
+}
