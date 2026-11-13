@@ -40,7 +40,22 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
         { invoiceNumber: searchRegex },
         { customerName: searchRegex },
         { customerPhone: searchRegex },
+        { customerEmail: searchRegex },
       ];
+    }
+
+    // Filter by sale type (DIRECT / EMI)
+    if (req.query.saleType === 'DIRECT') {
+      query.isEmi = { $ne: true };
+      query.saleType = 'DIRECT';
+    } else if (req.query.saleType === 'EMI') {
+      query.isEmi = true;
+      // Further filter by EMI payment status
+      if (req.query.emiStatus === 'DUE') {
+        query.totalEmiDue = { $gt: 0 };
+      } else if (req.query.emiStatus === 'PAID') {
+        query.totalEmiDue = { $lte: 0 };
+      }
     }
 
     const [sales, total] = await Promise.all([
