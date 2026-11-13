@@ -175,12 +175,14 @@ router.post(
         });
       }
 
-      // Check forceImport parameter from either body or query string
+      // Check forceImport parameter from either body, query string, or FormData text field
       const force =
         req.body?.forceImport === 'true' ||
         req.body?.forceImport === true ||
         req.query?.forceImport === 'true' ||
-        req.query?.force === 'true';
+        req.query?.force === 'true' ||
+        // FormData text fields parsed by multer appear in req.body too — belt-and-suspenders
+        String(req.body?.forceImport ?? '').toLowerCase() === 'true';
 
       if (!force) {
         let validation;

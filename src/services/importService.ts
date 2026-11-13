@@ -940,8 +940,10 @@ export async function validateImportFile(buf: Buffer): Promise<ValidationResult>
   };
 
   const mustBeDate = (sheet: string, row: number, field: string, val: string): boolean => {
-    if (val && !parseDate(val)) {
-      errors.push({ sheet, row, field, message: `${field} must be a valid date (YYYY-MM-DD or DD/MM/YYYY)` });
+    // Empty is fine — optional date fields
+    if (!val || val.trim() === '') return true;
+    if (!parseDate(val)) {
+      errors.push({ sheet, row, field, message: `${field} has an unrecognised date format — use YYYY-MM-DD or DD/MM/YYYY (got: "${val}")` });
       return false;
     }
     return true;
@@ -1140,6 +1142,7 @@ export async function validateImportFile(buf: Buffer): Promise<ValidationResult>
     ok = mustBeNum('DirectSales', rowNum, 'Qty', r['quantity']) && ok;
     ok = mustBeNum('DirectSales', rowNum, 'Unit Price', r['unitPrice']) && ok;
     ok = mustBeNum('DirectSales', rowNum, 'Discount', r['discount']) && ok;
+    // Note: customerEmail and customerPhone are auto-generated if missing (non-blocking)
 
     if (!ok) {
       skipped++;
@@ -1175,6 +1178,7 @@ export async function validateImportFile(buf: Buffer): Promise<ValidationResult>
     ok = mustBeNum('EMISales', rowNum, 'Down Payment', r['downPayment']) && ok;
     ok = requireField('EMISales', rowNum, 'No. of Months', r['emiTenureMonths']) && ok;
     ok = mustBeNum('EMISales', rowNum, 'No. of Months', r['emiTenureMonths']) && ok;
+    // Note: customerEmail and customerPhone are auto-generated if missing (non-blocking)
 
     if (!ok) {
       skipped++;
