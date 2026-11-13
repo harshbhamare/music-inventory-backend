@@ -273,6 +273,8 @@ export async function createSale(input: CreateSaleInput, actor: AuthenticatedUse
         sgstAmount: itemSgst,
         total: itemTotal,
         serializedItemIds: itemInput.serializedItemIds?.map((id) => new Types.ObjectId(id)),
+        // Snapshot purchase cost at the time of sale for accurate COGS — never drifts if product cost is updated later
+        unitCostAtSale: product.purchaseCost || 0,
       });
     }
 

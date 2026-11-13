@@ -214,6 +214,28 @@ router.post(
       const diff = newQuantity - oldQty;
       product.stockQuantity.onHand = newQuantity;
 
+      // If the new onHand is less than the currently locked-away units (issued/reserved/quarantined),
+      // clamp those counters down so available never shows as negative.
+      // Example: 2 units on rent, user corrects onHand to 1 → issuedInternal must become 1 (not 2).
+      const totalLocked = (product.stockQuantity.issuedInternal || 0)
+        + (product.stockQuantity.reserved || 0)
+        + (product.stockQuantity.quarantined || 0);
+      if (totalLocked > newQuantity) {
+        // Reduce issuedInternal first (most likely cause), then reserved, then quarantined
+        let excess = totalLocked - newQuantity;
+        const clampInternal = Math.min(product.stockQuantity.issuedInternal || 0, excess);
+        product.stockQuantity.issuedInternal = (product.stockQuantity.issuedInternal || 0) - clampInternal;
+        excess -= clampInternal;
+        if (excess > 0) {
+          const clampReserved = Math.min(product.stockQuantity.reserved || 0, excess);
+          product.stockQuantity.reserved = (product.stockQuantity.reserved || 0) - clampReserved;
+          excess -= clampReserved;
+        }
+        if (excess > 0) {
+          product.stockQuantity.quarantined = Math.max(0, (product.stockQuantity.quarantined || 0) - excess);
+        }
+      }
+
       // Update location stock if configured
       let defaultLoc = (await StockLocation.findOne({ isDefault: true }))?._id;
       if (product.locationStock && product.locationStock.length > 0) {
