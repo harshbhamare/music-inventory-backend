@@ -1316,3 +1316,141 @@ export async function updateSale(saleId: string, input: UpdateSaleInput, actor: 
   return sale;
 }
 
+
+// ── Cancel Sale ──────────────────────────────────────────────────────────────
+// Cancels a confirmed sale and fully restores all stock that was deducted.
+// Allowed only on CONFIRMED sales (not already CANCELLED or RETURNED).
+// Role enforcement is handled at the route level (SUPER_ADMIN, MANAGER).
+
+export async function cancelSale(
+  saleId: string,
+  reason: string,
+  actor: AuthenticatedUser
+) {
+  const sale = await Sale.findById(saleId);
+  if (!sale) {
+    throw new AppError('Sale record not found.', 404, 'SALE_NOT_FOUND');
+  }
+
+  if (sale.saleStatus === SALE_STATUSES.CANCELLED) {
+    throw new AppError('This sale has already been cancelled.', 400, 'SALE_ALREADY_CANCELLED');
+  }
+  if (sale.saleStatus === SALE_STATUSES.RETURNED) {
+    throw new AppError(
+      'This sale has already been returned. Use the return workflow instead.',
+      400,
+      'SALE_ALREADY_RETURNED'
+    );
+  }
+
+  const trimmedReason = (reason || '').trim();
+  if (!trimmedReason) {
+    throw new AppError('A reason is required to cancel a sale.', 400, 'REASON_REQUIRED');
+  }
+
+  return await withTransaction(async (session) => {
+    const cancelRef = `CANCEL-${sale.invoiceNumber}`;
+
+    for (const li of sale.lineItems) {
+      const product = await Product.findById(li.product).session(session);
+      if (!product) continue; // product deleted — skip stock restore but still cancel
+
+      if (product.trackingMode === TRACKING_MODES.SERIALIZED) {
+        // Restore each serialized unit that was sold on this invoice
+        const serialIds = (li.serializedItemIds || []) as Types.ObjectId[];
+        for (const sid of serialIds) {
+          const unit = await SerializedItem.findById(sid).session(session);
+          if (unit && unit.status === SERIALIZED_STATUSES.SOLD) {
+            unit.status = SERIALIZED_STATUSES.AVAILABLE;
+            await unit.save({ session });
+
+            await createStockMovement(
+              {
+                product: product._id,
+                serializedItem: unit._id,
+                location: sale.location,
+                movementType: MOVEMENT_TYPES.SALE_RETURN,
+                quantityDelta: 1,
+                sourceStatus: SERIALIZED_STATUSES.SOLD,
+                destinationStatus: SERIALIZED_STATUSES.AVAILABLE,
+                transactionRef: cancelRef,
+                transactionModel: 'Sale',
+                reason: `Sale cancelled: ${trimmedReason}`,
+                performedBy: actor.id,
+              },
+              session
+            );
+          }
+        }
+        // Restore onHand balance for serialized product
+        product.stockQuantity.onHand += li.quantity;
+        // Also restore location-level stock if tracked
+        const locStock = product.locationStock.find(
+          (ls) => ls.location.toString() === sale.location.toString()
+        );
+        if (locStock) {
+          locStock.onHand += li.quantity;
+        }
+        await product.save({ session });
+      } else {
+        // Quantity-based product — restore onHand atomically
+        await Product.findByIdAndUpdate(
+          product._id,
+          {
+            $inc: {
+              'stockQuantity.onHand': li.quantity,
+              'locationStock.$[elem].onHand': li.quantity,
+            },
+          },
+          {
+            session,
+            arrayFilters: [{ 'elem.location': sale.location }],
+          }
+        );
+
+        await createStockMovement(
+          {
+            product: product._id,
+            location: sale.location,
+            movementType: MOVEMENT_TYPES.SALE_RETURN,
+            quantityDelta: li.quantity,
+            transactionRef: cancelRef,
+            transactionModel: 'Sale',
+            reason: `Sale cancelled: ${trimmedReason}`,
+            performedBy: actor.id,
+          },
+          session
+        );
+      }
+    }
+
+    // Mark sale as cancelled and clear outstanding EMI balance
+    sale.saleStatus = SALE_STATUSES.CANCELLED;
+    if (sale.isEmi && (sale.totalEmiDue || 0) > 0) {
+      // Void all unpaid installments
+      for (const p of sale.emiPayments) {
+        if (p.status !== 'PAID') {
+          p.amountDue = 0;
+          p.status = 'DUE'; // leaves a trace but zeroed out
+        }
+      }
+      sale.totalEmiDue = 0;
+    }
+    if (!sale.notes) {
+      sale.notes = `Cancelled: ${trimmedReason}`;
+    }
+    await sale.save({ session });
+
+    await logAudit({
+      actor,
+      action: 'CANCEL_SALE',
+      entityType: 'Sale',
+      entityId: sale._id.toString(),
+      beforeState: { saleStatus: 'CONFIRMED', grandTotal: sale.grandTotal },
+      afterState: { saleStatus: 'CANCELLED', reason: trimmedReason },
+      reason: `Sale ${sale.invoiceNumber} cancelled by ${actor.name}: ${trimmedReason}`,
+    });
+
+    return sale;
+  });
+}

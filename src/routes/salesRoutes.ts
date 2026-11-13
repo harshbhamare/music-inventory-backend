@@ -10,6 +10,7 @@ import {
   updateEmiPayment,
   addEmiInstallmentMonth,
   sendEmiReminder,
+  cancelSale,
 } from '../services/salesService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
@@ -389,6 +390,37 @@ router.post(
         .lean();
 
       res.json({ success: true, data: { sale: populated } });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Cancel a sale — restores all stock, voids unpaid EMI schedule (Superadmin + Manager)
+router.patch(
+  '/:id/cancel',
+  requireAuth,
+  requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { reason } = req.body;
+      if (!reason || !String(reason).trim()) {
+        return res.status(400).json({ success: false, message: 'A reason is required to cancel a sale.' });
+      }
+      const sale = await cancelSale(req.params.id as string, String(reason).trim(), req.user!);
+      const populated = await Sale.findById(sale._id)
+        .populate('location', 'name code address')
+        .populate('soldBy', 'name email')
+        .populate('lineItems.product', 'name sku brand modelName defaultSellingPrice color')
+        .populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition')
+        .populate('paymentLogs.recordedBy', 'name email')
+        .populate('remindersSent.sentBy', 'name email')
+        .lean();
+      res.json({
+        success: true,
+        message: `Sale ${(populated as any)?.invoiceNumber} has been cancelled and stock restored.`,
+        data: { sale: populated },
+      });
     } catch (err) {
       next(err);
     }
