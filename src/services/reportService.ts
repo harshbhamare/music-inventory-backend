@@ -774,6 +774,59 @@ export async function getDashboardMetrics(startDate?: Date, endDate?: Date) {
     },
     recentMovements,
     salesTrend: dailyTimeline.map((d) => ({ _id: d.date, revenue: d.salesRevenue, count: 1 })),
+
+    // ── 12. EMI Overview for dashboard donut chart ──────────────────────────
+    emiOverview: (() => {
+      // All-time EMI contract value = sum of grandTotal for every active EMI sale
+      const totalEmiContractValue = allEmiSales.reduce((sum, s) => sum + (s.grandTotal || 0), 0);
+      // All-time collected = sum of totalEmiPaid across all active EMI sales
+      const totalEmiCollected = allEmiSales.reduce((sum, s) => sum + (s.totalEmiPaid || 0), 0);
+      // Pending = already computed as totalEmiReceivables
+      const totalEmiPending = totalEmiReceivables;
+      // Percent collected (safe division)
+      const collectedPercent = totalEmiContractValue > 0
+        ? Math.round((totalEmiCollected / totalEmiContractValue) * 100)
+        : 0;
+      // Installment counters
+      let totalInstallments = 0;
+      let paidInstallments = 0;
+      let remainingInstallments = 0;
+      for (const s of allEmiSales) {
+        for (const p of (s.emiPayments || [])) {
+          totalInstallments++;
+          if (p.status === 'PAID') {
+            paidInstallments++;
+          } else {
+            remainingInstallments++;
+          }
+        }
+      }
+      return {
+        instrumentsOnEmi: allEmiSales.length,
+        totalEmiContractValue,
+        totalEmiCollected,
+        totalEmiPending,
+        collectedPercent,
+        totalInstallments,
+        paidInstallments,
+        remainingInstallments,
+      };
+    })(),
+
+    // ── 13. Recent Sales (last 5 confirmed, for dashboard mini-table) ────────
+    recentSales: allSales
+      .filter((s) => s.saleStatus !== 'RETURNED')
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 5)
+      .map((s) => ({
+        invoiceNumber: s.invoiceNumber,
+        customerName: s.customerName,
+        grandTotal: s.grandTotal,
+        saleStatus: s.saleStatus,
+        paymentStatus: s.paymentStatus,
+        createdAt: s.createdAt,
+        productName: (s.lineItems?.[0]?.product as any)?.name || 'Musical Product',
+      })),
   };
 }
 
