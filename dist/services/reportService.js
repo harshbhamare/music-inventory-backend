@@ -102,11 +102,13 @@ export async function getDashboardMetrics(startDate, endDate) {
     const currentSalesRevenue = currentSales.reduce((sum, s) => sum + (s.grandTotal || 0), 0);
     const prevSalesRevenue = prevSales.reduce((sum, s) => sum + (s.grandTotal || 0), 0);
     // COGS for confirmed sales
+    // Prefer unitCostAtSale (cost snapshot at sale time) for accuracy.
+    // Fall back to current product purchaseCost for legacy records that predate the snapshot field.
     let currentCOGS = 0;
     for (const s of currentSales) {
         for (const li of s.lineItems || []) {
             const prod = li.product;
-            const unitCost = prod?.purchaseCost || 0;
+            const unitCost = li.unitCostAtSale || prod?.purchaseCost || 0;
             currentCOGS += (li.quantity || 1) * unitCost;
         }
     }
@@ -114,7 +116,7 @@ export async function getDashboardMetrics(startDate, endDate) {
     for (const s of prevSales) {
         for (const li of s.lineItems || []) {
             const prod = li.product;
-            const unitCost = prod?.purchaseCost || 0;
+            const unitCost = li.unitCostAtSale || prod?.purchaseCost || 0;
             prevCOGS += (li.quantity || 1) * unitCost;
         }
     }
@@ -280,27 +282,39 @@ export async function getDashboardMetrics(startDate, endDate) {
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     for (const p of products) {
         const sq = p.stockQuantity || { onHand: 0, reserved: 0, issuedInternal: 0, quarantined: 0 };
-        let onHand = sq.onHand || 0;
+        let onHand = Math.max(0, sq.onHand || 0); // clamp — never let raw DB value go negative in calculations
         const serData = serializedMap.get(p._id.toString());
         if (p.trackingMode === TRACKING_MODES.SERIALIZED && serData && serData.count > 0) {
             onHand = Math.max(onHand, serData.count);
         }
-        const available = Math.max(0, onHand - (sq.reserved || 0) - (sq.issuedInternal || 0) - (sq.quarantined || 0));
+        const reserved = Math.max(0, sq.reserved || 0);
+        const issuedInternal = Math.max(0, sq.issuedInternal || 0);
+        const quarantined = Math.max(0, sq.quarantined || 0);
+        // Clamp unavailable to onHand so available never goes negative
+        const unavailable = Math.min(onHand, reserved + issuedInternal + quarantined);
+        const available = onHand - unavailable;
         totalUnitsOnHand += onHand;
         totalAvailableForSale += available;
-        totalUnitsInRental += (sq.issuedInternal || 0);
-        totalUnitsInMaintenance += (sq.quarantined || 0);
-        totalUnitsReserved += (sq.reserved || 0);
+        totalUnitsInRental += issuedInternal;
+        totalUnitsInMaintenance += quarantined;
+        totalUnitsReserved += reserved;
+        // Inventory valuation at cost — only count units actually owned (onHand)
         const costVal = p.trackingMode === TRACKING_MODES.SERIALIZED && serData && serData.totalCost > 0
             ? serData.totalCost
             : onHand * (p.purchaseCost || 0);
         totalInventoryValuationAtCost += costVal;
-        totalPotentialRetailValuation += onHand * (p.defaultSellingPrice || 0);
-        if (available === 0) {
+        // Potential retail valuation uses AVAILABLE units only (not rented/maintenance/reserved)
+        // so it represents realistic sellable value, not theoretical maximum
+        totalPotentialRetailValuation += available * (p.defaultSellingPrice || 0);
+        // Stock alert logic:
+        // - Only flag as out-of-stock if the product HAS stock (onHand > 0) but none is available
+        //   (all units are out on rental/maintenance). Pure catalog products (onHand === 0) are skipped.
+        // - Flag as low-stock if available units are at or below the threshold.
+        if (onHand > 0 && available === 0) {
             outOfStockCount++;
             lowStockItems.push({ name: p.name, sku: p.sku, available: 0, threshold: p.minStockThreshold || 5 });
         }
-        else if (available <= (p.minStockThreshold || 5)) {
+        else if (available > 0 && available <= (p.minStockThreshold || 5)) {
             lowStockCount++;
             lowStockItems.push({ name: p.name, sku: p.sku, available, threshold: p.minStockThreshold || 5 });
         }
@@ -453,7 +467,7 @@ export async function getDashboardMetrics(startDate, endDate) {
         for (const s of daySales) {
             for (const li of s.lineItems || []) {
                 const prod = li.product;
-                dayCogs += (li.quantity || 1) * (prod?.purchaseCost || 0);
+                dayCogs += (li.quantity || 1) * (li.unitCostAtSale || prod?.purchaseCost || 0);
             }
         }
         const dayDirectCash = daySales.filter((s) => !s.isEmi && s.paymentStatus === 'PAID').reduce((sum, s) => sum + (s.grandTotal || 0), 0);
@@ -642,6 +656,58 @@ export async function getDashboardMetrics(startDate, endDate) {
         },
         recentMovements,
         salesTrend: dailyTimeline.map((d) => ({ _id: d.date, revenue: d.salesRevenue, count: 1 })),
+        // ── 12. EMI Overview for dashboard donut chart ──────────────────────────
+        emiOverview: (() => {
+            // All-time EMI contract value = sum of grandTotal for every active EMI sale
+            const totalEmiContractValue = allEmiSales.reduce((sum, s) => sum + (s.grandTotal || 0), 0);
+            // All-time collected = sum of totalEmiPaid across all active EMI sales
+            const totalEmiCollected = allEmiSales.reduce((sum, s) => sum + (s.totalEmiPaid || 0), 0);
+            // Pending = already computed as totalEmiReceivables
+            const totalEmiPending = totalEmiReceivables;
+            // Percent collected (safe division)
+            const collectedPercent = totalEmiContractValue > 0
+                ? Math.round((totalEmiCollected / totalEmiContractValue) * 100)
+                : 0;
+            // Installment counters
+            let totalInstallments = 0;
+            let paidInstallments = 0;
+            let remainingInstallments = 0;
+            for (const s of allEmiSales) {
+                for (const p of (s.emiPayments || [])) {
+                    totalInstallments++;
+                    if (p.status === 'PAID') {
+                        paidInstallments++;
+                    }
+                    else {
+                        remainingInstallments++;
+                    }
+                }
+            }
+            return {
+                instrumentsOnEmi: allEmiSales.length,
+                totalEmiContractValue,
+                totalEmiCollected,
+                totalEmiPending,
+                collectedPercent,
+                totalInstallments,
+                paidInstallments,
+                remainingInstallments,
+            };
+        })(),
+        // ── 13. Recent Sales (last 5 confirmed, for dashboard mini-table) ────────
+        recentSales: allSales
+            .filter((s) => s.saleStatus !== 'RETURNED')
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+            .slice(0, 5)
+            .map((s) => ({
+            invoiceNumber: s.invoiceNumber,
+            customerName: s.customerName,
+            grandTotal: s.grandTotal,
+            saleStatus: s.saleStatus,
+            paymentStatus: s.paymentStatus,
+            createdAt: s.createdAt,
+            productName: s.lineItems?.[0]?.product?.name || 'Musical Product',
+        })),
     };
 }
 export async function getInventoryValuationReport() {
@@ -672,15 +738,21 @@ export async function getInventoryValuationReport() {
     }
     const reportItems = products.map((p) => {
         const sq = p.stockQuantity || { onHand: 0, reserved: 0, issuedInternal: 0, quarantined: 0 };
-        let onHand = sq.onHand || 0;
+        let onHand = Math.max(0, sq.onHand || 0); // clamp negative data
         const serData = serializedMap.get(p._id.toString());
         if (p.trackingMode === TRACKING_MODES.SERIALIZED && serData && serData.count > 0) {
             onHand = Math.max(onHand, serData.count);
         }
+        const reserved = Math.max(0, sq.reserved || 0);
+        const issuedInternal = Math.max(0, sq.issuedInternal || 0);
+        const quarantined = Math.max(0, sq.quarantined || 0);
+        const unavailable = Math.min(onHand, reserved + issuedInternal + quarantined);
+        const available = onHand - unavailable;
         const valuationCost = p.trackingMode === TRACKING_MODES.SERIALIZED && serData && serData.totalCost > 0
             ? serData.totalCost
             : onHand * (p.purchaseCost || 0);
-        const potentialRetail = onHand * (p.defaultSellingPrice || 0);
+        // Potential retail uses available units only — rented/maintenance stock isn't for sale right now
+        const potentialRetail = available * (p.defaultSellingPrice || 0);
         const potentialGrossMargin = potentialRetail - valuationCost;
         return {
             productId: p._id,
@@ -690,7 +762,7 @@ export async function getInventoryValuationReport() {
             category: p.category?.name || 'Uncategorized',
             trackingMode: p.trackingMode,
             onHand,
-            available: Math.max(0, onHand - (sq.reserved || 0) - (sq.issuedInternal || 0) - (sq.quarantined || 0)),
+            available,
             unitCost: p.purchaseCost,
             unitPrice: p.defaultSellingPrice,
             valuationCost,
@@ -803,7 +875,7 @@ export async function getPeriodicSummary(period = 'week') {
         for (const li of lineItems) {
             const prod = li.product;
             const qty = li.quantity || 1;
-            const unitCost = prod?.purchaseCost || 0;
+            const unitCost = li.unitCostAtSale || prod?.purchaseCost || 0;
             const itemCost = qty * unitCost;
             saleCogs += itemCost;
             saleQty += qty;

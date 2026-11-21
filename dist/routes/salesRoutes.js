@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { Sale } from '../models/Sale.js';
 import { CustomerReturn } from '../models/CustomerReturn.js';
-import { createSale, updateSale, processSaleReturn, recordEmiPayment, adjustEmiInstallmentDue, updateEmiPayment, addEmiInstallmentMonth, sendEmiReminder, } from '../services/salesService.js';
+import { createSale, updateSale, processSaleReturn, recordEmiPayment, adjustEmiInstallmentDue, updateEmiPayment, addEmiInstallmentMonth, sendEmiReminder, cancelSale, deleteSale, } from '../services/salesService.js';
 import { requireAuth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/rbac.js';
 import { validate } from '../middleware/validate.js';
@@ -21,7 +21,23 @@ router.get('/', requireAuth, async (req, res, next) => {
                 { invoiceNumber: searchRegex },
                 { customerName: searchRegex },
                 { customerPhone: searchRegex },
+                { customerEmail: searchRegex },
             ];
+        }
+        // Filter by sale type (DIRECT / EMI)
+        if (req.query.saleType === 'DIRECT') {
+            query.isEmi = { $ne: true };
+            query.saleType = 'DIRECT';
+        }
+        else if (req.query.saleType === 'EMI') {
+            query.isEmi = true;
+            // Further filter by EMI payment status
+            if (req.query.emiStatus === 'DUE') {
+                query.totalEmiDue = { $gt: 0 };
+            }
+            else if (req.query.emiStatus === 'PAID') {
+                query.totalEmiDue = { $lte: 0 };
+            }
         }
         const [sales, total] = await Promise.all([
             Sale.find(query)
@@ -292,6 +308,42 @@ router.post('/:id/add-emi-month', requireAuth, requireRole(ROLES.SUPER_ADMIN, RO
             .populate('remindersSent.sentBy', 'name email')
             .lean();
         res.json({ success: true, data: { sale: populated } });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Cancel a sale — restores all stock, voids unpaid EMI schedule (Superadmin + Manager)
+router.patch('/:id/cancel', requireAuth, requireRole(ROLES.SUPER_ADMIN, ROLES.MANAGER), async (req, res, next) => {
+    try {
+        const { reason } = req.body;
+        if (!reason || !String(reason).trim()) {
+            return res.status(400).json({ success: false, message: 'A reason is required to cancel a sale.' });
+        }
+        const sale = await cancelSale(req.params.id, String(reason).trim(), req.user);
+        const populated = await Sale.findById(sale._id)
+            .populate('location', 'name code address')
+            .populate('soldBy', 'name email')
+            .populate('lineItems.product', 'name sku brand modelName defaultSellingPrice color')
+            .populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition')
+            .populate('paymentLogs.recordedBy', 'name email')
+            .populate('remindersSent.sentBy', 'name email')
+            .lean();
+        res.json({
+            success: true,
+            message: `Sale ${populated?.invoiceNumber} has been cancelled and stock restored.`,
+            data: { sale: populated },
+        });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+// Permanently delete a sale (SuperAdmin only, only CANCELLED/RETURNED sales)
+router.delete('/:id', requireAuth, requireRole(ROLES.SUPER_ADMIN), async (req, res, next) => {
+    try {
+        const result = await deleteSale(req.params.id, req.user);
+        res.json({ success: true, message: `Sale ${result.invoiceNumber} permanently deleted.`, data: result });
     }
     catch (err) {
         next(err);

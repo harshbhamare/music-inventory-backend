@@ -74,7 +74,7 @@ export async function clearAllLocalData(): Promise<void> {
   let setting = await AppSetting.findOne();
   if (!setting) {
     await AppSetting.create({
-      companyName: 'Stereobliss Retail',
+      companyName: 'Stereobliss',
       storeName: 'Stereobliss Central Store',
       storeCode: 'CENTRAL',
       contactEmail: '',

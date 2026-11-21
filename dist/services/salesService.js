@@ -141,7 +141,8 @@ export async function createSale(input, actor) {
                 }, session);
             }
             const itemHsn = itemInput.hsnCode || product.hsnCode || '9202';
-            const itemTaxable = itemTotal;
+            // unitPrice is GST-inclusive. Extract base and tax components.
+            const itemTaxable = Math.round((itemTotal / 1.18) * 100) / 100;
             const itemCgst = Math.round(itemTaxable * 0.09 * 100) / 100;
             const itemSgst = Math.round(itemTaxable * 0.09 * 100) / 100;
             processedLineItems.push({
@@ -155,15 +156,19 @@ export async function createSale(input, actor) {
                 sgstAmount: itemSgst,
                 total: itemTotal,
                 serializedItemIds: itemInput.serializedItemIds?.map((id) => new Types.ObjectId(id)),
+                // Snapshot purchase cost at the time of sale for accurate COGS — never drifts if product cost is updated later
+                unitCostAtSale: product.purchaseCost || 0,
             });
         }
-        const taxableAmount = Math.max(0, subtotal - discountTotal);
+        // grandTotal = sum of GST-inclusive line totals (what the customer pays)
+        // taxableAmount = grandTotal ÷ 1.18 (base extracted from inclusive price)
+        const grandTotal = Math.round(Math.max(0, subtotal - discountTotal));
+        const taxableAmount = Math.round((grandTotal / 1.18) * 100) / 100;
         const cgstRate = 9;
         const sgstRate = 9;
         const cgstAmount = Math.round(taxableAmount * 0.09 * 100) / 100;
         const sgstAmount = Math.round(taxableAmount * 0.09 * 100) / 100;
         const taxTotal = Math.round((cgstAmount + sgstAmount) * 100) / 100;
-        const grandTotal = Math.round(taxableAmount + taxTotal);
         const isEmi = input.isEmi === true || input.saleType === 'EMI';
         const saleType = isEmi ? 'EMI' : 'DIRECT';
         let downPayment = 0;
@@ -905,9 +910,9 @@ export async function updateSale(saleId, input, actor) {
                 const itemSubtotal = existingLine.unitPrice * existingLine.quantity;
                 const itemDiscount = existingLine.discount * existingLine.quantity;
                 const itemTotal = Math.max(0, itemSubtotal - itemDiscount);
-                existingLine.taxableAmount = itemTotal;
-                existingLine.cgstAmount = Math.round(itemTotal * 0.09 * 100) / 100;
-                existingLine.sgstAmount = Math.round(itemTotal * 0.09 * 100) / 100;
+                existingLine.taxableAmount = Math.round((itemTotal / 1.18) * 100) / 100;
+                existingLine.cgstAmount = Math.round(existingLine.taxableAmount * 0.09 * 100) / 100;
+                existingLine.sgstAmount = Math.round(existingLine.taxableAmount * 0.09 * 100) / 100;
                 existingLine.total = itemTotal;
                 subtotal += itemSubtotal;
                 discountTotal += itemDiscount;
@@ -915,11 +920,11 @@ export async function updateSale(saleId, input, actor) {
         }
         sale.subtotal = subtotal;
         sale.discountTotal = discountTotal;
-        sale.taxableAmount = Math.max(0, subtotal - discountTotal);
+        sale.taxableAmount = Math.round((Math.max(0, subtotal - discountTotal) / 1.18) * 100) / 100;
         sale.cgstAmount = Math.round(sale.taxableAmount * 0.09 * 100) / 100;
         sale.sgstAmount = Math.round(sale.taxableAmount * 0.09 * 100) / 100;
         sale.taxTotal = Math.round((sale.cgstAmount + sale.sgstAmount) * 100) / 100;
-        sale.grandTotal = Math.round(sale.taxableAmount + sale.taxTotal);
+        sale.grandTotal = Math.round(Math.max(0, subtotal - discountTotal));
     }
     // If EMI sale, recalculate financing cleanly without points and restructure schedule
     if (sale.isEmi) {
@@ -995,4 +1000,146 @@ export async function updateSale(saleId, input, actor) {
     await sale.populate('lineItems.product', 'name sku brand color modelName defaultSellingPrice hsnCode');
     await sale.populate('lineItems.serializedItemIds', 'assetId manufacturerSerial condition');
     return sale;
+}
+// ── Cancel Sale ──────────────────────────────────────────────────────────────
+// Cancels a confirmed sale and fully restores all stock that was deducted.
+// Allowed only on CONFIRMED sales (not already CANCELLED or RETURNED).
+// Role enforcement is handled at the route level (SUPER_ADMIN, MANAGER).
+export async function cancelSale(saleId, reason, actor) {
+    const sale = await Sale.findById(saleId);
+    if (!sale) {
+        throw new AppError('Sale record not found.', 404, 'SALE_NOT_FOUND');
+    }
+    if (sale.saleStatus === SALE_STATUSES.CANCELLED) {
+        throw new AppError('This sale has already been cancelled.', 400, 'SALE_ALREADY_CANCELLED');
+    }
+    if (sale.saleStatus === SALE_STATUSES.RETURNED) {
+        throw new AppError('This sale has already been returned. Use the return workflow instead.', 400, 'SALE_ALREADY_RETURNED');
+    }
+    const trimmedReason = (reason || '').trim();
+    if (!trimmedReason) {
+        throw new AppError('A reason is required to cancel a sale.', 400, 'REASON_REQUIRED');
+    }
+    return await withTransaction(async (session) => {
+        const cancelRef = `CANCEL-${sale.invoiceNumber}`;
+        for (const li of sale.lineItems) {
+            const product = await Product.findById(li.product).session(session);
+            if (!product)
+                continue; // product deleted — skip stock restore but still cancel
+            if (product.trackingMode === TRACKING_MODES.SERIALIZED) {
+                // Restore each serialized unit that was sold on this invoice
+                const serialIds = (li.serializedItemIds || []);
+                for (const sid of serialIds) {
+                    const unit = await SerializedItem.findById(sid).session(session);
+                    if (unit && unit.status === SERIALIZED_STATUSES.SOLD) {
+                        unit.status = SERIALIZED_STATUSES.AVAILABLE;
+                        await unit.save({ session });
+                        await createStockMovement({
+                            product: product._id,
+                            serializedItem: unit._id,
+                            location: sale.location,
+                            movementType: MOVEMENT_TYPES.SALE_RETURN,
+                            quantityDelta: 1,
+                            sourceStatus: SERIALIZED_STATUSES.SOLD,
+                            destinationStatus: SERIALIZED_STATUSES.AVAILABLE,
+                            transactionRef: cancelRef,
+                            transactionModel: 'Sale',
+                            reason: `Sale cancelled: ${trimmedReason}`,
+                            performedBy: actor.id,
+                        }, session);
+                    }
+                }
+                // Restore onHand balance for serialized product
+                product.stockQuantity.onHand += li.quantity;
+                // Also restore location-level stock if tracked
+                const locStock = product.locationStock.find((ls) => ls.location.toString() === sale.location.toString());
+                if (locStock) {
+                    locStock.onHand += li.quantity;
+                }
+                await product.save({ session });
+            }
+            else {
+                // Quantity-based product — restore onHand atomically
+                await Product.findByIdAndUpdate(product._id, {
+                    $inc: {
+                        'stockQuantity.onHand': li.quantity,
+                        'locationStock.$[elem].onHand': li.quantity,
+                    },
+                }, {
+                    session,
+                    arrayFilters: [{ 'elem.location': sale.location }],
+                });
+                await createStockMovement({
+                    product: product._id,
+                    location: sale.location,
+                    movementType: MOVEMENT_TYPES.SALE_RETURN,
+                    quantityDelta: li.quantity,
+                    transactionRef: cancelRef,
+                    transactionModel: 'Sale',
+                    reason: `Sale cancelled: ${trimmedReason}`,
+                    performedBy: actor.id,
+                }, session);
+            }
+        }
+        // Mark sale as cancelled and clear outstanding EMI balance
+        sale.saleStatus = SALE_STATUSES.CANCELLED;
+        if (sale.isEmi && (sale.totalEmiDue || 0) > 0) {
+            // Void all unpaid installments
+            for (const p of sale.emiPayments) {
+                if (p.status !== 'PAID') {
+                    p.amountDue = 0;
+                    p.status = 'DUE'; // leaves a trace but zeroed out
+                }
+            }
+            sale.totalEmiDue = 0;
+        }
+        if (!sale.notes) {
+            sale.notes = `Cancelled: ${trimmedReason}`;
+        }
+        await sale.save({ session });
+        await logAudit({
+            actor,
+            action: 'CANCEL_SALE',
+            entityType: 'Sale',
+            entityId: sale._id.toString(),
+            beforeState: { saleStatus: 'CONFIRMED', grandTotal: sale.grandTotal },
+            afterState: { saleStatus: 'CANCELLED', reason: trimmedReason },
+            reason: `Sale ${sale.invoiceNumber} cancelled by ${actor.name}: ${trimmedReason}`,
+        });
+        return sale;
+    });
+}
+// ── Delete Sale ─────────────────────────────────────────────────────────────
+// Permanently removes a sale record from the database.
+// Safety: only allowed on CANCELLED or RETURNED sales (stock already restored).
+// CONFIRMED sales must be cancelled first to ensure stock is properly restored.
+// Role: SUPER_ADMIN only (enforced at route level).
+export async function deleteSale(saleId, actor) {
+    const sale = await Sale.findById(saleId);
+    if (!sale) {
+        throw new AppError('Sale record not found.', 404, 'SALE_NOT_FOUND');
+    }
+    if (sale.saleStatus === SALE_STATUSES.CONFIRMED || sale.saleStatus === SALE_STATUSES.DRAFT) {
+        throw new AppError('Cannot delete an active sale. Cancel it first to restore stock, then delete the cancelled record.', 400, 'DELETE_ACTIVE_SALE_FORBIDDEN');
+    }
+    const invoiceNumber = sale.invoiceNumber;
+    const beforeState = {
+        invoiceNumber,
+        saleStatus: sale.saleStatus,
+        grandTotal: sale.grandTotal,
+        customerName: sale.customerName,
+    };
+    // Remove any associated CustomerReturn records
+    await CustomerReturn.deleteMany({ originalSale: sale._id });
+    await Sale.findByIdAndDelete(saleId);
+    await logAudit({
+        actor,
+        action: 'DELETE_SALE',
+        entityType: 'Sale',
+        entityId: saleId,
+        beforeState,
+        afterState: null,
+        reason: `${sale.saleStatus} sale ${invoiceNumber} permanently deleted by ${actor.name}`,
+    });
+    return { deleted: true, invoiceNumber };
 }

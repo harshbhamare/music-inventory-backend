@@ -1227,7 +1227,7 @@ export async function sendRentalReminder(
         )
       : 0;
 
-  const reminderMessage = `Dear ${usage.assignedPerson}, this is a payment reminder from Stereobliss Retail & Rentals. Your rental payment of ₹${pendingAmount} for "${prodName}" (Ref: ${usage.issueReference}) is due. Please pay via UPI/Card at your earliest convenience. Thank you!`;
+  const reminderMessage = `Dear ${usage.assignedPerson}, this is a payment reminder from Stereobliss. Your rental payment of ₹${pendingAmount} for "${prodName}" (Ref: ${usage.issueReference}) is due. Please pay via UPI/Card at your earliest convenience. Thank you!`;
 
   let emailDeliveryResult: any = null;
   let emailDispatched = false;

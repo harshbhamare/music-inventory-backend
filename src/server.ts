@@ -23,7 +23,7 @@ async function bootstrap() {
     const port = ENV.PORT;
 
     app.listen(port, () => {
-      console.log(`[SERVER] 🎧 Stereobliss Retail Inventory API listening on port ${port} (${ENV.NODE_ENV})`);
+      console.log(`[SERVER] 🎧 Stereobliss Inventory API listening on port ${port} (${ENV.NODE_ENV})`);
       console.log(`[SERVER] Health check available at: http://localhost:${port}/api/health`);
     });
   } catch (err) {

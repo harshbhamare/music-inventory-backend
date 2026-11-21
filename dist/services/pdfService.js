@@ -1,8 +1,6 @@
 import PDFDocument from 'pdfkit';
 import fs from 'fs';
 import path from 'path';
-import mongoose from 'mongoose';
-import { AppSetting } from '../models/AppSetting.js';
 // Convert number to Indian currency words
 export function numberToIndianWords(num) {
     if (num === 0)
@@ -100,55 +98,69 @@ function resolveTemplateImagePath() {
     return null;
 }
 /**
- * Returns fonts that support high-resolution rendering and ₹ currency glyphs
+ * Returns fonts that support high-resolution rendering and ₹ currency glyphs.
+ * Checks bundled assets first so it works identically across Windows, Linux, Docker, and macOS.
  */
 function resolveSystemFonts() {
-    const segoeRegular = 'C:/Windows/Fonts/segoeui.ttf';
-    const segoeBold = 'C:/Windows/Fonts/segoeuib.ttf';
-    const segoeSemiBold = 'C:/Windows/Fonts/seguisb.ttf';
-    const arialRegular = 'C:/Windows/Fonts/arial.ttf';
-    const arialBold = 'C:/Windows/Fonts/arialbd.ttf';
-    if (fs.existsSync(segoeRegular) && fs.existsSync(segoeBold)) {
-        return {
-            regular: segoeRegular,
-            bold: segoeBold,
-            semiBold: fs.existsSync(segoeSemiBold) ? segoeSemiBold : segoeBold,
-            symbolPrefix: '₹',
-        };
-    }
-    if (fs.existsSync(arialRegular) && fs.existsSync(arialBold)) {
-        return {
-            regular: arialRegular,
-            bold: arialBold,
-            semiBold: arialBold,
-            symbolPrefix: '₹',
-        };
+    const candidateFonts = [
+        // 1. Bundled repository fonts (always guaranteed in assets/fonts)
+        {
+            regular: path.resolve(currentServiceDir, '../assets/fonts/segoeui.ttf'),
+            bold: path.resolve(currentServiceDir, '../assets/fonts/segoeuib.ttf'),
+        },
+        {
+            regular: path.resolve(currentServiceDir, '../../assets/fonts/segoeui.ttf'),
+            bold: path.resolve(currentServiceDir, '../../assets/fonts/segoeuib.ttf'),
+        },
+        {
+            regular: path.resolve(process.cwd(), 'src/assets/fonts/segoeui.ttf'),
+            bold: path.resolve(process.cwd(), 'src/assets/fonts/segoeuib.ttf'),
+        },
+        {
+            regular: path.resolve(process.cwd(), 'assets/fonts/segoeui.ttf'),
+            bold: path.resolve(process.cwd(), 'assets/fonts/segoeuib.ttf'),
+        },
+        {
+            regular: path.resolve(process.cwd(), 'dist/assets/fonts/segoeui.ttf'),
+            bold: path.resolve(process.cwd(), 'dist/assets/fonts/segoeuib.ttf'),
+        },
+        // 2. Standard Windows system fonts
+        {
+            regular: 'C:/Windows/Fonts/segoeui.ttf',
+            bold: 'C:/Windows/Fonts/segoeuib.ttf',
+        },
+        {
+            regular: 'C:/Windows/Fonts/arial.ttf',
+            bold: 'C:/Windows/Fonts/arialbd.ttf',
+        },
+    ];
+    for (const c of candidateFonts) {
+        if (fs.existsSync(c.regular) && fs.existsSync(c.bold)) {
+            return {
+                regular: c.regular,
+                bold: c.bold,
+                isCustom: true,
+                symbolPrefix: '₹',
+            };
+        }
     }
     return {
         regular: 'Helvetica',
         bold: 'Helvetica-Bold',
-        semiBold: 'Helvetica-Bold',
+        isCustom: false,
         symbolPrefix: '₹',
     };
 }
 export async function generateTaxInvoicePdf(sale) {
-    let setting = null;
-    try {
-        if (mongoose.connection && mongoose.connection.readyState === 1) {
-            setting = await AppSetting.findOne().lean();
-        }
-    }
-    catch {
-        setting = null;
-    }
-    // Canonical Stereobliss information as in reference_invoice.jpg
-    const companyName = setting?.companyName || 'STEREOBLISS';
+    // Official Canonical Stereobliss information matching on-screen TaxInvoiceModal.tsx and reference_invoice.jpg
+    // Strictly STEREOBLISS (not Stereobliss Retail)
+    const companyName = 'STEREOBLISS';
     const addressLine1 = '2nd Floor, Radhika Avenue, Wakad- Nasik Road';
     const addressLine2 = 'Next to Copa Vila';
-    const contactPhone = setting?.contactPhone || '9960540161';
-    const contactEmail = setting?.contactEmail || 'harsh.bagle@muziclub.com';
+    const contactPhone = '9960540161';
+    const contactEmail = 'harsh.bagle@muziclub.com';
     const website = 'www.muziclub.com';
-    const gstin = setting?.gstin || '27ADDFS8850Q1Z6';
+    const gstin = '27ADDFS8850Q1Z6';
     const invoiceNo = sale.invoiceNumber || 'INV0058';
     const invoiceDate = new Date(sale.createdAt || Date.now());
     const pad = (n) => String(n).padStart(2, '0');
@@ -170,6 +182,13 @@ export async function generateTaxInvoicePdf(sale) {
                     Subject: 'Tax Invoice',
                 },
             });
+            // Register fonts with named identifiers to ensure fast caching and full Unicode support
+            if (fonts.isCustom) {
+                doc.registerFont('CustomRegular', fonts.regular);
+                doc.registerFont('CustomBold', fonts.bold);
+                fonts.regular = 'CustomRegular';
+                fonts.bold = 'CustomBold';
+            }
             const chunks = [];
             doc.on('data', (chunk) => chunks.push(chunk));
             doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -286,7 +305,7 @@ export async function generateTaxInvoicePdf(sale) {
                 doc.text(`${prodName}${brand}${color}`, cols.desc.x + 8, currentY + 7, { width: cols.desc.w - 12 });
                 let subLine = `HSN/SAC- ${hsn}`;
                 if (hasDiscount) {
-                    subLine += ` | Discount: -${fonts.symbolPrefix}${formatIndianCurrency(itemDiscount)}`;
+                    subLine += ` | Discount Offered: −${fonts.symbolPrefix}${formatIndianCurrency(itemDiscount)} (${formatIndianCurrency(discountPerUnit)}/unit)`;
                 }
                 if (hasSerials) {
                     const serials = li.serializedItemIds.map((s) => s.assetId || s.manufacturerSerial || s).join(', ');
@@ -394,7 +413,7 @@ export async function generateTaxInvoicePdf(sale) {
                 const totalBarY = totY + 2;
                 const totalBarHeight = 26;
                 doc.rect(totalsBoxX - 6, totalBarY, totalsWidth + 6, totalBarHeight).fill('#e1f0fa');
-                doc.font(fonts.bold).fontSize(9.5).fillColor('#0f172a').text('TOTAL (INR)', totalsBoxX, totalBarY + 7);
+                doc.font(fonts.bold).fontSize(9.5).fillColor('#0f172a').text('TOTAL INVOICE (INR)', totalsBoxX, totalBarY + 7);
                 doc.font(fonts.bold).fontSize(10.5).fillColor('#0f172a').text(`${fonts.symbolPrefix}${formatIndianCurrency(grandTotal)}`, totalsBoxX, totalBarY + 6.5, { width: totalsWidth, align: 'right' });
                 totY = totalBarY + totalBarHeight;
             }

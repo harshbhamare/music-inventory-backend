@@ -22,7 +22,9 @@ import { EmailDeliveryLog } from '../models/EmailDeliveryLog.js';
 import { ROLES, REPORT_TYPES, } from '../config/constants.js';
 export async function seedDatabase() {
     console.log('[SEED] Starting Stereobliss clean initialization script...');
-    await connectDB();
+    // NOTE: Caller is responsible for calling connectDB() before this function.
+    // In production this is done by api/index.ts → _initOnce() → connectDB().
+    // In CLI scripts the bottom of this file calls connectDB() explicitly.
     // 1. Wipe all previous dummy/mock data
     await Promise.all([
         Product.deleteMany({}),
@@ -94,7 +96,7 @@ export async function seedDatabase() {
     let setting = await AppSetting.findOne();
     if (!setting) {
         await AppSetting.create({
-            companyName: 'Stereobliss Retail',
+            companyName: 'Stereobliss',
             storeName: 'Stereobliss Central Store',
             storeCode: 'CENTRAL',
             contactEmail: '',
@@ -168,7 +170,10 @@ export async function ensureDatabaseSeeded() {
     return true;
 }
 if (process.argv[1] && process.argv[1].endsWith('seed.ts')) {
-    seedDatabase()
+    // CLI entrypoint: establish the connection explicitly before seeding,
+    // then disconnect and exit cleanly.
+    connectDB()
+        .then(() => seedDatabase())
         .then(async () => {
         await disconnectDB();
         process.exit(0);

@@ -1,17 +1,26 @@
 /**
- * Historical Data Import Service — Stereobliss Retail
+ * Historical Data Import Service — Muziclub Inventory
  *
- * Provides three capabilities:
- *   1. generateImportTemplate()  → Buffer (Excel .xlsx)
- *   2. validateImportFile()      → ValidationResult (row-level errors, preview counts)
- *   3. executeImport()           → ImportResult (records created, stock reconciled)
+ * Provides:
+ *   1. generateImportTemplate()  → Buffer (Excel .xlsx template with instructions, hints, and sample data)
+ *   2. validateImportFile()      → ValidationResult (row-level errors, preview counts, robust format detection)
+ *   3. executeImport()           → ImportResult (records created, stock reconciled, idempotent)
  *
- * Import order (respects FK dependencies):
- *   Categories → Suppliers → Locations → Products → SerializedItems
- *   → DirectSales → EMISales+EMIPayments → Rentals+RentalPayments → PurchaseOrders
+ * Supported sheets (order respects foreign keys):
+ *   1. Categories
+ *   2. Suppliers
+ *   3. Locations
+ *   4. Products
+ *   5. SerializedItems
+ *   6. DirectSales
+ *   7. EMISales
+ *   8. EMIPayments
+ *   9. Rentals
+ *   10. RentalPayments
+ *   11. PurchaseOrders
  */
 import * as XLSX from 'xlsx';
-import { Types } from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import { Category } from '../models/Category.js';
 import { Supplier } from '../models/Supplier.js';
 import { StockLocation } from '../models/StockLocation.js';
@@ -23,143 +32,434 @@ import { Purchase } from '../models/Purchase.js';
 import { PurchaseReceipt } from '../models/PurchaseReceipt.js';
 import { StockMovement } from '../models/StockMovement.js';
 import { TRACKING_MODES, SERIALIZED_STATUSES, ITEM_CONDITIONS, MOVEMENT_TYPES, SALE_STATUSES, PAYMENT_STATUSES, PAYMENT_METHODS, SALE_TYPES, USAGE_STATUSES, USAGE_PURPOSES, PURCHASE_STATUSES, } from '../config/constants.js';
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function parseDate(val) {
+// ─── Robust Normalization & Parsing Helpers ────────────────────────────────────
+/** Parse dates from Excel serial numbers, DD/MM/YYYY, YYYY-MM-DD, or ISO strings */
+export function parseDate(val) {
     if (!val)
         return null;
+    if (val instanceof Date && !isNaN(val.getTime()))
+        return val;
     const s = String(val).trim();
     if (!s)
         return null;
-    // Excel serial number
+    // 1. Excel serial number (numeric date)
     const n = Number(s);
-    if (!isNaN(n) && n > 1000) {
-        const parsed = XLSX.SSF.parse_date_code(n);
-        if (parsed)
-            return new Date(parsed.y, parsed.m - 1, parsed.d);
+    if (!isNaN(n) && n > 1000 && n < 100000) {
+        const ssf = XLSX.SSF || XLSX.default?.SSF;
+        if (ssf?.parse_date_code) {
+            const parsed = ssf.parse_date_code(Math.floor(n));
+            if (parsed)
+                return new Date(Date.UTC(parsed.y, parsed.m - 1, parsed.d));
+        }
+        // Pure math fallback for Excel serial date
+        const epochUtc = Math.round((n - 25569) * 86400 * 1000);
+        const d = new Date(epochUtc);
+        if (!isNaN(d.getTime()))
+            return d;
     }
+    // 2. YYYY-MM-DD or YYYY/MM/DD
+    const yyyymmdd = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+    if (yyyymmdd) {
+        const year = parseInt(yyyymmdd[1], 10);
+        const month = parseInt(yyyymmdd[2], 10) - 1;
+        const day = parseInt(yyyymmdd[3], 10);
+        const d = new Date(Date.UTC(year, month, day));
+        if (!isNaN(d.getTime()))
+            return d;
+    }
+    // 3. DD-MM-YYYY or DD/MM/YYYY or DD.MM.YYYY (Standard Indian format)
+    const ddmmyyyy = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+    if (ddmmyyyy) {
+        const day = parseInt(ddmmyyyy[1], 10);
+        const month = parseInt(ddmmyyyy[2], 10) - 1;
+        const year = parseInt(ddmmyyyy[3], 10);
+        const d = new Date(Date.UTC(year, month, day));
+        if (!isNaN(d.getTime()))
+            return d;
+    }
+    // 4. DD-MM-YY or DD/MM/YY
+    const ddmmyy = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})$/);
+    if (ddmmyy) {
+        const day = parseInt(ddmmyy[1], 10);
+        const month = parseInt(ddmmyy[2], 10) - 1;
+        let year = parseInt(ddmmyy[3], 10);
+        year += year < 50 ? 2000 : 1900;
+        const d = new Date(Date.UTC(year, month, day));
+        if (!isNaN(d.getTime()))
+            return d;
+    }
+    // 5. Standard Date parsing fallback
     const d = new Date(s);
     return isNaN(d.getTime()) ? null : d;
 }
-function parseNum(val, def = 0) {
-    const n = Number(val);
+/** Parse numeric values, stripping currency symbols (₹, Rs, Rs., $, INR), commas, and whitespace */
+export function parseNum(val, def = 0) {
+    if (val === null || val === undefined)
+        return def;
+    if (typeof val === 'number')
+        return isNaN(val) ? def : val;
+    let s = String(val).trim();
+    if (!s)
+        return def;
+    s = s.replace(/[₹$,]/g, '')
+        .replace(/^(rs\.?|inr)\s*/i, '')
+        .replace(/\s*(rs\.?|inr)$/i, '')
+        .trim();
+    const n = Number(s);
     return isNaN(n) ? def : n;
 }
-function parseBool(val) {
-    const s = String(val ?? '').trim().toUpperCase();
-    return s === 'TRUE' || s === '1' || s === 'YES';
+/** Check if value represents a valid number (handles ₹, Rs, commas) */
+export function isNumeric(val) {
+    if (val === null || val === undefined || val === '')
+        return false;
+    if (typeof val === 'number')
+        return !isNaN(val);
+    const s = String(val).trim()
+        .replace(/[₹$,]/g, '')
+        .replace(/^(rs\.?|inr)\s*/i, '')
+        .replace(/\s*(rs\.?|inr)$/i, '')
+        .trim();
+    return s !== '' && !isNaN(Number(s));
 }
-/** Convert a worksheet to an array of plain objects.
- *  Maps raw headers, normalized headers, and key aliases to ensure smooth migration.
- *  Detects hint rows dynamically (row 2) or starts directly at data (row 1+). */
-function sheetToRows(ws, sheetName) {
-    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
-    if (!aoa || aoa.length < 2)
-        return [];
-    const rawHeaders = aoa[0] || [];
-    // General aliases for all migration spreadsheets
-    const generalAliases = {
-        categoryname: 'name',
-        suppliername: 'name',
-        locationname: 'name',
-        shortcode: 'code',
+/** Parse booleans */
+export function parseBool(val) {
+    if (typeof val === 'boolean')
+        return val;
+    const s = String(val ?? '').trim().toUpperCase();
+    return s === 'TRUE' || s === '1' || s === 'YES' || s === 'Y' || s === 'T';
+}
+/** Clean raw cell header string */
+function cleanHeader(h) {
+    return String(h ?? '').trim();
+}
+/** Map any raw user column title to standard internal key */
+export function normalizeHeaderKey(header, sheetName) {
+    const norm = header.toLowerCase().replace(/[^a-z0-9]/g, '');
+    // Sheet-specific overrides
+    if (sheetName) {
+        const s = sheetName.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (s.includes('category') || s.includes('categories')) {
+            if (['name', 'categoryname', 'category', 'catname', 'title'].includes(norm))
+                return 'name';
+        }
+        if (s.includes('supplier')) {
+            if (['name', 'suppliername', 'supplier', 'vendor', 'vendorname'].includes(norm))
+                return 'name';
+        }
+        if (s.includes('location')) {
+            if (['name', 'locationname', 'storename', 'store', 'branch'].includes(norm))
+                return 'name';
+            if (['code', 'shortcode', 'locationcode', 'loccode'].includes(norm))
+                return 'code';
+        }
+        if (s.includes('product')) {
+            if (['name', 'productname', 'itemname', 'title', 'product', 'item'].includes(norm))
+                return 'name';
+        }
+        if (s.includes('rental') && !s.includes('payment')) {
+            if (['customername', 'assignedperson', 'rentername', 'renter', 'customer', 'name'].includes(norm))
+                return 'assignedPerson';
+            if (['customerphone', 'assignedpersoncontact', 'renterphone', 'phone', 'mobile', 'contact'].includes(norm))
+                return 'assignedPersonContact';
+        }
+        if (s.includes('purchase')) {
+            if (['ponumber', 'pono', 'purchaseordernumber', 'purchaseorder', 'po'].includes(norm))
+                return 'poNumber';
+        }
+    }
+    // Global comprehensive dictionary
+    const dict = {
+        // Basic identifiers
+        name: 'name',
         productname: 'name',
+        itemname: 'name',
+        locationname: 'name',
+        storename: 'name',
+        description: 'description',
+        desc: 'description',
+        details: 'description',
+        notes: 'notes',
+        remarks: 'notes',
+        comment: 'notes',
+        comments: 'notes',
+        // People & Contact
+        contactperson: 'contactPerson',
+        poc: 'contactPerson',
+        email: 'email',
+        emailaddress: 'email',
+        phone: 'phone',
+        phonenumber: 'phone',
+        mobile: 'phone',
+        mobilenumber: 'phone',
+        tel: 'phone',
+        contactno: 'phone',
+        address: 'address',
+        addr: 'address',
+        // Locations
+        code: 'code',
+        shortcode: 'code',
+        locationcode: 'code',
+        isdefault: 'isDefault',
+        type: 'type',
+        // Products
+        sku: 'sku',
         skucode: 'sku',
+        productsku: 'productSku',
+        itemcode: 'sku',
+        category: 'category',
+        categoryname: 'category',
+        brand: 'brand',
+        brandname: 'brand',
         model: 'modelName',
         modelname: 'modelName',
         modelseriesname: 'modelName',
         modelseries: 'modelName',
         seriesname: 'modelName',
-        colorfinish: 'color',
+        color: 'color',
         colour: 'color',
+        finish: 'color',
+        colorfinish: 'color',
         hsn: 'hsnCode',
         hsncode: 'hsnCode',
-        lowstockalert: 'minStockThreshold',
-        minstockthreshold: 'minStockThreshold',
-        unitofmeasure: 'unitOfMeasure',
+        sac: 'hsnCode',
+        tracking: 'trackingMode',
+        trackingmode: 'trackingMode',
         uom: 'unitOfMeasure',
+        unitofmeasure: 'unitOfMeasure',
+        unit: 'unitOfMeasure',
         purchasecost: 'purchaseCost',
         cost: 'purchaseCost',
+        costprice: 'purchaseCost',
+        buyprice: 'purchaseCost',
+        buyingprice: 'purchaseCost',
         sellingprice: 'sellingPrice',
         retailprice: 'sellingPrice',
-        mrp: 'sellingPrice',
-        trackingmode: 'trackingMode',
-        openingstock: 'openingStock',
-        locationcode: 'location',
-        mfrserialno: 'manufacturerSerial',
-        manufacturerserial: 'manufacturerSerial',
-        unitcost: 'unitCost',
-        invoiceno: 'invoiceNumber',
-        invoicenumber: 'invoiceNumber',
-        saledate: 'date',
-        customername: 'customerName',
-        customeremail: 'customerEmail',
-        customerphone: 'customerPhone',
-        customergstin: 'customerGstin',
-        customeraddress: 'customerAddress',
-        productsku: 'productSku',
+        price: 'sellingPrice',
         unitprice: 'unitPrice',
+        rate: 'unitPrice',
+        mrp: 'sellingPrice',
+        saleprice: 'sellingPrice',
+        defaultsellingprice: 'sellingPrice',
+        openingstock: 'openingStock',
+        stock: 'openingStock',
+        initialstock: 'openingStock',
+        location: 'location',
+        supplier: 'supplier',
+        suppliername: 'supplier',
+        vendor: 'supplier',
+        minstock: 'minStockThreshold',
+        minstockthreshold: 'minStockThreshold',
+        lowstockalert: 'minStockThreshold',
+        reorderlevel: 'minStockThreshold',
+        // Serialized Items
+        assetid: 'assetId',
+        assettag: 'assetId',
+        serialid: 'assetId',
+        tagid: 'assetId',
+        manufacturerserial: 'manufacturerSerial',
+        mfrserial: 'manufacturerSerial',
+        mfrserialno: 'manufacturerSerial',
+        serialno: 'manufacturerSerial',
+        serialnumber: 'manufacturerSerial',
+        serial: 'manufacturerSerial',
+        unitcost: 'unitCost',
+        status: 'status',
+        condition: 'condition',
+        warrantyexpiry: 'warrantyExpiry',
+        warrantyexpirydate: 'warrantyExpiry',
+        warranty: 'warrantyExpiry',
+        // Direct Sales & EMI Sales
+        invoicenumber: 'invoiceNumber',
+        invoiceno: 'invoiceNumber',
+        invno: 'invoiceNumber',
+        billno: 'invoiceNumber',
+        invoice: 'invoiceNumber',
+        date: 'date',
+        saledate: 'date',
+        invoicedate: 'date',
+        billdate: 'date',
+        customername: 'customerName',
+        clientname: 'customerName',
+        customer: 'customerName',
+        buyername: 'customerName',
+        customeremail: 'customerEmail',
+        clientemail: 'customerEmail',
+        buyeremail: 'customerEmail',
+        customerphone: 'customerPhone',
+        customermobile: 'customerPhone',
+        customergstin: 'customerGstin',
+        gstin: 'customerGstin',
+        gst: 'customerGstin',
+        gstno: 'customerGstin',
+        customeraddress: 'customerAddress',
+        quantity: 'quantity',
+        qty: 'quantity',
+        units: 'quantity',
+        count: 'quantity',
+        discount: 'discount',
+        disc: 'discount',
         paymentmethod: 'paymentMethod',
+        paymentmode: 'paymentMethod',
+        paymentstatus: 'paymentStatus',
+        dispatchthrough: 'dispatchThrough',
+        destination: 'destination',
+        ewaybillno: 'eWayBillNo',
+        ewaybill: 'eWayBillNo',
         downpayment: 'downPayment',
-        noofmonths: 'emiTenureMonths',
+        advance: 'downPayment',
+        initialpayment: 'downPayment',
         emitenuremonths: 'emiTenureMonths',
-        monthno: 'monthIndex',
+        emitenure: 'emiTenureMonths',
+        tenure: 'emiTenureMonths',
+        months: 'emiTenureMonths',
+        noofmonths: 'emiTenureMonths',
+        downpaymentmethod: 'downPaymentMethod',
+        // Instalments / Payments
         monthindex: 'monthIndex',
-        monthlabel: 'billingMonth',
+        monthno: 'monthIndex',
+        month: 'monthIndex',
+        instalmentno: 'monthIndex',
+        installmentno: 'monthIndex',
         billingmonth: 'billingMonth',
+        monthlabel: 'billingMonth',
         duedate: 'dueDate',
         amountdue: 'amountDue',
+        due: 'amountDue',
         amountpaid: 'amountPaid',
-        datepaid: 'paidDate',
+        paid: 'amountPaid',
         paiddate: 'paidDate',
+        datepaid: 'paidDate',
         transactionref: 'transactionRef',
-        referenceno: 'issueReference',
+        transactionno: 'transactionRef',
+        txnref: 'transactionRef',
+        trnref: 'transactionRef',
+        utr: 'transactionRef',
+        // Rentals
         issuereference: 'issueReference',
+        referenceno: 'issueReference',
+        refno: 'issueReference',
+        rentalref: 'issueReference',
         issuedate: 'issueDate',
-        returnbydate: 'expectedReturnDate',
         expectedreturndate: 'expectedReturnDate',
+        returnbydate: 'expectedReturnDate',
+        returndate: 'expectedReturnDate',
         actualreturndate: 'actualReturnDate',
+        assignedperson: 'assignedPerson',
+        assignedpersoncontact: 'assignedPersonContact',
         monthlyrent: 'monthlyRent',
+        rent: 'monthlyRent',
+        rentamount: 'monthlyRent',
         securitydeposit: 'securityDeposit',
-        deposittxnref: 'depositTransactionRef',
+        deposit: 'securityDeposit',
         deposittransactionref: 'depositTransactionRef',
+        deposittxnref: 'depositTransactionRef',
         depositmode: 'depositMode',
         depositbalance: 'depositBalance',
         depositrefundstatus: 'depositRefundStatus',
-        lockinmonths: 'lockInPeriodMonths',
         lockinperiodmonths: 'lockInPeriodMonths',
-        accessories: 'includedAccessories',
+        lockinmonths: 'lockInPeriodMonths',
+        lockin: 'lockInPeriodMonths',
         includedaccessories: 'includedAccessories',
-        ponumber: 'purchaseOrderNumber',
-        purchaseordernumber: 'purchaseOrderNumber',
+        accessories: 'includedAccessories',
+        purpose: 'purpose',
+        // Purchase orders
+        ponumber: 'poNumber',
+        purchaseordernumber: 'poNumber',
         orderdate: 'orderDate',
-        qtyordered: 'quantityOrdered',
+        podate: 'orderDate',
         quantityordered: 'quantityOrdered',
-        qtyreceived: 'quantityReceived',
+        qtyordered: 'quantityOrdered',
+        orderedqty: 'quantityOrdered',
         quantityreceived: 'quantityReceived',
+        qtyreceived: 'quantityReceived',
+        receivedqty: 'quantityReceived',
         invoicereference: 'invoiceReference',
     };
-    let dataStartIndex = 1;
-    if (aoa.length > 2) {
-        const row1Str = JSON.stringify(aoa[1]).toLowerCase();
-        if (row1Str.includes('e.g.') || row1Str.includes('required') || row1Str.includes('hint') || row1Str.includes('must match') || row1Str.includes('default')) {
-            dataStartIndex = 2;
+    return dict[norm] || header;
+}
+/** Find worksheet with fuzzy matching (spaces, underscores, case, aliases) */
+export function findSheet(wb, canonicalName) {
+    const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const target = norm(canonicalName);
+    // Exact match
+    if (wb.Sheets[canonicalName])
+        return wb.Sheets[canonicalName];
+    // Normalized match
+    const found = wb.SheetNames.find(sn => norm(sn) === target);
+    if (found && wb.Sheets[found])
+        return wb.Sheets[found];
+    // Common aliases
+    const aliases = {
+        categories: ['category', 'categories', 'cats'],
+        suppliers: ['supplier', 'suppliers', 'vendors', 'vendor'],
+        locations: ['location', 'locations', 'stocklocation', 'stocklocations', 'stores', 'store', 'branches', 'branch'],
+        products: ['product', 'products', 'items', 'item', 'inventory'],
+        serializeditems: ['serializeditem', 'serializeditems', 'serialized', 'assets', 'asset', 'serialitems', 'serials'],
+        directsales: ['directsale', 'directsales', 'sales', 'sale', 'invoices', 'retail'],
+        emisales: ['emisale', 'emisales', 'emi', 'emis', 'loans', 'installmentsales'],
+        emipayments: ['emipayment', 'emipayments', 'emiinstallments', 'emiinstalments', 'installments', 'instalments', 'emidues'],
+        rentals: ['rental', 'rentals', 'internalusage', 'usage', 'rents', 'leases'],
+        rentalpayments: ['rentalpayment', 'rentalpayments', 'rentaldues', 'rentpayments', 'rentdues'],
+        purchaseorders: ['purchaseorder', 'purchaseorders', 'purchases', 'purchase', 'po', 'pos', 'orders'],
+    };
+    const aliasList = aliases[target] || [];
+    for (const name of wb.SheetNames) {
+        if (aliasList.includes(norm(name))) {
+            return wb.Sheets[name];
         }
     }
-    const dataRows = aoa.slice(dataStartIndex);
-    return dataRows
+    return null;
+}
+/** Check if row 2 is a hint/note row rather than actual data */
+function isHintRow(row) {
+    if (!row || !Array.isArray(row))
+        return false;
+    const text = row.map(c => String(c ?? '').trim()).join(' ');
+    if (!text)
+        return false;
+    const upper = text.toUpperCase();
+    return (upper.includes('REQUIRED') ||
+        upper.includes('MUST MATCH') ||
+        upper.includes('E.G.') ||
+        upper.includes('YYYY-MM-DD') ||
+        upper.includes('LEAVE BLANK') ||
+        upper.includes('NUMBER ONLY') ||
+        upper.includes('FOR QUANTITY MODE') ||
+        upper.includes('DEFAULTS TO'));
+}
+/** Convert worksheet to standardized row objects, auto-detecting hint row presence */
+export function sheetToRows(ws, sheetName) {
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
+    if (!aoa || aoa.length < 2)
+        return { rows: [], startRowIndex: 2 };
+    const rawHeaders = aoa[0].map(h => cleanHeader(h));
+    const mappedKeys = rawHeaders.map(h => normalizeHeaderKey(h, sheetName));
+    // Determine whether row 1 (the 2nd row) is a hint/note row
+    let dataRows;
+    let startRowIndex = 2; // 1-based Excel row number for the first data row
+    if (aoa.length >= 3 && isHintRow(aoa[1])) {
+        dataRows = aoa.slice(2);
+        startRowIndex = 3; // header=row 1, hints=row 2, data=row 3
+    }
+    else {
+        dataRows = aoa.slice(1);
+        startRowIndex = 2; // header=row 1, data=row 2
+    }
+    const rows = dataRows
         .map(row => {
         const obj = {};
-        rawHeaders.forEach((h, i) => {
-            if (!h)
+        mappedKeys.forEach((key, i) => {
+            const rawHeader = rawHeaders[i];
+            if (!rawHeader)
                 return;
-            const rawH = String(h).replace(' *', '').trim();
+            const rawKey = rawHeader.replace(/\s*\*$/, '').trim();
             const val = String(row[i] ?? '').trim();
-            obj[rawH] = val; // original clean header
-            const cleanH = rawH.toLowerCase().replace(/[^a-z0-9]/g, '');
-            const mappedKey = generalAliases[cleanH] || cleanH;
-            obj[mappedKey] = val;
+            if (key)
+                obj[key] = val;
+            if (rawKey && !obj[rawKey])
+                obj[rawKey] = val;
         });
-        // Bi-directional alias between customerName and assignedPerson for rentals
+        // Preserve aliases used by older import templates and rental sheets.
         if (obj['customerName'] && !obj['assignedPerson'])
             obj['assignedPerson'] = obj['customerName'];
         if (obj['assignedPerson'] && !obj['customerName'])
@@ -168,12 +468,99 @@ function sheetToRows(ws, sheetName) {
             obj['assignedPersonContact'] = obj['customerPhone'];
         if (obj['assignedPersonContact'] && !obj['customerPhone'])
             obj['customerPhone'] = obj['assignedPersonContact'];
+        if (obj['poNumber'] && !obj['purchaseOrderNumber'])
+            obj['purchaseOrderNumber'] = obj['poNumber'];
+        if (obj['purchaseOrderNumber'] && !obj['poNumber'])
+            obj['poNumber'] = obj['purchaseOrderNumber'];
+        if (obj['sku'] && !obj['productSku'])
+            obj['productSku'] = obj['sku'];
+        if (obj['productSku'] && !obj['sku'])
+            obj['sku'] = obj['productSku'];
+        if (obj['purchaseCost'] && !obj['unitCost'])
+            obj['unitCost'] = obj['purchaseCost'];
+        if (obj['unitCost'] && !obj['purchaseCost'])
+            obj['purchaseCost'] = obj['unitCost'];
+        if (obj['sellingPrice'] && !obj['unitPrice'])
+            obj['unitPrice'] = obj['sellingPrice'];
+        if (obj['unitPrice'] && !obj['sellingPrice'])
+            obj['sellingPrice'] = obj['unitPrice'];
         return obj;
     })
         .filter(r => Object.values(r).some(v => v !== ''));
+    return { rows, startRowIndex };
 }
-// Simplified column sets — plain English, only essential columns, with examples
-const SHEET_COLS = {
+// ─── Enum Normalizers ─────────────────────────────────────────────────────────
+export function normalizePaymentMethod(val) {
+    if (!val)
+        return PAYMENT_METHODS.CASH;
+    const v = val.trim().toUpperCase().replace(/[\s_\-]+/g, '');
+    if (['UPI', 'GPAY', 'GOOGLEPAY', 'PHONEPE', 'PAYTM', 'BHIM'].includes(v))
+        return PAYMENT_METHODS.UPI;
+    if (['CASH', 'COD'].includes(v))
+        return PAYMENT_METHODS.CASH;
+    if (['CARD', 'DEBIT', 'CREDIT', 'DEBITCARD', 'CREDITCARD', 'POS', 'SWIPE'].includes(v))
+        return PAYMENT_METHODS.CARD;
+    if (['BANKTRANSFER', 'BANK', 'IMPS', 'NEFT', 'RTGS', 'ONLINE', 'TRANSFER', 'NETBANKING'].includes(v))
+        return PAYMENT_METHODS.BANK_TRANSFER;
+    return PAYMENT_METHODS.OTHER;
+}
+export function normalizeTrackingMode(val) {
+    if (!val)
+        return TRACKING_MODES.QUANTITY;
+    const v = val.trim().toUpperCase();
+    if (v.startsWith('SER') || v === 'S')
+        return TRACKING_MODES.SERIALIZED;
+    return TRACKING_MODES.QUANTITY;
+}
+export function normalizeCondition(val) {
+    if (!val)
+        return ITEM_CONDITIONS.NEW;
+    const v = val.trim().toUpperCase();
+    if (Object.values(ITEM_CONDITIONS).includes(v))
+        return v;
+    return ITEM_CONDITIONS.GOOD;
+}
+export function normalizeSerializedStatus(val) {
+    if (!val)
+        return SERIALIZED_STATUSES.AVAILABLE;
+    const v = val.trim().toUpperCase().replace(/[\s\-]+/g, '_');
+    if (Object.values(SERIALIZED_STATUSES).includes(v))
+        return v;
+    return SERIALIZED_STATUSES.AVAILABLE;
+}
+export function normalizePaymentStatus(val) {
+    if (!val)
+        return PAYMENT_STATUSES.PAID;
+    const v = val.trim().toUpperCase();
+    if (Object.values(PAYMENT_STATUSES).includes(v))
+        return v;
+    return PAYMENT_STATUSES.PAID;
+}
+export function normalizeRentalStatus(val) {
+    if (!val)
+        return USAGE_STATUSES.ACTIVE;
+    const v = val.trim().toUpperCase().replace(/[\s\-]+/g, '_');
+    if (Object.values(USAGE_STATUSES).includes(v))
+        return v;
+    return USAGE_STATUSES.ACTIVE;
+}
+export function normalizeRentalPurpose(val) {
+    if (!val)
+        return USAGE_PURPOSES.CLASS;
+    const v = val.trim().toUpperCase();
+    if (Object.values(USAGE_PURPOSES).includes(v))
+        return v;
+    return USAGE_PURPOSES.CLASS;
+}
+export function normalizePOStatus(val) {
+    if (!val)
+        return PURCHASE_STATUSES.COMPLETED;
+    const v = val.trim().toUpperCase().replace(/[\s\-]+/g, '_');
+    if (Object.values(PURCHASE_STATUSES).includes(v))
+        return v;
+    return PURCHASE_STATUSES.COMPLETED;
+}
+export const SHEET_COLS = {
     Categories: [
         { header: 'Category Name', key: 'name', width: 28, required: true, example: 'Guitars' },
         { header: 'Description', key: 'description', width: 44, required: false, example: 'Acoustic and electric guitars' },
@@ -183,6 +570,7 @@ const SHEET_COLS = {
         { header: 'Contact Person', key: 'contactPerson', width: 25, required: false, example: 'Raj Kumar' },
         { header: 'Email', key: 'email', width: 30, required: false, example: 'raj@furtados.com' },
         { header: 'Phone', key: 'phone', width: 18, required: false, example: '9820012345' },
+        { header: 'Address', key: 'address', width: 35, required: false, example: 'Pune' },
     ],
     Locations: [
         { header: 'Location Name', key: 'name', width: 28, required: true, example: 'Main Store' },
@@ -247,11 +635,12 @@ const SHEET_COLS = {
         { header: 'Unit Price', key: 'unitPrice', width: 14, required: true, example: 7200 },
         { header: 'Down Payment', key: 'downPayment', width: 16, required: true, hint: 'Amount paid upfront', example: 1200 },
         { header: 'No. of Months', key: 'emiTenureMonths', width: 16, required: true, hint: 'Total EMI instalments', example: 6 },
+        { header: 'Down Payment Method', key: 'downPaymentMethod', width: 20, required: false, hint: 'CASH / UPI / CARD / BANK_TRANSFER', example: 'UPI' },
     ],
     EMIPayments: [
         { header: 'Invoice No.', key: 'invoiceNumber', width: 20, required: true, hint: 'Must match EMI Sales Invoice No.', example: 'INV-2024-0010' },
         { header: 'Month No.', key: 'monthIndex', width: 12, required: true, hint: '1 for first instalment', example: 1 },
-        { header: 'Month Label', key: 'billingMonth', width: 24, required: true, hint: 'e.g. Month 1 (Jan 2024)', example: 'Month 1 (Mar 2024)' },
+        { header: 'Month Label', key: 'billingMonth', width: 24, required: false, hint: 'e.g. Month 1 (Mar 2024)', example: 'Month 1 (Mar 2024)' },
         { header: 'Due Date', key: 'dueDate', width: 14, required: true, hint: 'YYYY-MM-DD', example: '2024-03-01' },
         { header: 'Amount Due', key: 'amountDue', width: 14, required: true, example: 1000 },
         { header: 'Amount Paid', key: 'amountPaid', width: 14, required: false, hint: '0 if unpaid', example: 1000 },
@@ -283,7 +672,7 @@ const SHEET_COLS = {
     RentalPayments: [
         { header: 'Reference No.', key: 'issueReference', width: 22, required: true, hint: 'Must match Rental Reference No.', example: 'USE-2024-00001' },
         { header: 'Month No.', key: 'monthIndex', width: 12, required: true, example: 1 },
-        { header: 'Month Label', key: 'billingMonth', width: 24, required: true, example: 'Month 1 (Mar 2024)' },
+        { header: 'Month Label', key: 'billingMonth', width: 24, required: false, example: 'Month 1 (Mar 2024)' },
         { header: 'Due Date', key: 'dueDate', width: 14, required: true, hint: 'YYYY-MM-DD', example: '2024-03-01' },
         { header: 'Amount Due', key: 'amountDue', width: 14, required: true, example: 1500 },
         { header: 'Amount Paid', key: 'amountPaid', width: 14, required: false, example: 1500 },
@@ -305,53 +694,49 @@ const SHEET_COLS = {
         { header: 'Location', key: 'location', width: 18, required: false, example: 'MAIN' },
     ],
 };
-// ─── 1. Template generation ───────────────────────────────────────────────────
+// ─── 1. Template Generation ───────────────────────────────────────────────────
 export function generateImportTemplate() {
     const wb = XLSX.utils.book_new();
-    // ── HOW TO USE sheet ─────────────────────────────────────────────────────────
+    // ── HOW TO USE Sheet ──
     const howToUse = [
-        ['STEREOBLISS — Historical Data Import', '', '', ''],
+        ['MUZICLUB INVENTORY — Historical Data Import Guide', '', '', ''],
         [''],
-        ['STEP 1', 'Fill the sheets below IN ORDER (left to right tabs):', '', ''],
-        ['', '  1. Categories  2. Suppliers  3. Locations  4. Products  5. Serialized Items', '', ''],
-        ['', '  6. Direct Sales  7. EMI Sales  8. EMI Payments  9. Rentals  10. Rental Payments  11. Purchase Orders', '', ''],
+        ['STEP 1: FILL SHEETS IN ORDER (Left to Right tabs)', '', '', ''],
+        ['', '1. Categories  2. Suppliers  3. Locations  4. Products  5. Serialized Items', '', ''],
+        ['', '6. Direct Sales  7. EMI Sales  8. EMI Payments  9. Rentals  10. Rental Payments  11. Purchase Orders', '', ''],
         [''],
-        ['STEP 2', 'Each sheet has three rows at the top:', '', ''],
-        ['', '  Row 1 = Column name (bold). Columns marked REQUIRED must be filled.', '', ''],
-        ['', '  Row 2 = Hint / valid values for that column.', '', ''],
-        ['', '  Row 3+ = Your data (the sample row shown can be deleted)', '', ''],
+        ['STEP 2: SHEET STRUCTURE', '', '', ''],
+        ['', 'Row 1 = Column Header (Required columns have blue header, optional have gray)', '', ''],
+        ['', 'Row 2 = Helpful hints, expected format, or allowed values', '', ''],
+        ['', 'Row 3+ = Your data (the sample row shown can be deleted or replaced)', '', ''],
         [''],
-        ['STEP 3', 'Upload the file. You will see a preview of all data before anything is saved.', '', ''],
-        ['', 'You can edit cells directly in the preview screen.', '', ''],
+        ['STEP 3: UPLOAD & PREVIEW', '', '', ''],
+        ['', 'Upload your completed Excel file on the Data Import screen.', '', ''],
+        ['', 'Review the validation summary and preview counts before committing.', '', ''],
         [''],
-        ['KEY RULES', '', '', ''],
-        ['', '• Date format:  YYYY-MM-DD  (e.g. 2024-03-15)', '', ''],
-        ['', '• Prices / amounts: numbers only — no commas, no Rs symbol (e.g. 8500, not Rs 8,500)', '', ''],
-        ['', '• For a sale with multiple products: use the same Invoice No. on multiple rows', '', ''],
-        ['', '• Product SKU must match exactly what is on the Products sheet', '', ''],
-        ['', '• Already-existing records (same Invoice No., SKU, etc.) are skipped — safe to re-upload', '', ''],
+        ['KEY RULES & RESILIENT FEATURES', '', '', ''],
+        ['', '• Date formats supported: YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, or Excel date numbers.', '', ''],
+        ['', '• Amounts: clean numbers or numbers with currency/commas (e.g. 8500 or ₹8,500) are both accepted.', '', ''],
+        ['', '• Multi-item Sales or POs: simply repeat the same Invoice No. / PO Number across multiple rows.', '', ''],
+        ['', '• Missing SKU code: leave SKU Code blank and an auto-generated SKU will be assigned.', '', ''],
+        ['', '• Missing Category / Supplier: automatically created if not already listed.', '', ''],
+        ['', '• Existing records: automatically skipped to prevent accidental duplicate entries.', '', ''],
         [''],
-        ['ALLOWED VALUES', '', '', ''],
-        ['', 'Payment Method:', 'CASH  |  UPI  |  CARD  |  BANK_TRANSFER  |  OTHER', ''],
+        ['ALLOWED ENUM VALUES (Case-Insensitive)', '', '', ''],
+        ['', 'Payment Method:', 'UPI  |  CASH  |  CARD  |  BANK_TRANSFER  |  OTHER (GPay/PhonePe recognized as UPI)', ''],
         ['', 'Tracking Mode:', 'QUANTITY  |  SERIALIZED', ''],
-        ['', 'Item Condition:', 'NEW  |  MINT  |  GOOD  |  FAIR  |  POOR  |  DAMAGED', ''],
+        ['', 'Condition:', 'NEW  |  MINT  |  GOOD  |  FAIR  |  POOR  |  DAMAGED (Default: NEW)', ''],
+        ['', 'Serialized Status:', 'AVAILABLE  |  SOLD  |  ISSUED_INTERNAL  |  MAINTENANCE  |  QUARANTINED', ''],
         ['', 'Rental Status:', 'ACTIVE  |  RETURNED  |  PARTIALLY_RETURNED  |  OVERDUE', ''],
         ['', 'EMI / Rental Payment Status:', 'PAID  |  DUE  |  OVERDUE', ''],
-        ['', 'PO Status:', 'COMPLETED  |  PARTIALLY_RECEIVED  |  CONFIRMED  |  DRAFT  |  CANCELLED', ''],
+        ['', 'Purchase Order Status:', 'COMPLETED  |  PARTIALLY_RECEIVED  |  CONFIRMED  |  DRAFT', ''],
     ];
     const wsHow = XLSX.utils.aoa_to_sheet(howToUse);
     wsHow['!cols'] = [{ wch: 14 }, { wch: 80 }, { wch: 60 }, { wch: 20 }];
-    // Bold the headings
-    ['A1', 'A3', 'A7', 'A11', 'A14', 'A21'].forEach(cell => {
-        if (wsHow[cell])
-            wsHow[cell].s = { font: { bold: true, sz: 12 } };
-    });
     XLSX.utils.book_append_sheet(wb, wsHow, 'HOW TO USE');
-    // ── Data sheets ───────────────────────────────────────────────────────────────
+    // ── Data Sheets ──
     for (const [sheetName, cols] of Object.entries(SHEET_COLS)) {
-        // Row 1: column headers (plain English, no * suffix)
         const headerRow = cols.map(c => c.header);
-        // Row 2: hints
         const hintRow = cols.map(c => {
             const parts = [];
             if (c.required)
@@ -360,22 +745,45 @@ export function generateImportTemplate() {
                 parts.push(c.hint);
             return parts.join(' — ');
         });
-        // Row 3: one example row
-        const exampleRow = cols.map(c => c.example !== undefined ? c.example : '');
-        const ws = XLSX.utils.aoa_to_sheet([headerRow, hintRow, exampleRow]);
+        const exampleRow = cols.map(c => (c.example !== undefined ? c.example : ''));
+        // Second sample row for Products to show both SERIALIZED and QUANTITY modes
+        const extraRows = [];
+        if (sheetName === 'Products') {
+            extraRows.push([
+                'Casio',
+                'Casio CT-X700 Portable Keyboard',
+                'CT-X700',
+                'Keyboards',
+                'Black',
+                '9207',
+                5,
+                'pcs',
+                'QUANTITY',
+                5500,
+                7200,
+                4,
+                'MAIN',
+                'Furtados Music',
+                'SKU-0002',
+                'Portable keyboard',
+            ]);
+        }
+        else if (sheetName === 'Categories') {
+            extraRows.push(['Keyboards', 'Digital pianos, synthesizers and workstations']);
+        }
+        const ws = XLSX.utils.aoa_to_sheet([headerRow, hintRow, exampleRow, ...extraRows]);
         ws['!cols'] = cols.map(c => ({ wch: c.width }));
-        // Style header row (bold + background colour for required cols)
+        // Style header and hint rows where the XLSX writer supports cell styles.
         cols.forEach((col, ci) => {
             const cellAddr = XLSX.utils.encode_cell({ r: 0, c: ci });
             if (!ws[cellAddr])
                 ws[cellAddr] = { v: col.header, t: 's' };
             ws[cellAddr].s = {
                 font: { bold: true, color: { rgb: 'FFFFFF' } },
-                fill: { fgColor: { rgb: col.required ? '1a6eb7' : '4a5568' } },
+                fill: { fgColor: { rgb: col.required ? '1A6EB7' : '4A5568' } },
                 alignment: { horizontal: 'left' },
                 border: { bottom: { style: 'thin', color: { rgb: 'CCCCCC' } } },
             };
-            // Style hint row
             const hintAddr = XLSX.utils.encode_cell({ r: 1, c: ci });
             if (!ws[hintAddr])
                 ws[hintAddr] = { v: hintRow[ci], t: 's' };
@@ -394,86 +802,126 @@ export async function validateImportFile(buf) {
     const errors = [];
     let total = 0, valid = 0, skipped = 0;
     const preview = {
-        categories: 0, suppliers: 0, locations: 0,
-        products: 0, serializedItems: 0,
-        directSales: 0, emiSales: 0, emiPaymentRows: 0,
-        rentals: 0, rentalPaymentRows: 0, purchaseOrders: 0,
+        categories: 0,
+        suppliers: 0,
+        locations: 0,
+        products: 0,
+        serializedItems: 0,
+        directSales: 0,
+        emiSales: 0,
+        emiPaymentRows: 0,
+        rentals: 0,
+        rentalPaymentRows: 0,
+        purchaseOrders: 0,
     };
-    // Helpers
-    const require = (sheet, row, field, val) => {
-        if (!val) {
+    // Helper validation checks
+    const requireField = (sheet, row, field, val) => {
+        if (!val || val.trim() === '') {
             errors.push({ sheet, row, field, message: `${field} is required` });
             return false;
         }
         return true;
     };
     const mustBeNum = (sheet, row, field, val) => {
-        if (val !== '' && isNaN(Number(val))) {
-            errors.push({ sheet, row, field, message: `${field} must be a number` });
+        if (val !== '' && !isNumeric(val)) {
+            errors.push({ sheet, row, field, message: `${field} must be a valid number` });
+            return false;
+        }
+        return true;
+    };
+    const mustBeEnum = (sheet, row, field, val, allowedValues) => {
+        const normalizedValue = String(val ?? '').trim().toUpperCase();
+        // Empty values are allowed when the field is optional.
+        if (!normalizedValue)
+            return true;
+        const allowed = new Set(allowedValues.map(value => String(value).trim().toUpperCase()));
+        if (!allowed.has(normalizedValue)) {
+            errors.push({
+                sheet,
+                row,
+                field,
+                message: `${field} must be one of: ${allowedValues.filter(Boolean).join(', ')}`,
+            });
             return false;
         }
         return true;
     };
     const mustBeDate = (sheet, row, field, val) => {
-        if (val && !parseDate(val)) {
-            errors.push({ sheet, row, field, message: `${field} must be a valid date (YYYY-MM-DD)` });
+        // Empty is fine — optional date fields
+        if (!val || val.trim() === '')
+            return true;
+        if (!parseDate(val)) {
+            errors.push({ sheet, row, field, message: `${field} has an unrecognised date format — use YYYY-MM-DD or DD/MM/YYYY (got: "${val}")` });
             return false;
         }
         return true;
     };
-    const mustBeEnum = (sheet, row, field, val, allowed) => {
-        if (val && !allowed.includes(val)) {
-            errors.push({ sheet, row, field, message: `${field} must be one of: ${allowed.join(', ')}` });
-            return false;
-        }
-        return true;
-    };
-    // Collect names / codes from the file for cross-sheet validation
+    // Cross-sheet reference sets (populated from DB first, augmented from file)
     const catNames = new Set();
     const supplierNames = new Set();
     const locCodes = new Set();
     const prodSkus = new Set();
+    const prodNames = new Set();
     const assetIds = new Set();
     const emiInvoices = new Set();
     const rentalRefs = new Set();
-    // Pre-load from DB for cross-sheet checks
-    (await Category.find({}, { name: 1 }).lean()).forEach((c) => catNames.add(c.name.trim()));
-    (await Supplier.find({}, { name: 1 }).lean()).forEach((s) => supplierNames.add(s.name.trim()));
-    (await StockLocation.find({}, { code: 1, name: 1 }).lean()).forEach((l) => {
-        locCodes.add(l.code.trim().toUpperCase());
-        locCodes.add(l.name.trim().toLowerCase());
-    });
-    (await Product.find({}, { sku: 1 }).lean()).forEach((p) => prodSkus.add(p.sku.trim().toUpperCase()));
-    (await SerializedItem.find({}, { assetId: 1 }).lean()).forEach((a) => assetIds.add(a.assetId.trim().toUpperCase()));
-    const readSheet = (name) => wb.SheetNames.includes(name) ? sheetToRows(wb.Sheets[name]) : [];
-    // ─ Categories ─
-    readSheet('Categories').forEach((r, i) => {
+    // Pre-load from DB (if connected)
+    if (mongoose.connection.readyState === 1) {
+        try {
+            (await Category.find({}, { name: 1 }).lean()).forEach((c) => catNames.add(c.name.trim().toLowerCase()));
+            (await Supplier.find({}, { name: 1 }).lean()).forEach((s) => supplierNames.add(s.name.trim().toLowerCase()));
+            (await StockLocation.find({}, { code: 1, name: 1 }).lean()).forEach((l) => {
+                locCodes.add(l.code.trim().toUpperCase());
+                locCodes.add(l.name.trim().toLowerCase());
+            });
+            (await Product.find({}, { sku: 1, name: 1 }).lean()).forEach((p) => {
+                prodSkus.add(p.sku.trim().toUpperCase());
+                prodNames.add(p.name.trim().toLowerCase());
+            });
+            (await SerializedItem.find({}, { assetId: 1 }).lean()).forEach((a) => assetIds.add(a.assetId.trim().toUpperCase()));
+        }
+        catch {
+            // Gracefully continue if DB read times out or fails
+        }
+    }
+    const readSheet = (name) => {
+        const ws = findSheet(wb, name);
+        return ws ? sheetToRows(ws, name) : { rows: [], startRowIndex: 2 };
+    };
+    // ── 1. Categories ──
+    const { rows: catRows, startRowIndex: catStart } = readSheet('Categories');
+    catRows.forEach((r, i) => {
         total++;
-        if (!require('Categories', i + 3, 'name', r['name'])) {
+        const rowNum = catStart + i;
+        if (!requireField('Categories', rowNum, 'Category Name', r['name'])) {
             skipped++;
             return;
         }
-        catNames.add(r['name'].trim());
+        catNames.add(r['name'].trim().toLowerCase());
         preview.categories++;
         valid++;
     });
-    // ─ Suppliers ─
-    readSheet('Suppliers').forEach((r, i) => {
+    // ── 2. Suppliers ──
+    const { rows: suppRows, startRowIndex: suppStart } = readSheet('Suppliers');
+    suppRows.forEach((r, i) => {
         total++;
-        if (!require('Suppliers', i + 3, 'name', r['name'])) {
+        const rowNum = suppStart + i;
+        if (!requireField('Suppliers', rowNum, 'Supplier Name', r['name'])) {
             skipped++;
             return;
         }
-        supplierNames.add(r['name'].trim());
+        supplierNames.add(r['name'].trim().toLowerCase());
         preview.suppliers++;
         valid++;
     });
-    // ─ Locations ─
-    readSheet('Locations').forEach((r, i) => {
+    // ── 3. Locations ──
+    const { rows: locRows, startRowIndex: locStart } = readSheet('Locations');
+    locRows.forEach((r, i) => {
         total++;
+        const rowNum = locStart + i;
         let ok = true;
-        ok = require('Locations', i + 3, 'name', r['name']) && ok;
-        ok = require('Locations', i + 3, 'code', r['code']) && ok;
+        ok = requireField('Locations', rowNum, 'Location Name', r['name']) && ok;
+        ok = requireField('Locations', rowNum, 'Short Code', r['code']) && ok;
         if (!ok) {
             skipped++;
             return;
@@ -483,26 +931,33 @@ export async function validateImportFile(buf) {
         preview.locations++;
         valid++;
     });
-    // ─ Products ─
+    // ── 4. Products ──
     const seenSkus = new Set();
-    readSheet('Products').forEach((r, i) => {
+    const { rows: prodRows, startRowIndex: prodStart } = readSheet('Products');
+    prodRows.forEach((r, i) => {
         total++;
+        const rowNum = prodStart + i;
         let ok = true;
-        ok = require('Products', i + 3, 'name', r['name']) && ok;
-        ok = require('Products', i + 3, 'category', r['category']) && ok;
-        if (r['category'] && !catNames.has(r['category'].trim())) {
-            errors.push({ sheet: 'Products', row: i + 3, field: 'category', message: `Category "${r['category']}" not found` });
-            ok = false;
+        ok = requireField('Products', rowNum, 'Product Name', r['name']) && ok;
+        // Category auto-registers if not present
+        if (r['category']?.trim()) {
+            catNames.add(r['category'].trim().toLowerCase());
         }
-        ok = require('Products', i + 3, 'purchaseCost', r['purchaseCost']) && ok;
-        ok = mustBeNum('Products', i + 3, 'purchaseCost', r['purchaseCost']) && ok;
-        ok = require('Products', i + 3, 'sellingPrice', r['sellingPrice']) && ok;
-        ok = mustBeNum('Products', i + 3, 'sellingPrice', r['sellingPrice']) && ok;
-        ok = mustBeEnum('Products', i + 3, 'trackingMode', r['trackingMode'], ['', 'QUANTITY', 'SERIALIZED']) && ok;
+        else {
+            ok = requireField('Products', rowNum, 'Category', r['category']) && ok;
+        }
+        if (r['supplier']?.trim()) {
+            supplierNames.add(r['supplier'].trim().toLowerCase());
+        }
+        ok = requireField('Products', rowNum, 'Purchase Cost', r['purchaseCost']) && ok;
+        ok = mustBeNum('Products', rowNum, 'Purchase Cost', r['purchaseCost']) && ok;
+        ok = requireField('Products', rowNum, 'Selling Price', r['sellingPrice']) && ok;
+        ok = mustBeNum('Products', rowNum, 'Selling Price', r['sellingPrice']) && ok;
+        ok = mustBeNum('Products', rowNum, 'Opening Stock', r['openingStock']) && ok;
         const sku = r['sku'] ? r['sku'].trim().toUpperCase() : '';
         if (sku) {
             if (seenSkus.has(sku)) {
-                errors.push({ sheet: 'Products', row: i + 3, field: 'sku', message: `Duplicate SKU "${sku}" in file` });
+                errors.push({ sheet: 'Products', row: rowNum, field: 'SKU Code', message: `Duplicate SKU "${sku}" in file` });
                 ok = false;
             }
             seenSkus.add(sku);
@@ -513,118 +968,128 @@ export async function validateImportFile(buf) {
         }
         if (sku)
             prodSkus.add(sku);
+        if (r['name'])
+            prodNames.add(r['name'].trim().toLowerCase());
         preview.products++;
         valid++;
     });
-    // ─ SerializedItems ─
+    // Helper: check if a SKU or Product Name matches any known product
+    const isValidProductRef = (ref) => {
+        if (!ref)
+            return false;
+        const clean = ref.trim();
+        return prodSkus.has(clean.toUpperCase()) || prodNames.has(clean.toLowerCase());
+    };
+    // ── 5. SerializedItems ──
     const seenAssets = new Set();
-    readSheet('SerializedItems').forEach((r, i) => {
+    const { rows: serialRows, startRowIndex: serialStart } = readSheet('SerializedItems');
+    serialRows.forEach((r, i) => {
         total++;
+        const rowNum = serialStart + i;
         let ok = true;
-        ok = require('SerializedItems', i + 3, 'assetId', r['assetId']) && ok;
-        ok = require('SerializedItems', i + 3, 'productSku', r['productSku']) && ok;
-        ok = require('SerializedItems', i + 3, 'unitCost', r['unitCost']) && ok;
-        ok = mustBeNum('SerializedItems', i + 3, 'unitCost', r['unitCost']) && ok;
+        ok = requireField('SerializedItems', rowNum, 'Asset ID', r['assetId']) && ok;
+        ok = requireField('SerializedItems', rowNum, 'Product SKU', r['productSku']) && ok;
         const asset = r['assetId'] ? r['assetId'].trim().toUpperCase() : '';
         if (asset && seenAssets.has(asset)) {
-            errors.push({ sheet: 'SerializedItems', row: i + 3, field: 'assetId', message: `Duplicate assetId "${asset}" in file` });
+            errors.push({ sheet: 'SerializedItems', row: rowNum, field: 'Asset ID', message: `Duplicate Asset ID "${asset}" in file` });
             ok = false;
         }
         else if (asset && assetIds.has(asset)) {
-            errors.push({ sheet: 'SerializedItems', row: i + 3, field: 'assetId', message: `assetId "${asset}" already exists in database` });
+            // Note: existing asset in DB is skipped during import (not a hard error)
+        }
+        if (r['productSku'] && !isValidProductRef(r['productSku'])) {
+            errors.push({ sheet: 'SerializedItems', row: rowNum, field: 'Product SKU', message: `Product "${r['productSku']}" not found in Products sheet or database` });
             ok = false;
         }
-        if (r['productSku'] && !prodSkus.has(r['productSku'].trim().toUpperCase())) {
-            errors.push({ sheet: 'SerializedItems', row: i + 3, field: 'productSku', message: `Product SKU "${r['productSku']}" not found` });
-            ok = false;
-        }
-        ok = mustBeEnum('SerializedItems', i + 3, 'status', r['status'], ['', ...Object.values(SERIALIZED_STATUSES)]) && ok;
-        ok = mustBeEnum('SerializedItems', i + 3, 'condition', r['condition'], ['', ...Object.values(ITEM_CONDITIONS)]) && ok;
-        ok = mustBeDate('SerializedItems', i + 3, 'warrantyExpiry', r['warrantyExpiry']) && ok;
+        ok = mustBeNum('SerializedItems', rowNum, 'Purchase Cost', r['unitCost']) && ok;
+        ok = mustBeDate('SerializedItems', rowNum, 'Warranty Expiry', r['warrantyExpiry']) && ok;
         if (!ok) {
             skipped++;
             return;
         }
-        seenAssets.add(asset);
-        assetIds.add(asset);
+        if (asset) {
+            seenAssets.add(asset);
+            assetIds.add(asset);
+        }
         preview.serializedItems++;
         valid++;
     });
-    // ─ DirectSales ─
-    const seenInvoices = new Set();
-    readSheet('DirectSales').forEach((r, i) => {
+    // ── 6. DirectSales ──
+    const seenDirectInvoices = new Set();
+    const { rows: saleRows, startRowIndex: saleStart } = readSheet('DirectSales');
+    saleRows.forEach((r, i) => {
         total++;
+        const rowNum = saleStart + i;
         let ok = true;
-        ok = require('DirectSales', i + 3, 'invoiceNumber', r['invoiceNumber']) && ok;
-        ok = require('DirectSales', i + 3, 'date', r['date']) && ok;
-        ok = mustBeDate('DirectSales', i + 3, 'date', r['date']) && ok;
-        ok = require('DirectSales', i + 3, 'customerName', r['customerName']) && ok;
-        ok = require('DirectSales', i + 3, 'customerEmail', r['customerEmail']) && ok;
-        ok = require('DirectSales', i + 3, 'customerPhone', r['customerPhone']) && ok;
-        ok = require('DirectSales', i + 3, 'productSku', r['productSku']) && ok;
-        if (r['productSku'] && !prodSkus.has(r['productSku'].trim().toUpperCase())) {
-            errors.push({ sheet: 'DirectSales', row: i + 3, field: 'productSku', message: `Product SKU "${r['productSku']}" not found` });
+        ok = requireField('DirectSales', rowNum, 'Invoice No.', r['invoiceNumber']) && ok;
+        ok = requireField('DirectSales', rowNum, 'Sale Date', r['date']) && ok;
+        ok = mustBeDate('DirectSales', rowNum, 'Sale Date', r['date']) && ok;
+        ok = requireField('DirectSales', rowNum, 'Customer Name', r['customerName']) && ok;
+        ok = requireField('DirectSales', rowNum, 'Product SKU', r['productSku']) && ok;
+        if (r['productSku'] && !isValidProductRef(r['productSku'])) {
+            errors.push({ sheet: 'DirectSales', row: rowNum, field: 'Product SKU', message: `Product "${r['productSku']}" not found in Products sheet or database` });
             ok = false;
         }
-        ok = require('DirectSales', i + 3, 'quantity', r['quantity']) && ok;
-        ok = mustBeNum('DirectSales', i + 3, 'quantity', r['quantity']) && ok;
-        ok = require('DirectSales', i + 3, 'unitPrice', r['unitPrice']) && ok;
-        ok = mustBeNum('DirectSales', i + 3, 'unitPrice', r['unitPrice']) && ok;
-        ok = require('DirectSales', i + 3, 'paymentMethod', r['paymentMethod']) && ok;
-        ok = mustBeEnum('DirectSales', i + 3, 'paymentMethod', r['paymentMethod'], ['', ...Object.values(PAYMENT_METHODS)]) && ok;
-        ok = mustBeEnum('DirectSales', i + 3, 'paymentStatus', r['paymentStatus'], ['', ...Object.values(PAYMENT_STATUSES)]) && ok;
+        ok = mustBeNum('DirectSales', rowNum, 'Qty', r['quantity']) && ok;
+        ok = mustBeNum('DirectSales', rowNum, 'Unit Price', r['unitPrice']) && ok;
+        ok = mustBeNum('DirectSales', rowNum, 'Discount', r['discount']) && ok;
+        // Note: customerEmail and customerPhone are auto-generated if missing (non-blocking)
         if (!ok) {
             skipped++;
             return;
         }
-        seenInvoices.add(r['invoiceNumber'].trim().toUpperCase());
+        if (r['invoiceNumber']) {
+            seenDirectInvoices.add(r['invoiceNumber'].trim().toUpperCase());
+        }
         preview.directSales++;
         valid++;
     });
-    // ─ EMISales ─
-    readSheet('EMISales').forEach((r, i) => {
+    // ── 7. EMISales ──
+    const { rows: emiRows, startRowIndex: emiStart } = readSheet('EMISales');
+    emiRows.forEach((r, i) => {
         total++;
+        const rowNum = emiStart + i;
         let ok = true;
-        ok = require('EMISales', i + 3, 'invoiceNumber', r['invoiceNumber']) && ok;
-        if (r['invoiceNumber'] && seenInvoices.has(r['invoiceNumber'].trim().toUpperCase())) {
-            errors.push({ sheet: 'EMISales', row: i + 3, field: 'invoiceNumber', message: `"${r['invoiceNumber']}" already used in DirectSales` });
+        ok = requireField('EMISales', rowNum, 'Invoice No.', r['invoiceNumber']) && ok;
+        ok = requireField('EMISales', rowNum, 'Sale Date', r['date']) && ok;
+        ok = mustBeDate('EMISales', rowNum, 'Sale Date', r['date']) && ok;
+        ok = requireField('EMISales', rowNum, 'Customer Name', r['customerName']) && ok;
+        ok = requireField('EMISales', rowNum, 'Product SKU', r['productSku']) && ok;
+        if (r['productSku'] && !isValidProductRef(r['productSku'])) {
+            errors.push({ sheet: 'EMISales', row: rowNum, field: 'Product SKU', message: `Product "${r['productSku']}" not found in Products sheet or database` });
             ok = false;
         }
-        ok = require('EMISales', i + 3, 'date', r['date']) && ok;
-        ok = mustBeDate('EMISales', i + 3, 'date', r['date']) && ok;
-        ok = require('EMISales', i + 3, 'customerName', r['customerName']) && ok;
-        ok = require('EMISales', i + 3, 'customerEmail', r['customerEmail']) && ok;
-        ok = require('EMISales', i + 3, 'customerPhone', r['customerPhone']) && ok;
-        ok = require('EMISales', i + 3, 'productSku', r['productSku']) && ok;
-        if (r['productSku'] && !prodSkus.has(r['productSku'].trim().toUpperCase())) {
-            errors.push({ sheet: 'EMISales', row: i + 3, field: 'productSku', message: `Product SKU "${r['productSku']}" not found` });
-            ok = false;
-        }
-        ok = require('EMISales', i + 3, 'emiTenureMonths', r['emiTenureMonths']) && ok;
-        ok = mustBeNum('EMISales', i + 3, 'emiTenureMonths', r['emiTenureMonths']) && ok;
-        ok = mustBeNum('EMISales', i + 3, 'downPayment', r['downPayment']) && ok;
+        ok = mustBeNum('EMISales', rowNum, 'Qty', r['quantity']) && ok;
+        ok = mustBeNum('EMISales', rowNum, 'Unit Price', r['unitPrice']) && ok;
+        ok = mustBeNum('EMISales', rowNum, 'Down Payment', r['downPayment']) && ok;
+        ok = requireField('EMISales', rowNum, 'No. of Months', r['emiTenureMonths']) && ok;
+        ok = mustBeNum('EMISales', rowNum, 'No. of Months', r['emiTenureMonths']) && ok;
+        // Note: customerEmail and customerPhone are auto-generated if missing (non-blocking)
         if (!ok) {
             skipped++;
             return;
         }
-        emiInvoices.add(r['invoiceNumber'].trim().toUpperCase());
+        if (r['invoiceNumber']) {
+            emiInvoices.add(r['invoiceNumber'].trim().toUpperCase());
+        }
         preview.emiSales++;
         valid++;
     });
-    // ─ EMIPayments ─
-    readSheet('EMIPayments').forEach((r, i) => {
+    // ── 8. EMIPayments ──
+    const { rows: emiPayRows, startRowIndex: emiPayStart } = readSheet('EMIPayments');
+    emiPayRows.forEach((r, i) => {
         total++;
+        const rowNum = emiPayStart + i;
         let ok = true;
-        ok = require('EMIPayments', i + 3, 'invoiceNumber', r['invoiceNumber']) && ok;
-        if (r['invoiceNumber'] && !emiInvoices.has(r['invoiceNumber'].trim().toUpperCase())) {
-            errors.push({ sheet: 'EMIPayments', row: i + 3, field: 'invoiceNumber', message: `"${r['invoiceNumber']}" not found in EMISales` });
-            ok = false;
-        }
-        ok = require('EMIPayments', i + 3, 'monthIndex', r['monthIndex']) && ok;
-        ok = mustBeNum('EMIPayments', i + 3, 'monthIndex', r['monthIndex']) && ok;
-        ok = require('EMIPayments', i + 3, 'status', r['status']) && ok;
-        ok = mustBeEnum('EMIPayments', i + 3, 'status', r['status'], ['PAID', 'DUE', 'OVERDUE']) && ok;
-        ok = mustBeDate('EMIPayments', i + 3, 'dueDate', r['dueDate']) && ok;
+        ok = requireField('EMIPayments', rowNum, 'Invoice No.', r['invoiceNumber']) && ok;
+        ok = requireField('EMIPayments', rowNum, 'Month No.', r['monthIndex']) && ok;
+        ok = mustBeNum('EMIPayments', rowNum, 'Month No.', r['monthIndex']) && ok;
+        ok = requireField('EMIPayments', rowNum, 'Due Date', r['dueDate']) && ok;
+        ok = mustBeDate('EMIPayments', rowNum, 'Due Date', r['dueDate']) && ok;
+        ok = requireField('EMIPayments', rowNum, 'Amount Due', r['amountDue']) && ok;
+        ok = mustBeNum('EMIPayments', rowNum, 'Amount Due', r['amountDue']) && ok;
+        ok = mustBeNum('EMIPayments', rowNum, 'Amount Paid', r['amountPaid']) && ok;
+        ok = mustBeDate('EMIPayments', rowNum, 'Date Paid', r['paidDate']) && ok;
         if (!ok) {
             skipped++;
             return;
@@ -632,56 +1097,64 @@ export async function validateImportFile(buf) {
         preview.emiPaymentRows++;
         valid++;
     });
-    // ─ Rentals ─
+    // ── 9. Rentals ──
     const seenRefs = new Set();
-    readSheet('Rentals').forEach((r, i) => {
+    const { rows: rentalRows, startRowIndex: rentalStart } = readSheet('Rentals');
+    rentalRows.forEach((r, i) => {
         total++;
+        const rowNum = rentalStart + i;
         let ok = true;
-        ok = require('Rentals', i + 3, 'issueReference', r['issueReference']) && ok;
-        ok = require('Rentals', i + 3, 'issueDate', r['issueDate']) && ok;
-        ok = mustBeDate('Rentals', i + 3, 'issueDate', r['issueDate']) && ok;
-        ok = require('Rentals', i + 3, 'expectedReturnDate', r['expectedReturnDate']) && ok;
-        ok = mustBeDate('Rentals', i + 3, 'expectedReturnDate', r['expectedReturnDate']) && ok;
-        ok = mustBeDate('Rentals', i + 3, 'actualReturnDate', r['actualReturnDate']) && ok;
-        ok = require('Rentals', i + 3, 'customerName', r['assignedPerson']) && ok;
-        ok = require('Rentals', i + 3, 'productSku', r['productSku']) && ok;
-        if (r['productSku'] && !prodSkus.has(r['productSku'].trim().toUpperCase())) {
-            errors.push({ sheet: 'Rentals', row: i + 3, field: 'productSku', message: `Product SKU "${r['productSku']}" not found` });
+        ok = requireField('Rentals', rowNum, 'Reference No.', r['issueReference']) && ok;
+        ok = requireField('Rentals', rowNum, 'Issue Date', r['issueDate']) && ok;
+        ok = mustBeDate('Rentals', rowNum, 'Issue Date', r['issueDate']) && ok;
+        ok = requireField('Rentals', rowNum, 'Return By Date', r['expectedReturnDate']) && ok;
+        ok = mustBeDate('Rentals', rowNum, 'Return By Date', r['expectedReturnDate']) && ok;
+        ok = mustBeDate('Rentals', rowNum, 'Actual Return Date', r['actualReturnDate']) && ok;
+        ok = requireField('Rentals', rowNum, 'Customer Name', r['assignedPerson']) && ok;
+        ok = requireField('Rentals', rowNum, 'Product SKU', r['productSku']) && ok;
+        if (r['productSku'] && !isValidProductRef(r['productSku'])) {
+            errors.push({ sheet: 'Rentals', row: rowNum, field: 'Product SKU', message: `Product "${r['productSku']}" not found in Products sheet or database` });
             ok = false;
         }
-        ok = require('Rentals', i + 3, 'monthlyRent', r['monthlyRent']) && ok;
-        ok = mustBeNum('Rentals', i + 3, 'monthlyRent', r['monthlyRent']) && ok;
-        if (r['issueReference'] && seenRefs.has(r['issueReference'].trim().toUpperCase())) {
-            errors.push({ sheet: 'Rentals', row: i + 3, field: 'issueReference', message: `Duplicate issueReference "${r['issueReference']}"` });
+        ok = requireField('Rentals', rowNum, 'Monthly Rent', r['monthlyRent']) && ok;
+        ok = mustBeNum('Rentals', rowNum, 'Monthly Rent', r['monthlyRent']) && ok;
+        ok = mustBeNum('Rentals', rowNum, 'Security Deposit', r['securityDeposit']) && ok;
+        ok = mustBeEnum('Rentals', rowNum, 'status', r['status'], ['', ...Object.values(USAGE_STATUSES)]) && ok;
+        ok = mustBeEnum('Rentals', rowNum, 'purpose', r['purpose'], ['', ...Object.values(USAGE_PURPOSES)]) && ok;
+        ok = mustBeEnum('Rentals', rowNum, 'depositRefundStatus', r['depositRefundStatus'], ['', 'HELD', 'REFUND_PENDING', 'REFUNDED']) && ok;
+        ok = mustBeNum('Rentals', rowNum, 'lockInPeriodMonths', r['lockInPeriodMonths']) && ok;
+        ok = mustBeNum('Rentals', rowNum, 'depositBalance', r['depositBalance']) && ok;
+        const ref = r['issueReference'] ? r['issueReference'].trim().toUpperCase() : '';
+        if (ref && seenRefs.has(ref)) {
+            errors.push({ sheet: 'Rentals', row: rowNum, field: 'Reference No.', message: `Duplicate Reference No. "${ref}" in file` });
             ok = false;
         }
-        ok = mustBeEnum('Rentals', i + 3, 'status', r['status'], ['', ...Object.values(USAGE_STATUSES)]) && ok;
-        ok = mustBeEnum('Rentals', i + 3, 'purpose', r['purpose'], ['', ...Object.values(USAGE_PURPOSES)]) && ok;
-        ok = mustBeEnum('Rentals', i + 3, 'depositRefundStatus', r['depositRefundStatus'], ['', 'HELD', 'REFUND_PENDING', 'REFUNDED']) && ok;
-        ok = mustBeNum('Rentals', i + 3, 'lockInPeriodMonths', r['lockInPeriodMonths']) && ok;
-        ok = mustBeNum('Rentals', i + 3, 'depositBalance', r['depositBalance']) && ok;
         if (!ok) {
             skipped++;
             return;
         }
-        seenRefs.add(r['issueReference'].trim().toUpperCase());
-        rentalRefs.add(r['issueReference'].trim().toUpperCase());
+        if (ref) {
+            seenRefs.add(ref);
+            rentalRefs.add(ref);
+        }
         preview.rentals++;
         valid++;
     });
-    // ─ RentalPayments ─
-    readSheet('RentalPayments').forEach((r, i) => {
+    // ── 10. RentalPayments ──
+    const { rows: rentPayRows, startRowIndex: rentPayStart } = readSheet('RentalPayments');
+    rentPayRows.forEach((r, i) => {
         total++;
+        const rowNum = rentPayStart + i;
         let ok = true;
-        ok = require('RentalPayments', i + 3, 'issueReference', r['issueReference']) && ok;
-        if (r['issueReference'] && !rentalRefs.has(r['issueReference'].trim().toUpperCase())) {
-            errors.push({ sheet: 'RentalPayments', row: i + 3, field: 'issueReference', message: `"${r['issueReference']}" not found in Rentals` });
-            ok = false;
-        }
-        ok = require('RentalPayments', i + 3, 'monthIndex', r['monthIndex']) && ok;
-        ok = mustBeNum('RentalPayments', i + 3, 'monthIndex', r['monthIndex']) && ok;
-        ok = require('RentalPayments', i + 3, 'status', r['status']) && ok;
-        ok = mustBeEnum('RentalPayments', i + 3, 'status', r['status'], ['PAID', 'DUE', 'OVERDUE']) && ok;
+        ok = requireField('RentalPayments', rowNum, 'Reference No.', r['issueReference']) && ok;
+        ok = requireField('RentalPayments', rowNum, 'Month No.', r['monthIndex']) && ok;
+        ok = mustBeNum('RentalPayments', rowNum, 'Month No.', r['monthIndex']) && ok;
+        ok = requireField('RentalPayments', rowNum, 'Due Date', r['dueDate']) && ok;
+        ok = mustBeDate('RentalPayments', rowNum, 'Due Date', r['dueDate']) && ok;
+        ok = requireField('RentalPayments', rowNum, 'Amount Due', r['amountDue']) && ok;
+        ok = mustBeNum('RentalPayments', rowNum, 'Amount Due', r['amountDue']) && ok;
+        ok = mustBeNum('RentalPayments', rowNum, 'Amount Paid', r['amountPaid']) && ok;
+        ok = mustBeDate('RentalPayments', rowNum, 'Date Paid', r['paidDate']) && ok;
         if (!ok) {
             skipped++;
             return;
@@ -689,23 +1162,26 @@ export async function validateImportFile(buf) {
         preview.rentalPaymentRows++;
         valid++;
     });
-    // ─ PurchaseOrders ─
-    readSheet('PurchaseOrders').forEach((r, i) => {
+    // ── 11. PurchaseOrders ──
+    const { rows: poRows, startRowIndex: poStart } = readSheet('PurchaseOrders');
+    poRows.forEach((r, i) => {
         total++;
+        const rowNum = poStart + i;
         let ok = true;
-        ok = require('PurchaseOrders', i + 3, 'poNumber', r['poNumber']) && ok;
-        ok = require('PurchaseOrders', i + 3, 'orderDate', r['orderDate']) && ok;
-        ok = mustBeDate('PurchaseOrders', i + 3, 'orderDate', r['orderDate']) && ok;
-        ok = require('PurchaseOrders', i + 3, 'supplier', r['supplier']) && ok;
-        ok = require('PurchaseOrders', i + 3, 'productSku', r['productSku']) && ok;
-        if (r['productSku'] && !prodSkus.has(r['productSku'].trim().toUpperCase())) {
-            errors.push({ sheet: 'PurchaseOrders', row: i + 3, field: 'productSku', message: `Product SKU "${r['productSku']}" not found` });
+        ok = requireField('PurchaseOrders', rowNum, 'PO Number', r['poNumber']) && ok;
+        ok = requireField('PurchaseOrders', rowNum, 'Order Date', r['orderDate']) && ok;
+        ok = mustBeDate('PurchaseOrders', rowNum, 'Order Date', r['orderDate']) && ok;
+        ok = requireField('PurchaseOrders', rowNum, 'Supplier', r['supplier']) && ok;
+        ok = requireField('PurchaseOrders', rowNum, 'Product SKU', r['productSku']) && ok;
+        if (r['productSku'] && !isValidProductRef(r['productSku'])) {
+            errors.push({ sheet: 'PurchaseOrders', row: rowNum, field: 'Product SKU', message: `Product "${r['productSku']}" not found in Products sheet or database` });
             ok = false;
         }
-        ok = require('PurchaseOrders', i + 3, 'quantityOrdered', r['quantityOrdered']) && ok;
-        ok = mustBeNum('PurchaseOrders', i + 3, 'quantityOrdered', r['quantityOrdered']) && ok;
-        ok = require('PurchaseOrders', i + 3, 'unitCost', r['unitCost']) && ok;
-        ok = mustBeNum('PurchaseOrders', i + 3, 'unitCost', r['unitCost']) && ok;
+        ok = requireField('PurchaseOrders', rowNum, 'Qty Ordered', r['quantityOrdered']) && ok;
+        ok = mustBeNum('PurchaseOrders', rowNum, 'Qty Ordered', r['quantityOrdered']) && ok;
+        ok = mustBeNum('PurchaseOrders', rowNum, 'Qty Received', r['quantityReceived']) && ok;
+        ok = requireField('PurchaseOrders', rowNum, 'Unit Cost', r['unitCost']) && ok;
+        ok = mustBeNum('PurchaseOrders', rowNum, 'Unit Cost', r['unitCost']) && ok;
         if (!ok) {
             skipped++;
             return;
@@ -719,50 +1195,98 @@ export async function validateImportFile(buf) {
         validRows: valid,
         skippedRows: skipped,
         errorCount: errors.length,
-        errors: errors.slice(0, 500), // cap at 500 to avoid huge payloads
+        errors: errors.slice(0, 500),
         preview,
     };
 }
-// ─── 3. Import execution ──────────────────────────────────────────────────────
+// ─── 3. Import Execution ──────────────────────────────────────────────────────
 export async function executeImport(buf, actor) {
     const t0 = Date.now();
     const wb = XLSX.read(buf, { type: 'buffer', raw: false });
     const errors = [];
     const imported = {
-        categories: 0, suppliers: 0, locations: 0, products: 0,
-        serializedItems: 0, sales: 0, emiSales: 0, rentals: 0,
-        purchaseOrders: 0, stockMovements: 0,
+        categories: 0,
+        suppliers: 0,
+        locations: 0,
+        products: 0,
+        serializedItems: 0,
+        sales: 0,
+        emiSales: 0,
+        rentals: 0,
+        purchaseOrders: 0,
+        stockMovements: 0,
     };
     let skipped = 0;
     const actorId = new Types.ObjectId(actor.id);
     const movements = [];
-    const readSheet = (name) => wb.SheetNames.includes(name) ? sheetToRows(wb.Sheets[name]) : [];
-    // ── Reference maps (populated incrementally) ──────────────────────────────
-    const catMap = new Map(); // name.lower → _id
-    const supplierMap = new Map(); // name.lower → _id
-    const locMap = new Map(); // code.upper or name.lower → _id
-    const prodMap = new Map(); // sku.upper → _id
-    const assetMap = new Map(); // assetId.upper → _id
-    // Pre-load existing records
-    (await Category.find().lean()).forEach((c) => catMap.set(c.name.trim().toLowerCase(), c._id));
-    (await Supplier.find().lean()).forEach((s) => supplierMap.set(s.name.trim().toLowerCase(), s._id));
-    (await StockLocation.find().lean()).forEach((l) => { locMap.set(l.code.trim().toUpperCase(), l._id); locMap.set(l.name.trim().toLowerCase(), l._id); });
-    (await Product.find().lean()).forEach((p) => prodMap.set(p.sku.trim().toUpperCase(), p._id));
-    (await SerializedItem.find().lean()).forEach((a) => assetMap.set(a.assetId.trim().toUpperCase(), a._id));
+    const readSheet = (name) => {
+        const ws = findSheet(wb, name);
+        return ws ? sheetToRows(ws, name).rows : [];
+    };
+    // ── Reference maps ──
+    const catMap = new Map(); // lowercase name → _id
+    const supplierMap = new Map(); // lowercase name → _id
+    const locMap = new Map(); // uppercase code or lowercase name → _id
+    const prodMap = new Map(); // uppercase sku → _id
+    const prodNameMap = new Map(); // lowercase name → _id
+    const prodCostMap = new Map(); // uppercase sku → cost
+    const prodPriceMap = new Map(); // uppercase sku → price
+    const assetMap = new Map(); // uppercase assetId → _id
+    // Pre-load existing records from database (if connected)
+    if (mongoose.connection.readyState === 1) {
+        try {
+            (await Category.find().lean()).forEach((c) => catMap.set(c.name.trim().toLowerCase(), c._id));
+            (await Supplier.find().lean()).forEach((s) => supplierMap.set(s.name.trim().toLowerCase(), s._id));
+            (await StockLocation.find().lean()).forEach((l) => {
+                locMap.set(l.code.trim().toUpperCase(), l._id);
+                locMap.set(l.name.trim().toLowerCase(), l._id);
+            });
+            (await Product.find().lean()).forEach((p) => {
+                const sku = p.sku.trim().toUpperCase();
+                prodMap.set(sku, p._id);
+                prodNameMap.set(p.name.trim().toLowerCase(), p._id);
+                prodCostMap.set(sku, p.purchaseCost || 0);
+                prodPriceMap.set(sku, p.defaultSellingPrice || 0);
+            });
+            (await SerializedItem.find().lean()).forEach((a) => assetMap.set(a.assetId.trim().toUpperCase(), a._id));
+        }
+        catch {
+            // Gracefully continue
+        }
+    }
+    // Location resolvers & default fallback
     const resolveLocation = (val) => {
         if (!val)
             return locMap.values().next().value;
         return locMap.get(val.trim().toUpperCase()) ?? locMap.get(val.trim().toLowerCase());
     };
-    const defaultLoc = () => {
+    const defaultLoc = async () => {
         const first = locMap.values().next().value;
-        if (!first)
-            throw new Error('No stock location found. Add at least one Location before importing.');
-        return first;
+        if (first)
+            return first;
+        const mainLoc = await StockLocation.create({
+            name: 'Main Store',
+            code: 'MAIN',
+            type: 'STORE',
+            isDefault: true,
+            isActive: true,
+        });
+        const id = mainLoc._id;
+        locMap.set('MAIN', id);
+        locMap.set('main store', id);
+        imported.locations++;
+        return id;
     };
-    // ── Step 1: Categories ────────────────────────────────────────────────────
+    // Helper to resolve product ObjectId by SKU or by Product Name
+    const resolveProduct = (ref) => {
+        if (!ref)
+            return undefined;
+        const clean = ref.trim();
+        return prodMap.get(clean.toUpperCase()) ?? prodNameMap.get(clean.toLowerCase());
+    };
+    // ── Step 1: Categories ──
     for (const r of readSheet('Categories')) {
-        if (!r['name']) {
+        if (!r['name']?.trim()) {
             skipped++;
             continue;
         }
@@ -770,7 +1294,10 @@ export async function executeImport(buf, actor) {
         if (catMap.has(key))
             continue;
         try {
-            const doc = await Category.create({ name: r['name'].trim(), description: r['description'] || undefined });
+            const doc = await Category.create({
+                name: r['name'].trim(),
+                description: r['description'] || undefined,
+            });
             catMap.set(key, doc._id);
             imported.categories++;
         }
@@ -781,13 +1308,13 @@ export async function executeImport(buf, actor) {
                     catMap.set(key, ex._id);
             }
             else {
-                errors.push({ sheet: 'Categories', row: -1, field: 'name', message: err.message });
+                errors.push({ sheet: 'Categories', row: -1, field: 'Category Name', message: err.message });
             }
         }
     }
-    // ── Step 2: Suppliers ─────────────────────────────────────────────────────
+    // ── Step 2: Suppliers ──
     for (const r of readSheet('Suppliers')) {
-        if (!r['name']) {
+        if (!r['name']?.trim()) {
             skipped++;
             continue;
         }
@@ -807,13 +1334,14 @@ export async function executeImport(buf, actor) {
             imported.suppliers++;
         }
         catch (err) {
-            if (err.code !== 11000)
-                errors.push({ sheet: 'Suppliers', row: -1, field: 'name', message: err.message });
+            if (err.code !== 11000) {
+                errors.push({ sheet: 'Suppliers', row: -1, field: 'Supplier Name', message: err.message });
+            }
         }
     }
-    // ── Step 3: Locations ─────────────────────────────────────────────────────
+    // ── Step 3: Locations ──
     for (const r of readSheet('Locations')) {
-        if (!r['name'] || !r['code']) {
+        if (!r['name']?.trim() || !r['code']?.trim()) {
             skipped++;
             continue;
         }
@@ -834,11 +1362,14 @@ export async function executeImport(buf, actor) {
             imported.locations++;
         }
         catch (err) {
-            if (err.code !== 11000)
-                errors.push({ sheet: 'Locations', row: -1, field: 'code', message: err.message });
+            if (err.code !== 11000) {
+                errors.push({ sheet: 'Locations', row: -1, field: 'Short Code', message: err.message });
+            }
         }
     }
-    // ── Step 4: Products ──────────────────────────────────────────────────────
+    // Ensure at least one default location exists
+    const defLocationId = await defaultLoc();
+    // ── Step 4: Products ──
     let maxSkuNum = 0;
     for (const [sku] of prodMap) {
         const m = sku.match(/(\d+)$/);
@@ -846,7 +1377,7 @@ export async function executeImport(buf, actor) {
             maxSkuNum = Math.max(maxSkuNum, parseInt(m[1], 10));
     }
     for (const r of readSheet('Products')) {
-        if (!r['name'] || !r['category']) {
+        if (!r['name']?.trim()) {
             skipped++;
             continue;
         }
@@ -857,15 +1388,43 @@ export async function executeImport(buf, actor) {
         }
         if (prodMap.has(sku))
             continue;
-        const catId = catMap.get(r['category'].trim().toLowerCase());
+        // Resolve or auto-create Category
+        const catName = (r['category'] || 'General').trim();
+        let catId = catMap.get(catName.toLowerCase());
         if (!catId) {
-            skipped++;
-            continue;
+            try {
+                const newCat = await Category.create({ name: catName, description: 'Auto-created from product import' });
+                catId = newCat._id;
+                catMap.set(catName.toLowerCase(), catId);
+                imported.categories++;
+            }
+            catch {
+                const ex = await Category.findOne({ name: new RegExp(`^${catName}$`, 'i') }).lean();
+                if (ex)
+                    catId = ex._id;
+            }
         }
-        const suppId = r['supplier'] ? supplierMap.get(r['supplier'].trim().toLowerCase()) : undefined;
-        const locId = resolveLocation(r['location'] ?? '');
-        const tracking = r['trackingMode'] === 'SERIALIZED' ? TRACKING_MODES.SERIALIZED : TRACKING_MODES.QUANTITY;
+        if (!catId)
+            catId = catMap.values().next().value;
+        // Resolve or auto-create Supplier
+        const suppName = r['supplier'] ? r['supplier'].trim() : '';
+        let suppId = suppName ? supplierMap.get(suppName.toLowerCase()) : undefined;
+        if (suppName && !suppId) {
+            try {
+                const newSupp = await Supplier.create({ name: suppName, notes: 'Auto-created from product import' });
+                suppId = newSupp._id;
+                supplierMap.set(suppName.toLowerCase(), suppId);
+                imported.suppliers++;
+            }
+            catch {
+                // Ignore duplicate
+            }
+        }
+        const locId = resolveLocation(r['location'] ?? '') ?? defLocationId;
+        const tracking = normalizeTrackingMode(r['trackingMode'] ?? '');
         const opening = parseNum(r['openingStock'], 0);
+        const cost = parseNum(r['purchaseCost'], 0);
+        const price = parseNum(r['sellingPrice'] ?? r['defaultSellingPrice'], cost);
         try {
             const prod = await Product.create({
                 name: r['name'].trim(),
@@ -878,29 +1437,38 @@ export async function executeImport(buf, actor) {
                 description: r['description'] || undefined,
                 trackingMode: tracking,
                 unitOfMeasure: r['unitOfMeasure'] || 'pcs',
-                purchaseCost: parseNum(r['purchaseCost']),
-                defaultSellingPrice: parseNum(r['sellingPrice'] ?? r['defaultSellingPrice']),
+                purchaseCost: cost,
+                defaultSellingPrice: price,
                 supplier: suppId ?? undefined,
                 minStockThreshold: parseNum(r['minStockThreshold'], 5),
                 stockQuantity: {
                     onHand: tracking === TRACKING_MODES.QUANTITY ? opening : 0,
-                    reserved: 0, issuedInternal: 0, quarantined: 0,
+                    reserved: 0,
+                    issuedInternal: 0,
+                    quarantined: 0,
                 },
                 locationStock: locId && tracking === TRACKING_MODES.QUANTITY && opening > 0
                     ? [{ location: locId, onHand: opening, reserved: 0, issuedInternal: 0, quarantined: 0 }]
-                    : locId ? [{ location: locId, onHand: 0, reserved: 0, issuedInternal: 0, quarantined: 0 }]
+                    : locId
+                        ? [{ location: locId, onHand: 0, reserved: 0, issuedInternal: 0, quarantined: 0 }]
                         : [],
                 isActive: true,
             });
             prodMap.set(sku, prod._id);
+            prodNameMap.set(r['name'].trim().toLowerCase(), prod._id);
+            prodCostMap.set(sku, cost);
+            prodPriceMap.set(sku, price);
             imported.products++;
             if (tracking === TRACKING_MODES.QUANTITY && opening > 0 && locId) {
                 movements.push({
-                    product: prod._id, location: locId,
+                    product: prod._id,
+                    location: locId,
                     movementType: MOVEMENT_TYPES.MANUAL_ADJUSTMENT,
                     quantityDelta: opening,
-                    transactionRef: `HIST-IMPORT-${sku}`, transactionModel: 'HistoricalImport',
-                    reason: `Historical opening stock for ${r['name']}`, performedBy: actorId,
+                    transactionRef: `HIST-IMPORT-${sku}`,
+                    transactionModel: 'HistoricalImport',
+                    reason: `Historical opening stock for ${r['name']}`,
+                    performedBy: actorId,
                 });
                 imported.stockMovements++;
             }
@@ -908,17 +1476,19 @@ export async function executeImport(buf, actor) {
         catch (err) {
             if (err.code === 11000) {
                 const ex = await Product.findOne({ sku }).lean();
-                if (ex)
+                if (ex) {
                     prodMap.set(sku, ex._id);
+                    prodNameMap.set(r['name'].trim().toLowerCase(), ex._id);
+                }
             }
             else {
-                errors.push({ sheet: 'Products', row: -1, field: 'sku', message: `${sku}: ${err.message}` });
+                errors.push({ sheet: 'Products', row: -1, field: 'SKU Code', message: `${sku}: ${err.message}` });
             }
         }
     }
-    // ── Step 5: SerializedItems ───────────────────────────────────────────────
+    // ── Step 5: SerializedItems ──
     for (const r of readSheet('SerializedItems')) {
-        if (!r['assetId'] || !r['productSku']) {
+        if (!r['assetId']?.trim() || !r['productSku']?.trim()) {
             skipped++;
             continue;
         }
@@ -927,36 +1497,39 @@ export async function executeImport(buf, actor) {
             skipped++;
             continue;
         }
-        const prodId = prodMap.get(r['productSku'].trim().toUpperCase());
-        const locId = resolveLocation(r['location'] ?? '') ?? defaultLoc();
+        const prodId = resolveProduct(r['productSku']);
+        const locId = resolveLocation(r['location'] ?? '') ?? defLocationId;
         if (!prodId) {
             skipped++;
             continue;
         }
-        const status = Object.values(SERIALIZED_STATUSES).includes(r['status']) ? r['status'] : SERIALIZED_STATUSES.AVAILABLE;
-        const condition = Object.values(ITEM_CONDITIONS).includes(r['condition']) ? r['condition'] : ITEM_CONDITIONS.NEW;
+        const skuKey = r['productSku'].trim().toUpperCase();
+        const fallbackCost = prodCostMap.get(skuKey) || 0;
+        const unitCost = parseNum(r['unitCost'], fallbackCost);
+        const status = normalizeSerializedStatus(r['status'] ?? '');
+        const condition = normalizeCondition(r['condition'] ?? '');
         try {
             const item = await SerializedItem.create({
                 assetId,
                 manufacturerSerial: r['manufacturerSerial'] ? r['manufacturerSerial'].trim().toUpperCase() : undefined,
-                product: prodId, unitCost: parseNum(r['unitCost']),
-                location: locId, status, condition,
+                product: prodId,
+                unitCost,
+                location: locId,
+                status: status,
+                condition: condition,
                 warrantyExpiry: parseDate(r['warrantyExpiry']) ?? undefined,
                 notes: r['notes'] || undefined,
             });
             assetMap.set(assetId, item._id);
             imported.serializedItems++;
-            // Update product stock count
-            const delta = status === SERIALIZED_STATUSES.AVAILABLE ? 1
-                : status === SERIALIZED_STATUSES.SOLD ? 0 : 1;
             if (status === SERIALIZED_STATUSES.AVAILABLE) {
                 await Product.findByIdAndUpdate(prodId, { $inc: { 'stockQuantity.onHand': 1 } });
-                // Ensure locationStock entry exists
                 const prod = await Product.findById(prodId);
                 if (prod) {
                     const hasLoc = prod.locationStock.some(ls => ls.location.toString() === locId.toString());
-                    if (!hasLoc)
+                    if (!hasLoc) {
                         prod.locationStock.push({ location: locId, onHand: 1, reserved: 0, issuedInternal: 0, quarantined: 0 });
+                    }
                     else {
                         const ls = prod.locationStock.find(l => l.location.toString() === locId.toString());
                         if (ls)
@@ -965,27 +1538,32 @@ export async function executeImport(buf, actor) {
                     await prod.save();
                 }
                 movements.push({
-                    product: prodId, serializedItem: item._id, location: locId,
-                    movementType: MOVEMENT_TYPES.MANUAL_ADJUSTMENT, quantityDelta: 0,
+                    product: prodId,
+                    serializedItem: item._id,
+                    location: locId,
+                    movementType: MOVEMENT_TYPES.MANUAL_ADJUSTMENT,
+                    quantityDelta: 0,
                     destinationStatus: SERIALIZED_STATUSES.AVAILABLE,
-                    transactionRef: `HIST-ASSET-${assetId}`, transactionModel: 'HistoricalImport',
-                    reason: `Historical serialized item ${assetId} imported`, performedBy: actorId,
+                    transactionRef: `HIST-ASSET-${assetId}`,
+                    transactionModel: 'HistoricalImport',
+                    reason: `Historical serialized item ${assetId} imported`,
+                    performedBy: actorId,
                 });
                 imported.stockMovements++;
             }
         }
         catch (err) {
-            if (err.code !== 11000)
-                errors.push({ sheet: 'SerializedItems', row: -1, field: 'assetId', message: `${assetId}: ${err.message}` });
+            if (err.code !== 11000) {
+                errors.push({ sheet: 'SerializedItems', row: -1, field: 'Asset ID', message: `${assetId}: ${err.message}` });
+            }
         }
     }
-    // ── Step 6: Direct Sales ──────────────────────────────────────────────────
+    // ── Step 6: Direct Sales ──
     {
         const rows = readSheet('DirectSales');
-        // Group by invoiceNumber (multi-item support)
         const groups = new Map();
         for (const r of rows) {
-            if (!r['invoiceNumber'])
+            if (!r['invoiceNumber']?.trim())
                 continue;
             const inv = r['invoiceNumber'].trim().toUpperCase();
             if (!groups.has(inv))
@@ -999,16 +1577,18 @@ export async function executeImport(buf, actor) {
             }
             const first = lines[0];
             const saleDate = parseDate(first['date']) ?? new Date();
-            const locId = defaultLoc();
+            const locId = defLocationId;
             const lineItems = [];
             let subtotal = 0, discountTotal = 0;
             for (const line of lines) {
-                const sku = (line['productSku'] ?? '').trim().toUpperCase();
-                const prodId = prodMap.get(sku);
+                const prodRef = line['productSku'] ?? '';
+                const prodId = resolveProduct(prodRef);
                 if (!prodId)
                     continue;
-                const qty = parseNum(line['quantity'], 1);
-                const price = parseNum(line['unitPrice']);
+                const skuKey = prodRef.trim().toUpperCase();
+                const fallbackPrice = prodPriceMap.get(skuKey) || 0;
+                const qty = Math.max(1, parseNum(line['quantity'], 1));
+                const price = parseNum(line['unitPrice'], fallbackPrice);
                 const disc = parseNum(line['discount'], 0);
                 const net = Math.max(0, (price - disc) * qty);
                 subtotal += price * qty;
@@ -1022,19 +1602,28 @@ export async function executeImport(buf, actor) {
                     }
                 }
                 lineItems.push({
-                    product: prodId, quantity: qty, unitPrice: price, discount: disc,
+                    product: prodId,
+                    quantity: qty,
+                    unitPrice: price,
+                    discount: disc,
                     hsnCode: line['hsnCode'] || '9202',
                     taxableAmount: net,
                     cgstAmount: Math.round(net * 0.09 * 100) / 100,
                     sgstAmount: Math.round(net * 0.09 * 100) / 100,
-                    total: net, serializedItemIds: serializedIds,
+                    total: net,
+                    serializedItemIds: serializedIds,
                 });
                 await Product.findByIdAndUpdate(prodId, { $inc: { 'stockQuantity.onHand': -qty } });
                 movements.push({
-                    product: prodId, serializedItem: serializedIds[0], location: locId,
-                    movementType: MOVEMENT_TYPES.SALE, quantityDelta: -qty,
-                    transactionRef: invoiceNumber, transactionModel: 'Sale',
-                    reason: `Historical sale ${invoiceNumber}`, performedBy: actorId,
+                    product: prodId,
+                    serializedItem: serializedIds[0],
+                    location: locId,
+                    movementType: MOVEMENT_TYPES.SALE,
+                    quantityDelta: -qty,
+                    transactionRef: invoiceNumber,
+                    transactionModel: 'Sale',
+                    reason: `Historical sale ${invoiceNumber}`,
+                    performedBy: actorId,
                 });
                 imported.stockMovements++;
             }
@@ -1046,23 +1635,42 @@ export async function executeImport(buf, actor) {
             const cgst = Math.round(taxable * 0.09 * 100) / 100;
             const sgst = cgst;
             const grand = Math.round((taxable + cgst + sgst) * 100) / 100;
-            const pmStatus = Object.values(PAYMENT_STATUSES).includes(first['paymentStatus']) ? first['paymentStatus'] : PAYMENT_STATUSES.PAID;
-            const pmMethod = Object.values(PAYMENT_METHODS).includes(first['paymentMethod']) ? first['paymentMethod'] : PAYMENT_METHODS.UPI;
+            const pmStatus = normalizePaymentStatus(first['paymentStatus'] ?? '');
+            const pmMethod = normalizePaymentMethod(first['paymentMethod'] ?? '');
+            // Resilient fallbacks for customer email and phone
+            const custEmail = first['customerEmail']?.trim()
+                ? first['customerEmail'].trim().toLowerCase()
+                : `customer-${invoiceNumber.toLowerCase()}@retail.local`;
+            const custPhone = first['customerPhone']?.trim() || '0000000000';
             try {
                 await Sale.create({
                     invoiceNumber,
-                    customerName: first['customerName'], customerEmail: first['customerEmail'].toLowerCase(),
-                    customerPhone: first['customerPhone'], customerGstin: first['customerGstin'] || undefined,
+                    customerName: first['customerName'].trim(),
+                    customerEmail: custEmail,
+                    customerPhone: custPhone,
+                    customerGstin: first['customerGstin'] || undefined,
                     customerAddress: first['customerAddress'] || undefined,
-                    dispatchThrough: first['dispatchThrough'] || undefined, destination: first['destination'] || undefined,
+                    dispatchThrough: first['dispatchThrough'] || undefined,
+                    destination: first['destination'] || undefined,
                     eWayBillNo: first['eWayBillNo'] || undefined,
-                    location: locId, lineItems,
-                    subtotal, discountTotal, taxableAmount: taxable,
-                    cgstRate: 9, cgstAmount: cgst, sgstRate: 9, sgstAmount: sgst,
-                    taxTotal: cgst + sgst, grandTotal: grand,
-                    paymentStatus: pmStatus, paymentMethod: pmMethod,
-                    saleStatus: SALE_STATUSES.CONFIRMED, saleType: SALE_TYPES.DIRECT, isEmi: false,
-                    soldBy: actorId, confirmedAt: saleDate,
+                    location: locId,
+                    lineItems,
+                    subtotal,
+                    discountTotal,
+                    taxableAmount: taxable,
+                    cgstRate: 9,
+                    cgstAmount: cgst,
+                    sgstRate: 9,
+                    sgstAmount: sgst,
+                    taxTotal: cgst + sgst,
+                    grandTotal: grand,
+                    paymentStatus: pmStatus,
+                    paymentMethod: pmMethod,
+                    saleStatus: SALE_STATUSES.CONFIRMED,
+                    saleType: SALE_TYPES.DIRECT,
+                    isEmi: false,
+                    soldBy: actorId,
+                    confirmedAt: saleDate,
                     notes: first['notes'] || undefined,
                     idempotencyKey: `HIST-${invoiceNumber}`,
                     createdAt: saleDate,
@@ -1070,20 +1678,22 @@ export async function executeImport(buf, actor) {
                 imported.sales++;
             }
             catch (err) {
-                if (err.code !== 11000)
-                    errors.push({ sheet: 'DirectSales', row: -1, field: 'invoiceNumber', message: `${invoiceNumber}: ${err.message}` });
-                else
+                if (err.code !== 11000) {
+                    errors.push({ sheet: 'DirectSales', row: -1, field: 'Invoice No.', message: `${invoiceNumber}: ${err.message}` });
+                }
+                else {
                     skipped++;
+                }
             }
         }
     }
-    // ── Step 7 + 8: EMI Sales + Payments ─────────────────────────────────────
+    // ── Step 7 & 8: EMI Sales + Payments ──
     const emiPayRows = readSheet('EMIPayments');
     {
         const rows = readSheet('EMISales');
         const groups = new Map();
         for (const r of rows) {
-            if (!r['invoiceNumber'])
+            if (!r['invoiceNumber']?.trim())
                 continue;
             const inv = r['invoiceNumber'].trim().toUpperCase();
             if (!groups.has(inv))
@@ -1097,18 +1707,20 @@ export async function executeImport(buf, actor) {
             }
             const first = lines[0];
             const saleDate = parseDate(first['date']) ?? new Date();
-            const locId = defaultLoc();
-            const tenure = parseNum(first['emiTenureMonths'], 6);
+            const locId = defLocationId;
+            const tenure = Math.max(1, parseNum(first['emiTenureMonths'], 6));
             const downPay = parseNum(first['downPayment'], 0);
             const lineItems = [];
             let subtotal = 0, discountTotal = 0;
             for (const line of lines) {
-                const sku = (line['productSku'] ?? '').trim().toUpperCase();
-                const prodId = prodMap.get(sku);
+                const prodRef = line['productSku'] ?? '';
+                const prodId = resolveProduct(prodRef);
                 if (!prodId)
                     continue;
-                const qty = parseNum(line['quantity'], 1);
-                const price = parseNum(line['unitPrice']);
+                const skuKey = prodRef.trim().toUpperCase();
+                const fallbackPrice = prodPriceMap.get(skuKey) || 0;
+                const qty = Math.max(1, parseNum(line['quantity'], 1));
+                const price = parseNum(line['unitPrice'], fallbackPrice);
                 const disc = parseNum(line['discount'], 0);
                 const net = Math.max(0, (price - disc) * qty);
                 subtotal += price * qty;
@@ -1121,9 +1733,30 @@ export async function executeImport(buf, actor) {
                         await SerializedItem.findByIdAndUpdate(aid, { status: SERIALIZED_STATUSES.SOLD });
                     }
                 }
-                lineItems.push({ product: prodId, quantity: qty, unitPrice: price, discount: disc, hsnCode: line['hsnCode'] || '9202', taxableAmount: net, cgstAmount: Math.round(net * 0.09 * 100) / 100, sgstAmount: Math.round(net * 0.09 * 100) / 100, total: net, serializedItemIds: serializedIds });
+                lineItems.push({
+                    product: prodId,
+                    quantity: qty,
+                    unitPrice: price,
+                    discount: disc,
+                    hsnCode: line['hsnCode'] || '9202',
+                    taxableAmount: net,
+                    cgstAmount: Math.round(net * 0.09 * 100) / 100,
+                    sgstAmount: Math.round(net * 0.09 * 100) / 100,
+                    total: net,
+                    serializedItemIds: serializedIds,
+                });
                 await Product.findByIdAndUpdate(prodId, { $inc: { 'stockQuantity.onHand': -qty } });
-                movements.push({ product: prodId, serializedItem: serializedIds[0], location: locId, movementType: MOVEMENT_TYPES.SALE, quantityDelta: -qty, transactionRef: invoiceNumber, transactionModel: 'Sale', reason: `Historical EMI sale ${invoiceNumber}`, performedBy: actorId });
+                movements.push({
+                    product: prodId,
+                    serializedItem: serializedIds[0],
+                    location: locId,
+                    movementType: MOVEMENT_TYPES.SALE,
+                    quantityDelta: -qty,
+                    transactionRef: invoiceNumber,
+                    transactionModel: 'Sale',
+                    reason: `Historical EMI sale ${invoiceNumber}`,
+                    performedBy: actorId,
+                });
                 imported.stockMovements++;
             }
             if (!lineItems.length) {
@@ -1136,44 +1769,100 @@ export async function executeImport(buf, actor) {
             const grand = Math.round((taxable + cgst + sgst) * 100) / 100;
             const financed = Math.max(0, grand - downPay);
             const monthly = tenure > 0 ? Math.round(financed / tenure) : 0;
-            // Build schedule
+            // Build EMI schedule
             const schedRows = emiPayRows.filter(r => (r['invoiceNumber'] ?? '').trim().toUpperCase() === invoiceNumber);
             let emiPayments = [], emiPaid = downPay, emiDue = 0;
             if (schedRows.length > 0) {
                 emiPayments = schedRows.map(p => {
-                    const due = parseNum(p['amountDue'], 0);
+                    const due = parseNum(p['amountDue'], monthly);
                     const paid = parseNum(p['amountPaid'], 0);
                     emiPaid += paid;
                     emiDue += Math.max(0, due - paid);
-                    return { monthIndex: parseNum(p['monthIndex'], 1), billingMonth: p['billingMonth'] || `Month ${p['monthIndex']}`, dueDate: parseDate(p['dueDate']) ?? saleDate, amountDue: due, amountPaid: paid, paidAt: parseDate(p['paidDate']) ?? undefined, paymentMethod: p['paymentMethod'] || undefined, transactionRef: p['transactionRef'] || undefined, status: (['PAID', 'DUE', 'OVERDUE'].includes(p['status']) ? p['status'] : 'DUE'), notes: p['notes'] || undefined };
+                    const mIdx = Math.max(1, parseNum(p['monthIndex'], 1));
+                    return {
+                        monthIndex: mIdx,
+                        billingMonth: p['billingMonth'] || `Month ${mIdx}`,
+                        dueDate: parseDate(p['dueDate']) ?? saleDate,
+                        amountDue: due,
+                        amountPaid: paid,
+                        paidAt: parseDate(p['paidDate']) ?? undefined,
+                        paymentMethod: p['paymentMethod'] ? normalizePaymentMethod(p['paymentMethod']) : undefined,
+                        transactionRef: p['transactionRef'] || undefined,
+                        status: (['PAID', 'DUE', 'OVERDUE'].includes((p['status'] || '').toUpperCase())
+                            ? (p['status'] || '').toUpperCase()
+                            : paid >= due
+                                ? 'PAID'
+                                : 'DUE'),
+                        notes: p['notes'] || undefined,
+                    };
                 });
             }
             else {
                 for (let m = 1; m <= tenure; m++) {
                     const d = new Date(saleDate);
                     d.setMonth(d.getMonth() + m);
-                    emiPayments.push({ monthIndex: m, billingMonth: `Month ${m}`, dueDate: d, amountDue: monthly, amountPaid: 0, status: 'DUE' });
+                    emiPayments.push({
+                        monthIndex: m,
+                        billingMonth: `Month ${m}`,
+                        dueDate: d,
+                        amountDue: monthly,
+                        amountPaid: 0,
+                        status: 'DUE',
+                    });
                     emiDue += monthly;
                 }
             }
             const pmStatus = emiDue <= 0 ? PAYMENT_STATUSES.PAID : emiPaid > 0 ? PAYMENT_STATUSES.PARTIAL : PAYMENT_STATUSES.PENDING;
+            const custEmail = first['customerEmail']?.trim()
+                ? first['customerEmail'].trim().toLowerCase()
+                : `customer-${invoiceNumber.toLowerCase()}@retail.local`;
+            const custPhone = first['customerPhone']?.trim() || '0000000000';
             try {
                 await Sale.create({
                     invoiceNumber,
-                    customerName: first['customerName'], customerEmail: first['customerEmail'].toLowerCase(),
-                    customerPhone: first['customerPhone'], customerGstin: first['customerGstin'] || undefined,
+                    customerName: first['customerName'].trim(),
+                    customerEmail: custEmail,
+                    customerPhone: custPhone,
+                    customerGstin: first['customerGstin'] || undefined,
                     customerAddress: first['customerAddress'] || undefined,
-                    location: locId, lineItems,
-                    subtotal, discountTotal, taxableAmount: taxable,
-                    cgstRate: 9, cgstAmount: cgst, sgstRate: 9, sgstAmount: sgst,
-                    taxTotal: cgst + sgst, grandTotal: grand,
+                    location: locId,
+                    lineItems,
+                    subtotal,
+                    discountTotal,
+                    taxableAmount: taxable,
+                    cgstRate: 9,
+                    cgstAmount: cgst,
+                    sgstRate: 9,
+                    sgstAmount: sgst,
+                    taxTotal: cgst + sgst,
+                    grandTotal: grand,
                     paymentStatus: pmStatus,
-                    paymentMethod: (Object.values(PAYMENT_METHODS).includes(first['downPaymentMethod']) ? first['downPaymentMethod'] : PAYMENT_METHODS.UPI),
-                    saleStatus: SALE_STATUSES.CONFIRMED, saleType: SALE_TYPES.EMI, isEmi: true,
-                    downPayment: downPay, emiTenureMonths: tenure, monthlyEmiAmount: monthly,
-                    totalEmiPaid: emiPaid, totalEmiDue: emiDue, emiPayments,
-                    paymentLogs: downPay > 0 ? [{ paymentType: 'DOWN_PAYMENT', amount: downPay, paymentMethod: PAYMENT_METHODS.UPI, transactionRef: `HIST-DP-${invoiceNumber}`, billingMonth: 'Down Payment', notes: 'Historical import', recordedBy: actorId, paidAt: saleDate }] : [],
-                    soldBy: actorId, confirmedAt: saleDate,
+                    paymentMethod: normalizePaymentMethod(first['downPaymentMethod'] ?? 'UPI'),
+                    saleStatus: SALE_STATUSES.CONFIRMED,
+                    saleType: SALE_TYPES.EMI,
+                    isEmi: true,
+                    downPayment: downPay,
+                    emiTenureMonths: tenure,
+                    monthlyEmiAmount: monthly,
+                    totalEmiPaid: emiPaid,
+                    totalEmiDue: emiDue,
+                    emiPayments,
+                    paymentLogs: downPay > 0
+                        ? [
+                            {
+                                paymentType: 'DOWN_PAYMENT',
+                                amount: downPay,
+                                paymentMethod: PAYMENT_METHODS.UPI,
+                                transactionRef: `HIST-DP-${invoiceNumber}`,
+                                billingMonth: 'Down Payment',
+                                notes: 'Historical import',
+                                recordedBy: actorId,
+                                paidAt: saleDate,
+                            },
+                        ]
+                        : [],
+                    soldBy: actorId,
+                    confirmedAt: saleDate,
                     notes: first['notes'] || undefined,
                     idempotencyKey: `HIST-${invoiceNumber}`,
                     createdAt: saleDate,
@@ -1181,17 +1870,19 @@ export async function executeImport(buf, actor) {
                 imported.emiSales++;
             }
             catch (err) {
-                if (err.code !== 11000)
-                    errors.push({ sheet: 'EMISales', row: -1, field: 'invoiceNumber', message: `${invoiceNumber}: ${err.message}` });
-                else
+                if (err.code !== 11000) {
+                    errors.push({ sheet: 'EMISales', row: -1, field: 'Invoice No.', message: `${invoiceNumber}: ${err.message}` });
+                }
+                else {
                     skipped++;
+                }
             }
         }
     }
-    // ── Step 9 + 10: Rentals + RentalPayments ────────────────────────────────
+    // ── Step 9 & 10: Rentals + RentalPayments ──
     const rentalPayRows = readSheet('RentalPayments');
     for (const r of readSheet('Rentals')) {
-        if (!r['issueReference'] || !r['productSku']) {
+        if (!r['issueReference']?.trim() || !r['productSku']?.trim()) {
             skipped++;
             continue;
         }
@@ -1200,60 +1891,119 @@ export async function executeImport(buf, actor) {
             skipped++;
             continue;
         }
-        const prodId = prodMap.get(r['productSku'].trim().toUpperCase());
+        const prodId = resolveProduct(r['productSku']);
         if (!prodId) {
             skipped++;
             continue;
         }
-        const locId = defaultLoc();
+        const locId = defLocationId;
         const issueDate = parseDate(r['issueDate']) ?? new Date();
         const expReturn = parseDate(r['expectedReturnDate']) ?? new Date();
         const actReturn = parseDate(r['actualReturnDate']);
-        const status = Object.values(USAGE_STATUSES).includes(r['status']) ? r['status'] : USAGE_STATUSES.ACTIVE;
-        const purpose = Object.values(USAGE_PURPOSES).includes(r['purpose']) ? r['purpose'] : USAGE_PURPOSES.CLASS;
+        const status = normalizeRentalStatus(r['status'] ?? '');
+        const purpose = normalizeRentalPurpose(r['purpose'] ?? '');
         const serialId = r['assetId'] ? assetMap.get(r['assetId'].trim().toUpperCase()) : undefined;
-        const qty = parseNum(r['quantityIssued'], 1);
+        const qty = Math.max(1, parseNum(r['quantityIssued'], 1));
         const monthly = parseNum(r['monthlyRent'], 0);
         const deposit = parseNum(r['securityDeposit'], 0);
-        const lockIn = parseNum(r['lockInPeriodMonths'], 3);
+        const lockIn = Math.max(1, parseNum(r['lockInPeriodMonths'], 3));
         const depMode = parseBool(r['depositMode']);
-        const accessories = r['includedAccessories'] ? r['includedAccessories'].split(',').map(s => s.trim()).filter(Boolean) : [];
+        const accessories = r['includedAccessories']
+            ? r['includedAccessories'].split(',').map(s => s.trim()).filter(Boolean)
+            : [];
         const schedRows = rentalPayRows.filter(p => (p['issueReference'] ?? '').trim().toUpperCase() === ref);
         let monthlyPayments = [], totalPaid = 0, totalDue = 0;
         const paymentLogs = [];
         if (deposit > 0) {
-            paymentLogs.push({ paymentType: 'SECURITY_DEPOSIT', amount: deposit, paymentMethod: 'CASH', transactionRef: r['depositTransactionRef'] || `HIST-DEP-${ref}`, billingMonth: 'Security Deposit', notes: 'Historical import', recordedBy: actorId, paidAt: issueDate });
+            paymentLogs.push({
+                paymentType: 'SECURITY_DEPOSIT',
+                amount: deposit,
+                paymentMethod: 'CASH',
+                transactionRef: r['depositTransactionRef'] || `HIST-DEP-${ref}`,
+                billingMonth: 'Security Deposit',
+                notes: 'Historical import',
+                recordedBy: actorId,
+                paidAt: issueDate,
+            });
         }
         if (schedRows.length > 0) {
             monthlyPayments = schedRows.map(p => {
-                const due = parseNum(p['amountDue'], 0);
+                const due = parseNum(p['amountDue'], monthly);
                 const paid = parseNum(p['amountPaid'], 0);
                 totalPaid += paid;
                 totalDue += Math.max(0, due - paid);
-                if (paid > 0)
-                    paymentLogs.push({ paymentType: 'RENTAL_PAYMENT', amount: paid, paymentMethod: p['paymentMethod'] || 'CASH', transactionRef: p['transactionRef'] || `HIST-RENT-${ref}-M${p['monthIndex']}`, billingMonth: p['billingMonth'], notes: 'Historical import', recordedBy: actorId, paidAt: parseDate(p['paidDate']) ?? issueDate });
-                return { monthIndex: parseNum(p['monthIndex'], 1), billingMonth: p['billingMonth'] || `Month ${p['monthIndex']}`, dueDate: parseDate(p['dueDate']) ?? issueDate, amountDue: due, amountPaid: paid, paidAt: parseDate(p['paidDate']) ?? undefined, paymentMethod: p['paymentMethod'] || undefined, transactionRef: p['transactionRef'] || undefined, status: (['PAID', 'DUE', 'OVERDUE'].includes(p['status']) ? p['status'] : 'DUE'), notes: p['notes'] || undefined };
+                const mIdx = Math.max(1, parseNum(p['monthIndex'], 1));
+                if (paid > 0) {
+                    paymentLogs.push({
+                        paymentType: 'RENTAL_PAYMENT',
+                        amount: paid,
+                        paymentMethod: normalizePaymentMethod(p['paymentMethod'] ?? 'CASH'),
+                        transactionRef: p['transactionRef'] || `HIST-RENT-${ref}-M${mIdx}`,
+                        billingMonth: p['billingMonth'] || `Month ${mIdx}`,
+                        notes: 'Historical import',
+                        recordedBy: actorId,
+                        paidAt: parseDate(p['paidDate']) ?? issueDate,
+                    });
+                }
+                return {
+                    monthIndex: mIdx,
+                    billingMonth: p['billingMonth'] || `Month ${mIdx}`,
+                    dueDate: parseDate(p['dueDate']) ?? issueDate,
+                    amountDue: due,
+                    amountPaid: paid,
+                    paidAt: parseDate(p['paidDate']) ?? undefined,
+                    paymentMethod: p['paymentMethod'] ? normalizePaymentMethod(p['paymentMethod']) : undefined,
+                    transactionRef: p['transactionRef'] || undefined,
+                    status: (['PAID', 'DUE', 'OVERDUE'].includes((p['status'] || '').toUpperCase())
+                        ? (p['status'] || '').toUpperCase()
+                        : paid >= due
+                            ? 'PAID'
+                            : 'DUE'),
+                    notes: p['notes'] || undefined,
+                };
             });
         }
         else {
             for (let m = 1; m <= lockIn; m++) {
                 const d = new Date(issueDate);
                 d.setMonth(d.getMonth() + (m - 1));
-                monthlyPayments.push({ monthIndex: m, billingMonth: `Month ${m}`, dueDate: d, amountDue: monthly, amountPaid: 0, status: 'DUE' });
+                monthlyPayments.push({
+                    monthIndex: m,
+                    billingMonth: `Month ${m}`,
+                    dueDate: d,
+                    amountDue: monthly,
+                    amountPaid: 0,
+                    status: 'DUE',
+                });
                 totalDue += monthly;
             }
         }
         try {
             const usage = await InternalUsage.create({
-                issueReference: ref, purpose,
-                assignedPerson: r['assignedPerson'].trim(),
-                assignedPersonContact: r['assignedPersonContact'] || undefined,
-                customerEmail: r['customerEmail'] ? r['customerEmail'].toLowerCase() : undefined,
+                issueReference: ref,
+                purpose: purpose,
+                assignedPerson: (r['assignedPerson'] || r['customerName'] || 'Customer').trim(),
+                assignedPersonContact: r['assignedPersonContact'] || r['customerPhone'] || undefined,
+                customerEmail: r['customerEmail'] ? r['customerEmail'].toLowerCase().trim() : undefined,
                 location: locId,
-                items: [{ product: prodId, quantityIssued: qty, quantityReturned: status === USAGE_STATUSES.RETURNED ? qty : 0, serializedItemId: serialId ?? undefined, issueCondition: ITEM_CONDITIONS.GOOD }],
-                issueDate, expectedReturnDate: expReturn, actualReturnDate: actReturn ?? undefined, status,
-                notes: r['notes'] || undefined, issuedBy: actorId, isRental: true,
-                lockInPeriodMonths: lockIn, securityDeposit: deposit,
+                items: [
+                    {
+                        product: prodId,
+                        quantityIssued: qty,
+                        quantityReturned: status === USAGE_STATUSES.RETURNED ? qty : 0,
+                        serializedItemId: serialId ?? undefined,
+                        issueCondition: ITEM_CONDITIONS.GOOD,
+                    },
+                ],
+                issueDate,
+                expectedReturnDate: expReturn,
+                actualReturnDate: actReturn ?? undefined,
+                status: status,
+                notes: r['notes'] || undefined,
+                issuedBy: actorId,
+                isRental: true,
+                lockInPeriodMonths: lockIn,
+                securityDeposit: deposit,
                 depositTransactionRef: r['depositTransactionRef'] || '',
                 depositMode: depMode,
                 depositBalance: r['depositBalance'] !== undefined && r['depositBalance'] !== ''
@@ -1267,36 +2017,60 @@ export async function executeImport(buf, actor) {
                 depositRefundStatus: ['HELD', 'REFUND_PENDING', 'REFUNDED'].includes(r['depositRefundStatus']?.trim()?.toUpperCase())
                     ? r['depositRefundStatus'].trim().toUpperCase()
                     : (status === USAGE_STATUSES.RETURNED ? 'REFUNDED' : 'HELD'),
-                monthlyRent: monthly, includedAccessories: accessories,
-                monthlyPayments, totalRentPaid: totalPaid, totalRentDue: totalDue,
-                paymentLogs, createdAt: issueDate,
+                monthlyRent: monthly,
+                includedAccessories: accessories,
+                monthlyPayments,
+                totalRentPaid: totalPaid,
+                totalRentDue: totalDue,
+                paymentLogs,
+                createdAt: issueDate,
             });
             if (serialId && status === USAGE_STATUSES.ACTIVE) {
-                await SerializedItem.findByIdAndUpdate(serialId, { status: SERIALIZED_STATUSES.ISSUED_INTERNAL, currentUsage: usage._id, assignedTo: r['assignedPerson'].trim() });
+                await SerializedItem.findByIdAndUpdate(serialId, {
+                    status: SERIALIZED_STATUSES.ISSUED_INTERNAL,
+                    currentUsage: usage._id,
+                    assignedTo: (r['assignedPerson'] || r['customerName'] || 'Customer').trim(),
+                });
             }
             else if (serialId && status === USAGE_STATUSES.RETURNED) {
-                await SerializedItem.findByIdAndUpdate(serialId, { status: SERIALIZED_STATUSES.AVAILABLE, currentUsage: null, assignedTo: null });
+                await SerializedItem.findByIdAndUpdate(serialId, {
+                    status: SERIALIZED_STATUSES.AVAILABLE,
+                    currentUsage: null,
+                    assignedTo: null,
+                });
             }
             if (status === USAGE_STATUSES.ACTIVE) {
                 await Product.findByIdAndUpdate(prodId, { $inc: { 'stockQuantity.issuedInternal': qty } });
             }
             imported.rentals++;
-            movements.push({ product: prodId, serializedItem: serialId, location: locId, movementType: MOVEMENT_TYPES.INTERNAL_ISSUE, quantityDelta: 0, transactionRef: ref, transactionModel: 'InternalUsage', reason: `Historical rental ${ref}`, performedBy: actorId });
+            movements.push({
+                product: prodId,
+                serializedItem: serialId,
+                location: locId,
+                movementType: MOVEMENT_TYPES.INTERNAL_ISSUE,
+                quantityDelta: 0,
+                transactionRef: ref,
+                transactionModel: 'InternalUsage',
+                reason: `Historical rental ${ref}`,
+                performedBy: actorId,
+            });
             imported.stockMovements++;
         }
         catch (err) {
-            if (err.code !== 11000)
-                errors.push({ sheet: 'Rentals', row: -1, field: 'issueReference', message: `${ref}: ${err.message}` });
-            else
+            if (err.code !== 11000) {
+                errors.push({ sheet: 'Rentals', row: -1, field: 'Reference No.', message: `${ref}: ${err.message}` });
+            }
+            else {
                 skipped++;
+            }
         }
     }
-    // ── Step 11: Purchase Orders ──────────────────────────────────────────────
+    // ── Step 11: Purchase Orders ──
     {
         const rows = readSheet('PurchaseOrders');
         const groups = new Map();
         for (const r of rows) {
-            if (!r['poNumber'])
+            if (!r['poNumber']?.trim())
                 continue;
             const po = r['poNumber'].trim().toUpperCase();
             if (!groups.has(po))
@@ -1310,38 +2084,69 @@ export async function executeImport(buf, actor) {
             }
             const first = lines[0];
             const orderDate = parseDate(first['orderDate']) ?? new Date();
-            const locId = resolveLocation(first['location'] ?? '') ?? defaultLoc();
-            const suppId = supplierMap.get(first['supplier'].trim().toLowerCase());
+            const locId = resolveLocation(first['location'] ?? '') ?? defLocationId;
+            const suppName = (first['supplier'] || 'General Supplier').trim();
+            let suppId = supplierMap.get(suppName.toLowerCase());
+            if (!suppId) {
+                try {
+                    const newSupp = await Supplier.create({ name: suppName, notes: 'Auto-created from PO import' });
+                    suppId = newSupp._id;
+                    supplierMap.set(suppName.toLowerCase(), suppId);
+                    imported.suppliers++;
+                }
+                catch {
+                    suppId = supplierMap.values().next().value;
+                }
+            }
             if (!suppId) {
                 skipped++;
                 continue;
             }
-            const poStatus = Object.values(PURCHASE_STATUSES).includes(first['status']) ? first['status'] : PURCHASE_STATUSES.COMPLETED;
+            const poStatus = normalizePOStatus(first['status'] ?? '');
             const poLines = [];
             let poSubtotal = 0;
             for (const line of lines) {
-                const sku = (line['productSku'] ?? '').trim().toUpperCase();
-                const prodId = prodMap.get(sku);
+                const prodRef = line['productSku'] ?? '';
+                const prodId = resolveProduct(prodRef);
                 if (!prodId)
                     continue;
-                const qtyOrd = parseNum(line['quantityOrdered'], 0);
+                const skuKey = prodRef.trim().toUpperCase();
+                const fallbackCost = prodCostMap.get(skuKey) || 0;
+                const qtyOrd = Math.max(1, parseNum(line['quantityOrdered'], 1));
                 const qtyRec = parseNum(line['quantityReceived'] || line['quantityOrdered'], qtyOrd);
-                const cost = parseNum(line['unitCost'], 0);
+                const cost = parseNum(line['unitCost'], fallbackCost);
                 poSubtotal += cost * qtyOrd;
-                poLines.push({ product: prodId, quantityOrdered: qtyOrd, quantityReceived: qtyRec, unitCost: cost, totalCost: cost * qtyOrd });
-                // Update product stock for received quantity
+                poLines.push({
+                    product: prodId,
+                    quantityOrdered: qtyOrd,
+                    quantityReceived: qtyRec,
+                    unitCost: cost,
+                    totalCost: cost * qtyOrd,
+                });
+                // Reconcile stock for received quantity
                 if (qtyRec > 0) {
                     await Product.findByIdAndUpdate(prodId, { $inc: { 'stockQuantity.onHand': qtyRec } });
                     const prod = await Product.findById(prodId);
                     if (prod) {
                         const ls = prod.locationStock.find(l => l.location.toString() === locId.toString());
-                        if (ls)
+                        if (ls) {
                             ls.onHand += qtyRec;
-                        else
+                        }
+                        else {
                             prod.locationStock.push({ location: locId, onHand: qtyRec, reserved: 0, issuedInternal: 0, quarantined: 0 });
+                        }
                         await prod.save();
                     }
-                    movements.push({ product: prodId, location: locId, movementType: MOVEMENT_TYPES.PURCHASE_RECEIPT, quantityDelta: qtyRec, transactionRef: poNumber, transactionModel: 'Purchase', reason: `Historical PO ${poNumber}`, performedBy: actorId });
+                    movements.push({
+                        product: prodId,
+                        location: locId,
+                        movementType: MOVEMENT_TYPES.PURCHASE_RECEIPT,
+                        quantityDelta: qtyRec,
+                        transactionRef: poNumber,
+                        transactionModel: 'Purchase',
+                        reason: `Historical PO ${poNumber}`,
+                        performedBy: actorId,
+                    });
                     imported.stockMovements++;
                 }
             }
@@ -1351,23 +2156,30 @@ export async function executeImport(buf, actor) {
             }
             try {
                 const po = await Purchase.create({
-                    purchaseOrderNumber: poNumber, supplier: suppId,
+                    purchaseOrderNumber: poNumber,
+                    supplier: suppId,
                     invoiceReference: first['invoiceReference'] || undefined,
-                    orderDate, lineItems: poLines, subtotal: poSubtotal,
-                    additionalCosts: 0, totalCost: poSubtotal, status: poStatus,
-                    destinationLocation: locId, notes: first['notes'] || undefined,
+                    orderDate,
+                    lineItems: poLines,
+                    subtotal: poSubtotal,
+                    additionalCosts: 0,
+                    totalCost: poSubtotal,
+                    status: poStatus,
+                    destinationLocation: locId,
+                    notes: first['notes'] || undefined,
                     createdBy: actorId,
                     createdAt: orderDate,
                 });
-                // Create a PurchaseReceipt for completed POs
                 if (poStatus === PURCHASE_STATUSES.COMPLETED) {
-                    let receiptCount = await PurchaseReceipt.countDocuments();
+                    const receiptCount = await PurchaseReceipt.countDocuments();
                     const rcptNum = `RCPT-${new Date(orderDate).getFullYear()}-${String(receiptCount + 1).padStart(5, '0')}`;
                     await PurchaseReceipt.create({
-                        receiptNumber: rcptNum, purchase: po._id,
+                        receiptNumber: rcptNum,
+                        purchase: po._id,
                         receivedDate: orderDate,
                         lineItems: poLines.map(l => ({ product: l.product, quantityReceived: l.quantityReceived, unitCost: l.unitCost })),
-                        destinationLocation: locId, receivedBy: actorId,
+                        destinationLocation: locId,
+                        receivedBy: actorId,
                         notes: 'Historical import',
                         createdAt: orderDate,
                     });
@@ -1375,22 +2187,23 @@ export async function executeImport(buf, actor) {
                 imported.purchaseOrders++;
             }
             catch (err) {
-                if (err.code !== 11000)
-                    errors.push({ sheet: 'PurchaseOrders', row: -1, field: 'poNumber', message: `${poNumber}: ${err.message}` });
-                else
+                if (err.code !== 11000) {
+                    errors.push({ sheet: 'PurchaseOrders', row: -1, field: 'PO Number', message: `${poNumber}: ${err.message}` });
+                }
+                else {
                     skipped++;
+                }
             }
         }
     }
-    // ── Write all stock movements in bulk ─────────────────────────────────────
+    // ── Step 12: Write all stock movements in bulk ──
     if (movements.length > 0) {
         try {
             await StockMovement.insertMany(movements, { ordered: false });
         }
         catch (err) {
-            // Swallow duplicate-key errors from idempotencyKey — movements that already exist are fine
             if (err.code !== 11000 && err.name !== 'MongoBulkWriteError') {
-                errors.push({ sheet: 'System', row: -1, field: 'stockMovements', message: err.message });
+                errors.push({ sheet: 'System', row: -1, field: 'Stock Movements', message: err.message });
             }
         }
     }

@@ -108,7 +108,7 @@ router.get('/settings/public', async (_req, res, next) => {
         const setting = await AppSetting.findOne().populate('defaultLocation').lean();
         const defaultLoc = setting?.defaultLocation || (await StockLocation.findOne({ isDefault: true }).lean());
         const rawCompany = setting?.companyName || '';
-        const cleanCompany = !rawCompany || /soundstock|muziclub/i.test(rawCompany) ? 'Stereobliss Retail' : rawCompany;
+        const cleanCompany = !rawCompany || /soundstock|muziclub|retail/i.test(rawCompany) ? 'Stereobliss' : rawCompany.replace(/\s+retail/gi, '').trim() || 'Stereobliss';
         const rawStore = setting?.storeName || defaultLoc?.name || '';
         const cleanStore = !rawStore || /central studio|academy/i.test(rawStore) ? 'Stereobliss Central Store' : rawStore;
         res.json({
@@ -143,12 +143,12 @@ router.get('/settings', requireAuth, async (_req, res, next) => {
         }
         if (!setting) {
             setting = (await AppSetting.create({
-                companyName: 'Stereobliss Retail',
+                companyName: 'Stereobliss',
                 storeName: defaultLoc.name,
                 storeCode: defaultLoc.code,
-                contactEmail: 'contact@stereobliss.com',
-                contactPhone: '+91 98765 43210',
-                address: defaultLoc.address || 'Stereobliss Central Store, Pune, Maharashtra, India',
+                contactEmail: 'harsh.bagle@muziclub.com',
+                contactPhone: '9960540161',
+                address: defaultLoc.address || '2nd Floor, Radhika Avenue, Wakad- Nasik Road, Next to Copa Vila',
                 defaultLocation: defaultLoc._id,
             })).toObject();
         }
@@ -158,18 +158,18 @@ router.get('/settings', requireAuth, async (_req, res, next) => {
                 setting.storeName = defaultLoc.name;
             if (!setting.storeCode && defaultLoc)
                 setting.storeCode = defaultLoc.code;
-            // Migrate any legacy Soundstock or Central Studio names stored in DB
-            if (/soundstock|muziclub/i.test(setting.companyName) || /central studio|academy/i.test(setting.storeName || '')) {
+            // Migrate any legacy Soundstock, Central Studio, or Retail suffix stored in DB
+            if (/soundstock|muziclub|retail/i.test(setting.companyName) || /central studio|academy/i.test(setting.storeName || '')) {
                 await AppSetting.updateOne({ _id: setting._id }, {
                     $set: {
-                        companyName: 'Stereobliss Retail',
-                        storeName: 'Stereobliss Central Store',
-                        address: 'Stereobliss Central Store, Pune, Maharashtra, India',
+                        companyName: 'Stereobliss',
+                        storeName: 'Stereobliss Wakad Store',
+                        address: '2nd Floor, Radhika Avenue, Wakad- Nasik Road, Next to Copa Vila',
                     },
                 });
-                setting.companyName = 'Stereobliss Retail';
-                setting.storeName = 'Stereobliss Central Store';
-                setting.address = 'Stereobliss Central Store, Pune, Maharashtra, India';
+                setting.companyName = 'Stereobliss';
+                setting.storeName = 'Stereobliss Wakad Store';
+                setting.address = '2nd Floor, Radhika Avenue, Wakad- Nasik Road, Next to Copa Vila';
             }
         }
         const locations = await StockLocation.find({ isActive: true }).sort({ name: 1 }).lean();

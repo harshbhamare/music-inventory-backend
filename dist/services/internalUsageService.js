@@ -34,10 +34,14 @@ export async function issueInstruments(input, actor) {
         const year = new Date().getFullYear();
         const issueReference = `USE-${year}-${String(usageCount + 1).padStart(5, '0')}`;
         const processedItems = [];
+        let firstProductName = 'Musical Instrument';
         for (const itemInput of input.items) {
             const product = await Product.findById(itemInput.product).session(session);
             if (!product || !product.isActive) {
                 throw new AppError(`Product ${itemInput.product} is invalid or inactive.`, 400, 'INVALID_PRODUCT');
+            }
+            if (firstProductName === 'Musical Instrument' && product.name) {
+                firstProductName = product.name;
             }
             if (product.trackingMode === TRACKING_MODES.SERIALIZED) {
                 if (!itemInput.serializedItemId) {
@@ -210,7 +214,7 @@ export async function issueInstruments(input, actor) {
         });
         // Send welcome / agreement confirmation email to customer (fire-and-forget, outside transaction)
         if (input.customerEmail?.trim() && input.customerEmail.includes('@')) {
-            const productName = processedItems[0]?.productName || 'Musical Instrument';
+            const productName = firstProductName;
             setImmediate(async () => {
                 try {
                     await sendRentalAgreementWelcomeEmail({
@@ -903,7 +907,7 @@ export async function sendRentalReminder(usageId, actor, options) {
         : usage.expectedReturnDate && new Date(usage.expectedReturnDate) < now
             ? Math.max(1, Math.floor((now.getTime() - new Date(usage.expectedReturnDate).getTime()) / (1000 * 60 * 60 * 24)))
             : 0;
-    const reminderMessage = `Dear ${usage.assignedPerson}, this is a payment reminder from Stereobliss Retail & Rentals. Your rental payment of ₹${pendingAmount} for "${prodName}" (Ref: ${usage.issueReference}) is due. Please pay via UPI/Card at your earliest convenience. Thank you!`;
+    const reminderMessage = `Dear ${usage.assignedPerson}, this is a payment reminder from Stereobliss. Your rental payment of ₹${pendingAmount} for "${prodName}" (Ref: ${usage.issueReference}) is due. Please pay via UPI/Card at your earliest convenience. Thank you!`;
     let emailDeliveryResult = null;
     let emailDispatched = false;
     if (recipient && recipient.includes('@')) {

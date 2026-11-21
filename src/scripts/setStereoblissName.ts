@@ -17,12 +17,14 @@ async function updateName() {
   // 1. AppSetting
   const setting = await AppSetting.findOne();
   if (setting) {
-    setting.companyName = 'Stereobliss Retail';
-    setting.storeName = 'Stereobliss Central Store';
-    setting.contactEmail = 'contact@stereobliss.com';
-    setting.address = 'Stereobliss Central Store, Pune, Maharashtra, India';
+    setting.companyName = 'Stereobliss';
+    setting.storeName = 'Stereobliss Wakad Store';
+    setting.contactEmail = 'harsh.bagle@muziclub.com';
+    setting.contactPhone = '9960540161';
+    setting.address = '2nd Floor, Radhika Avenue, Wakad- Nasik Road, Next to Copa Vila';
+    setting.gstin = '27ADDFS8850Q1Z6';
     await setting.save();
-    console.log('[SUCCESS] Updated companyName to "Stereobliss Retail" in AppSetting.');
+    console.log('[SUCCESS] Updated companyName to "Stereobliss" in AppSetting.');
   }
 
   // 2. Default & All StockLocations

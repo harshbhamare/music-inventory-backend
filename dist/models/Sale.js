@@ -11,6 +11,8 @@ const SaleLineItemSchema = new Schema({
     sgstAmount: { type: Number, default: 0, min: 0 },
     total: { type: Number, required: true, min: 0 },
     serializedItemIds: [{ type: Schema.Types.ObjectId, ref: 'SerializedItem' }],
+    // Purchase cost snapshot at the time of sale — prevents COGS drift when product cost is later updated
+    unitCostAtSale: { type: Number, default: 0, min: 0 },
 }, { _id: false });
 const EmiMonthlyPaymentSchema = new Schema({
     monthIndex: { type: Number, required: true },

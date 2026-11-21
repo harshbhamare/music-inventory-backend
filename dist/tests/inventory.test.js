@@ -90,7 +90,7 @@ beforeAll(async () => {
 afterAll(async () => {
     await disconnectDB();
 });
-describe('Stereobliss Retail Inventory Management Core Invariants & Workflows', () => {
+describe('Stereobliss Inventory Management Core Invariants & Workflows', () => {
     let quantityProductId;
     let serializedProductId;
     let purchaseId;

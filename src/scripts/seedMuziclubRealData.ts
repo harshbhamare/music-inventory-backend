@@ -76,12 +76,12 @@ export async function seedMuziclubRealData() {
   let setting = await AppSetting.findOne();
   if (!setting) {
     setting = await AppSetting.create({
-      companyName: 'Stereobliss Retail',
-      storeName: 'Stereobliss Central Store',
+      companyName: 'Stereobliss',
+      storeName: 'Stereobliss Wakad Store',
       storeCode: 'CENTRAL',
-      contactEmail: 'contact@stereobliss.com',
-      contactPhone: '+91 98765 43210',
-      address: 'Stereobliss Central Store, Pune, Maharashtra, India',
+      contactEmail: 'harsh.bagle@muziclub.com',
+      contactPhone: '9960540161',
+      address: '2nd Floor, Radhika Avenue, Wakad- Nasik Road, Next to Copa Vila',
       currency: 'INR',
       currencySymbol: '₹',
       defaultLocation: location._id,
@@ -89,8 +89,8 @@ export async function seedMuziclubRealData() {
       timeZone: 'Asia/Kolkata',
     });
   } else {
-    setting.companyName = 'Stereobliss Retail';
-    setting.storeName = 'Stereobliss Central Store';
+    setting.companyName = 'Stereobliss';
+    setting.storeName = 'Stereobliss Wakad Store';
     setting.storeCode = 'CENTRAL';
     await setting.save();
   }

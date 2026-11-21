@@ -22,7 +22,7 @@ export interface IAppSetting extends Document {
 
 const AppSettingSchema = new Schema<IAppSetting>(
   {
-    companyName: { type: String, default: 'Stereobliss Retail' },
+    companyName: { type: String, default: 'Stereobliss' },
     storeName: { type: String, default: 'Stereobliss Central Store' },
     storeCode: { type: String, default: 'CENTRAL' },
     contactEmail: { type: String, default: '' },

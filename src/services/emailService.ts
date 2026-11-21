@@ -1,4 +1,5 @@
 import nodemailer, { Transporter } from 'nodemailer';
+import mongoose from 'mongoose';
 import { EmailReportConfig } from '../models/EmailReportConfig.js';
 import { EmailDeliveryLog } from '../models/EmailDeliveryLog.js';
 import { Product } from '../models/Product.js';
@@ -202,12 +203,28 @@ export function normalizeRecipients(input?: string | string[]): string[] {
 }
 
 async function getOrgInfo() {
-  const setting = await AppSetting.findOne().lean();
+  let setting: any = null;
+  try {
+    if (mongoose.connection && mongoose.connection.readyState === 1) {
+      setting = await AppSetting.findOne().lean();
+    }
+  } catch {
+    setting = null;
+  }
+  const rawCompany = setting?.companyName || '';
+  const cleanCompany = !rawCompany || /soundstock|muziclub|retail/i.test(rawCompany)
+    ? 'Stereobliss'
+    : rawCompany.replace(/\s+retail/gi, '').trim() || 'Stereobliss';
+
   return {
-    companyName: setting?.companyName || 'Stereobliss',
-    storeName: setting?.storeName || 'Stereobliss Central Store',
-    currencySymbol: setting?.currencySymbol || '₹',
-    contactEmail: setting?.contactEmail || ENV.EMAIL_FROM || 'sales@stereobliss.com',
+    companyName: cleanCompany,
+    storeName: setting?.storeName || 'Stereobliss Wakad Store',
+    currencySymbol: '₹',
+    contactEmail: setting?.contactEmail || 'harsh.bagle@muziclub.com',
+    contactPhone: setting?.contactPhone || '9960540161',
+    address: setting?.address || '2nd Floor, Radhika Avenue, Wakad- Nasik Road, Next to Copa Vila',
+    gstin: setting?.gstin || '27ADDFS8850Q1Z6',
+    website: 'www.muziclub.com',
   };
 }
 
@@ -736,7 +753,7 @@ export async function sendInvoicePdfEmail(params: SendInvoiceEmailParams) {
         <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; font-weight: 600; color: #0f172a;">
           ${li.product?.name || 'Musical Instrument'}
           ${li.product?.color ? `<span style="color:#64748b; font-size:11px;"> (${li.product.color})</span>` : ''}
-          ${itemDiscount > 0 ? `<div style="color: #059669; font-size: 11px; font-weight: 600; margin-top: 2px;">Discount: -${org.currencySymbol}${formatIndianCurrency(itemDiscount)}</div>` : ''}
+          ${itemDiscount > 0 ? `<div style="color: #059669; font-size: 11px; font-weight: 600; margin-top: 2px;">Discount Offered: −${org.currencySymbol}${formatIndianCurrency(itemDiscount)} (${formatIndianCurrency(li.discount || 0)}/unit)</div>` : ''}
         </td>
         <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; font-family: monospace; text-align: center; color: #475569;">${li.hsnCode || '92029000'}</td>
         <td style="padding: 10px 12px; border-bottom: 1px solid #e2e8f0; text-align: center; font-weight: 700; color: #0f172a;">${li.quantity} Nos.</td>
@@ -848,7 +865,7 @@ export async function sendInvoicePdfEmail(params: SendInvoiceEmailParams) {
           <strong style="color: #0f172a;">${org.currencySymbol}${formatIndianCurrency(cgstAmount + sgstAmount)}</strong>
         </div>
         <div style="margin-top: 10px; padding-top: 8px; border-top: 2px solid #e2e8f0;">
-          <span style="color: #0f172a; font-weight: 700; font-size: 15px;">Invoice Grand Total: </span>
+          <span style="color: #0f172a; font-weight: 700; font-size: 14px;">TOTAL INVOICE (INR): </span>
           <strong style="color: #0f172a; font-size: 20px; margin-left: 8px;">${org.currencySymbol}${formatIndianCurrency(sale.grandTotal)}</strong>
         </div>
         ${
@@ -1511,7 +1528,7 @@ export async function sendTestEmail(recipient?: string | string[], triggeredBy?:
       </div>
 
       <div style="margin-top: 24px; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center;">
-        Stereobliss Retail Inventory System &bull; Intelligent Dual-Engine Transactional Mailer
+        Stereobliss Inventory System &bull; Intelligent Dual-Engine Transactional Mailer
       </div>
     </div>
   `;
